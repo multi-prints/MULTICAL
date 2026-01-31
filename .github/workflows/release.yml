@@ -140,16 +140,35 @@ jobs:
           echo "=== File Count ==="
           find artifacts -type f | wc -l
 
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Copy and rename files to avoid duplicates
+          for dir in artifacts/multiprints-*; do
+            platform=$(basename "$dir")
+            for file in "$dir"/*; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                # Skip duplicate yaml files (keep platform-specific ones)
+                if [[ "$filename" == "builder-debug.yml" ]]; then
+                  cp "$file" "release-assets/${platform}-${filename}"
+                else
+                  cp "$file" "release-assets/$filename"
+                fi
+              fi
+            done
+          done
+          
+          echo "=== Final Release Assets ==="
+          ls -la release-assets/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.version }}
           files: |
-            artifacts/**/*/*.exe
-            artifacts/**/*/*.deb
-            artifacts/**/*/*.yml
-            artifacts/**/*/*.yaml
-            artifacts/**/*/*.blockmap
+            release-assets/*
           generate_release_notes: true
           draft: false
           prerelease: false
