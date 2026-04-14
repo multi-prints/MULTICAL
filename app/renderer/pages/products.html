@@ -69,7 +69,7 @@
                     </svg>
                 </button>
             </div>
-            <form id="add-product-form">
+            <form id="add-product-form" action="javascript:void(0);">
                 <div class="modal-body">
                     <div class="space-y-5">
                         <!-- Product Type Selection -->
@@ -77,16 +77,25 @@
                             <label>Product Type</label>
                             <div id="product-type-selector" class="flex gap-2 mt-1">
                                 <button type="button" data-type="life_saver"
-                                    class="product-type-btn flex-1 px-4 py-2.5 border border-brand-500 bg-brand-50 text-brand-600 font-medium text-sm transition-all">
-                                    Life Saver
+                                    class="product-type-btn flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all flex items-center gap-3">
+                                    <svg viewBox="0 0 24 24" class="w-6 h-6">
+                                        <polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2"/>
+                                        <text x="12" y="16" text-anchor="middle" font-size="10" font-weight="bold" fill="#1a1a1a">!</text>
+                                    </svg>
+                                    <div>
+                                        <div class="font-medium text-gray-900">Life Saver</div>
+                                        <div class="text-xs text-gray-500">Warning triangle</div>
+                                    </div>
                                 </button>
                                 <button type="button" data-type="chevron"
-                                    class="product-type-btn flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all hover:border-gray-300">
-                                    Chevron
+                                    class="product-type-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all hover:border-gray-300">
+                                    <div class="font-medium text-gray-500">Chevron</div>
+                                    <div class="text-xs text-gray-400">Arrow pattern</div>
                                 </button>
                                 <button type="button" data-type="stripes"
-                                    class="product-type-btn flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all hover:border-gray-300">
-                                    Stripes
+                                    class="product-type-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all hover:border-gray-300">
+                                    <div class="font-medium text-gray-500">Stripes</div>
+                                    <div class="text-xs text-gray-400">Line pattern</div>
                                 </button>
                             </div>
                             <input type="hidden" name="product_type" id="product-type-input" value="life_saver">
@@ -97,30 +106,36 @@
                             <label>Color</label>
                             <div id="product-color-selector" class="flex gap-2 mt-1">
                                 <button type="button" data-color="white_red" data-for="chevron"
-                                    class="product-color-btn chevron-color flex-1 px-4 py-2.5 border border-gray-900 bg-gray-50 font-medium text-sm transition-all flex items-center justify-center gap-2">
-                                    <div class="flex -space-x-1">
-                                        <div class="w-4 h-4 border border-gray-300" style="background-color: #ffffff;"></div>
-                                        <div class="w-4 h-4 border border-gray-200" style="background-color: #ef4444;"></div>
+                                    class="product-color-btn chevron-color flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style="background: linear-gradient(135deg, #ffffff 50%, #ef4444 50%);"></div>
+                                    <div>
+                                        <div class="font-medium text-gray-900">White / Red</div>
+                                        <div class="text-xs text-gray-500">Chevron</div>
                                     </div>
-                                    White / Red
                                 </button>
                                 <button type="button" data-color="yellow_red" data-for="chevron"
-                                    class="product-color-btn chevron-color flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all flex items-center justify-center gap-2">
-                                    <div class="flex -space-x-1">
-                                        <div class="w-4 h-4 border border-gray-200" style="background-color: #eab308;"></div>
-                                        <div class="w-4 h-4 border border-gray-200" style="background-color: #ef4444;"></div>
+                                    class="product-color-btn chevron-color flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all flex items-center gap-3 hover:border-gray-300">
+                                    <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style="background: linear-gradient(135deg, #eab308 50%, #ef4444 50%);"></div>
+                                    <div>
+                                        <div class="font-medium text-gray-500">Yellow / Red</div>
+                                        <div class="text-xs text-gray-400">Chevron</div>
                                     </div>
-                                    Yellow / Red
                                 </button>
                                 <button type="button" data-color="white" data-for="stripes"
-                                    class="product-color-btn stripe-color hidden flex-1 px-4 py-2.5 border border-gray-900 bg-gray-50 font-medium text-sm transition-all flex items-center justify-center gap-2">
-                                    <div class="w-4 h-4 border border-gray-300" style="background-color: #ffffff;"></div>
-                                    White
+                                    class="product-color-btn stripe-color hidden flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-sm shadow-sm border border-gray-200 flex-shrink-0" style="background: #ffffff;"></div>
+                                    <div>
+                                        <div class="font-medium text-gray-900">White</div>
+                                        <div class="text-xs text-gray-500">Stripe</div>
+                                    </div>
                                 </button>
                                 <button type="button" data-color="yellow" data-for="stripes"
-                                    class="product-color-btn stripe-color hidden flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all flex items-center justify-center gap-2">
-                                    <div class="w-4 h-4 border border-gray-200" style="background-color: #eab308;"></div>
-                                    Yellow
+                                    class="product-color-btn stripe-color hidden flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all flex items-center gap-3 hover:border-gray-300">
+                                    <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style="background: #eab308;"></div>
+                                    <div>
+                                        <div class="font-medium text-gray-500">Yellow</div>
+                                        <div class="text-xs text-gray-400">Stripe</div>
+                                    </div>
                                 </button>
                             </div>
                             <input type="hidden" name="product_color" id="product-color-input" value="white_red">
@@ -131,12 +146,14 @@
                             <label>Size</label>
                             <div id="product-size-selector" class="flex gap-2 mt-1">
                                 <button type="button" data-size="1x1"
-                                    class="product-size-btn flex-1 px-4 py-2 border border-gray-900 bg-gray-50 font-medium text-sm transition-all">
-                                    1x1
+                                    class="product-size-btn flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all">
+                                    <div class="font-medium text-gray-900">1x1</div>
+                                    <div class="text-xs text-gray-500">Standard</div>
                                 </button>
                                 <button type="button" data-size="1x2"
-                                    class="product-size-btn flex-1 px-4 py-2 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all hover:border-gray-300">
-                                    1x2
+                                    class="product-size-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all hover:border-gray-300">
+                                    <div class="font-medium text-gray-500">1x2</div>
+                                    <div class="text-xs text-gray-400">Large</div>
                                 </button>
                             </div>
                             <input type="hidden" name="product_size" id="product-size-input" value="1x1">

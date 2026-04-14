@@ -343,6 +343,7 @@ input[type="email"],
 input[type="password"],
 input[type="date"],
 input[type="search"],
+input[type="tel"],
 select,
 textarea {
   width: 100%;
@@ -752,6 +753,48 @@ label {
   border-color: var(--color-primary);
 }
 
+/* Debt status indicators on calendar days */
+.calendar-day.has-debts {
+  border-width: 2px;
+}
+
+.calendar-day.overdue-day {
+  border-color: #ef4444;
+  background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%);
+}
+
+.calendar-day.overdue-day:hover {
+  border-color: #dc2626;
+}
+
+.calendar-day.due-soon-day {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+}
+
+.calendar-day.due-soon-day:hover {
+  border-color: #d97706;
+}
+
+.calendar-day.upcoming-day {
+  border-color: #3b82f6;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+}
+
+.calendar-day.upcoming-day:hover {
+  border-color: #2563eb;
+}
+
+.calendar-day.paid-day {
+  border-color: #22c55e;
+  background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
+}
+
+.calendar-day.paid-day:hover {
+  border-color: #16a34a;
+}
+}
+
 .calendar-day-number {
   font-size: 13px;
   font-weight: 500;
@@ -761,14 +804,89 @@ label {
   position: absolute;
   bottom: 4px;
   right: 4px;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8);
 }
 
-.calendar-debt-indicator.overdue { background: var(--color-error); }
-.calendar-debt-indicator.due-soon { background: var(--color-warning); }
-.calendar-debt-indicator.upcoming { background: var(--color-info); }
+.calendar-debt-indicator.overdue { background: #ef4444; }
+.calendar-debt-indicator.due-soon { background: #f59e0b; }
+.calendar-debt-indicator.upcoming { background: #3b82f6; }
+.calendar-debt-indicator.paid { background: #22c55e; }
+
+.calendar-debt-count {
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.calendar-day.overdue-day .calendar-debt-count {
+  background: #ef4444;
+}
+
+.calendar-day.due-soon-day .calendar-debt-count {
+  background: #f59e0b;
+}
+
+.calendar-day.upcoming-day .calendar-debt-count {
+  background: #3b82f6;
+}
+
+.calendar-day.paid-day .calendar-debt-count {
+  background: #22c55e;
+}
+
+/* Calendar legend */
+.calendar-legend {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  margin-top: 16px;
+}
+
+.calendar-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.calendar-legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid;
+}
+
+.calendar-legend-dot.overdue {
+  background: #fef2f2;
+  border-color: #ef4444;
+}
+
+.calendar-legend-dot.due-soon {
+  background: #fffbeb;
+  border-color: #f59e0b;
+}
+
+.calendar-legend-dot.upcoming {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+
+.calendar-legend-dot.paid {
+  background: #f0fdf4;
+  border-color: #22c55e;
+}
 
 /* ==================== Activity ==================== */
 .activity-item {

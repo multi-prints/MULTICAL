@@ -327,9 +327,10 @@ class DatabaseManager {
   }
 
   addSale(sale) {
+    const timestamp = new Date().toISOString();
     const stmt = this.db.prepare(`
-      INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt)
-      VALUES (@type, @product_id, @stock_id, @product_name, @product_type, @sticker_type, @quantity, @amount, @payment_method, @customer_name, @is_debt)
+      INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp)
+      VALUES (@type, @product_id, @stock_id, @product_name, @product_type, @sticker_type, @quantity, @amount, @payment_method, @customer_name, @is_debt, @timestamp)
     `);
     const result = stmt.run({
       type: sale.type,
@@ -342,9 +343,10 @@ class DatabaseManager {
       amount: sale.amount || 0,
       payment_method: sale.payment_method || 'cash',
       customer_name: sale.customer_name || 'Walk-in',
-      is_debt: sale.is_debt || 0
+      is_debt: sale.is_debt || 0,
+      timestamp: timestamp
     });
-    return { ...sale, id: result.lastInsertRowid, timestamp: new Date().toISOString() };
+    return { ...sale, id: result.lastInsertRowid, timestamp: timestamp };
   }
 
   updateSale(id, updates) {
@@ -383,14 +385,15 @@ class DatabaseManager {
   }
 
   addServiceTransaction(transaction) {
+    const timestamp = new Date().toISOString();
     const stmt = this.db.prepare(`
       INSERT INTO service_transactions (
         service_id, service_name, quantity, price, amount, payment_method, customer_name, notes,
-        stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt
+        stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp
       )
       VALUES (
         @service_id, @service_name, @quantity, @price, @amount, @payment_method, @customer_name, @notes,
-        @stock_id, @stock_metres_used, @material_size, @material_type, @printing_material_id, @is_debt
+        @stock_id, @stock_metres_used, @material_size, @material_type, @printing_material_id, @is_debt, @timestamp
       )
     `);
     const result = stmt.run({
@@ -407,7 +410,8 @@ class DatabaseManager {
       material_size: transaction.material_size || null,
       material_type: transaction.material_type || null,
       printing_material_id: transaction.printing_material_id || null,
-      is_debt: transaction.is_debt || 0
+      is_debt: transaction.is_debt || 0,
+      timestamp: timestamp
     });
     
     // If stock was used, update the stock metres_used
@@ -419,7 +423,7 @@ class DatabaseManager {
       }
     }
     
-    return { ...transaction, id: result.lastInsertRowid, timestamp: new Date().toISOString() };
+    return { ...transaction, id: result.lastInsertRowid, timestamp: timestamp };
   }
 
   updateServiceTransaction(id, updates) {
@@ -479,9 +483,10 @@ class DatabaseManager {
   }
 
   addSale(sale) {
+    const timestamp = new Date().toISOString();
     const stmt = this.db.prepare(`
-      INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name)
-      VALUES (@type, @product_id, @stock_id, @product_name, @product_type, @sticker_type, @quantity, @amount, @payment_method, @customer_name)
+      INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, timestamp)
+      VALUES (@type, @product_id, @stock_id, @product_name, @product_type, @sticker_type, @quantity, @amount, @payment_method, @customer_name, @timestamp)
     `);
     const result = stmt.run({
       type: sale.type,
@@ -493,9 +498,10 @@ class DatabaseManager {
       quantity: sale.quantity ? String(sale.quantity) : null,
       amount: sale.amount || 0,
       payment_method: sale.payment_method || 'cash',
-      customer_name: sale.customer_name || 'Walk-in'
+      customer_name: sale.customer_name || 'Walk-in',
+      timestamp: timestamp
     });
-    return { ...sale, id: result.lastInsertRowid, timestamp: new Date().toISOString() };
+    return { ...sale, id: result.lastInsertRowid, timestamp: timestamp };
   }
 
   getTodayTotalSales() {
@@ -525,10 +531,11 @@ class DatabaseManager {
     // Calculate paid_amount and remaining_amount if not provided
     const paidAmount = debt.paid_amount !== undefined ? debt.paid_amount : 0;
     const remainingAmount = debt.remaining_amount !== undefined ? debt.remaining_amount : (debt.amount - paidAmount);
+    const createdAt = new Date().toISOString();
     
     const stmt = this.db.prepare(`
-      INSERT INTO debts (customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id)
-      VALUES (@customer_name, @phone, @amount, @paid_amount, @remaining_amount, @due_date, @description, 'pending', @sale_id, @service_transaction_id)
+      INSERT INTO debts (customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, created_at)
+      VALUES (@customer_name, @phone, @amount, @paid_amount, @remaining_amount, @due_date, @description, 'pending', @sale_id, @service_transaction_id, @created_at)
     `);
     const result = stmt.run({
       customer_name: debt.customer_name,
@@ -539,9 +546,10 @@ class DatabaseManager {
       due_date: debt.due_date || null,
       description: debt.description || null,
       sale_id: debt.sale_id || null,
-      service_transaction_id: debt.service_transaction_id || null
+      service_transaction_id: debt.service_transaction_id || null,
+      created_at: createdAt
     });
-    return { ...debt, id: result.lastInsertRowid, status: 'pending', paid_amount: paidAmount, remaining_amount: remainingAmount, created_at: new Date().toISOString() };
+    return { ...debt, id: result.lastInsertRowid, status: 'pending', paid_amount: paidAmount, remaining_amount: remainingAmount, created_at: createdAt };
   }
 
   updateDebt(id, updates) {
@@ -606,15 +614,17 @@ class DatabaseManager {
   }
 
   addDebtPayment(payment) {
+    const paymentDate = new Date().toISOString();
     const stmt = this.db.prepare(`
-      INSERT INTO debt_payments (debt_id, amount, payment_method, notes)
-      VALUES (@debt_id, @amount, @payment_method, @notes)
+      INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date)
+      VALUES (@debt_id, @amount, @payment_method, @notes, @payment_date)
     `);
     const result = stmt.run({
       debt_id: payment.debt_id,
       amount: payment.amount,
       payment_method: payment.payment_method || 'cash',
-      notes: payment.notes || null
+      notes: payment.notes || null,
+      payment_date: paymentDate
     });
     
     // Update debt paid_amount and remaining_amount
@@ -626,12 +636,12 @@ class DatabaseManager {
       
       this.db.prepare(`
         UPDATE debts 
-        SET paid_amount = ?, remaining_amount = ?, status = ?, paid_at = CASE WHEN ? = 'paid' THEN CURRENT_TIMESTAMP ELSE paid_at END
+        SET paid_amount = ?, remaining_amount = ?, status = ?, paid_at = CASE WHEN ? = 'paid' THEN ? ELSE paid_at END
         WHERE id = ?
-      `).run(newPaidAmount, newRemainingAmount, newStatus, newStatus, payment.debt_id);
+      `).run(newPaidAmount, newRemainingAmount, newStatus, newStatus, paymentDate, payment.debt_id);
     }
     
-    return { ...payment, id: result.lastInsertRowid, payment_date: new Date().toISOString() };
+    return { ...payment, id: result.lastInsertRowid, payment_date: paymentDate };
   }
 
   deleteDebtPayment(id) {
@@ -672,18 +682,20 @@ class DatabaseManager {
   }
 
   addService(service) {
+    const createdAt = new Date().toISOString();
     const stmt = this.db.prepare(`
-      INSERT INTO services (name, description, price, unit, is_active)
-      VALUES (@name, @description, @price, @unit, @is_active)
+      INSERT INTO services (name, description, price, unit, is_active, created_at)
+      VALUES (@name, @description, @price, @unit, @is_active, @created_at)
     `);
     const result = stmt.run({
       name: service.name,
       description: service.description || null,
       price: service.price || 0,
       unit: service.unit || null,
-      is_active: service.is_active !== undefined ? service.is_active : 1
+      is_active: service.is_active !== undefined ? service.is_active : 1,
+      created_at: createdAt
     });
-    return { ...service, id: result.lastInsertRowid, created_at: new Date().toISOString() };
+    return { ...service, id: result.lastInsertRowid, created_at: createdAt };
   }
 
   updateService(id, updates) {
@@ -711,14 +723,15 @@ class DatabaseManager {
   }
 
   addServiceTransaction(transaction) {
+    const timestamp = new Date().toISOString();
     const stmt = this.db.prepare(`
       INSERT INTO service_transactions (
         service_id, service_name, quantity, price, amount, payment_method, customer_name, notes,
-        stock_id, stock_metres_used, material_size, material_type, printing_material_id
+        stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp
       )
       VALUES (
         @service_id, @service_name, @quantity, @price, @amount, @payment_method, @customer_name, @notes,
-        @stock_id, @stock_metres_used, @material_size, @material_type, @printing_material_id
+        @stock_id, @stock_metres_used, @material_size, @material_type, @printing_material_id, @is_debt, @timestamp
       )
     `);
     const result = stmt.run({
@@ -734,7 +747,9 @@ class DatabaseManager {
       stock_metres_used: transaction.stock_metres_used || 0,
       material_size: transaction.material_size || null,
       material_type: transaction.material_type || null,
-      printing_material_id: transaction.printing_material_id || null
+      printing_material_id: transaction.printing_material_id || null,
+      is_debt: transaction.is_debt || 0,
+      timestamp: timestamp
     });
     
     // If stock was used, update the stock metres_used
@@ -746,7 +761,7 @@ class DatabaseManager {
       }
     }
     
-    return { ...transaction, id: result.lastInsertRowid, timestamp: new Date().toISOString() };
+    return { ...transaction, id: result.lastInsertRowid, timestamp: timestamp };
   }
 
   getTodayTotalServiceEarnings() {

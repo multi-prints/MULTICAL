@@ -84,7 +84,8 @@ const ProductsPage = {
     });
 
     // Handle Form Submit
-    if (addForm) {
+    if (addForm && !addForm.dataset.bound) {
+      addForm.dataset.bound = 'true';
       addForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         await this.handleSubmit(new FormData(addForm));
@@ -158,16 +159,36 @@ const ProductsPage = {
 
   updateTypeUI() {
     const typeButtons = document.querySelectorAll('.product-type-btn');
+    const typeLabels = {
+      life_saver: { name: 'Life Saver', desc: 'Warning triangle', icon: '<svg viewBox="0 0 24 24" class="w-6 h-6"><polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2.5"/><text x="12" y="16" text-anchor="middle" font-size="10" font-weight="bold" fill="#1a1a1a">!</text></svg>' },
+      chevron: { name: 'Chevron', desc: 'Arrow pattern', icon: null },
+      stripes: { name: 'Stripes', desc: 'Line pattern', icon: null }
+    };
     
     typeButtons.forEach(btn => {
       const btnType = btn.dataset.type;
+      const info = typeLabels[btnType] || { name: btnType, desc: '', icon: null };
       
       if (btnType === this.selectedProductType) {
-        // Active state - blue accent
-        btn.className = 'product-type-btn flex-1 px-4 py-2.5 border border-brand-500 bg-brand-50 text-brand-600 font-medium text-sm transition-all';
+        btn.className = 'product-type-btn flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all flex items-center gap-3';
+        if (btn.dataset.for === 'chevron') btn.classList.add('chevron-type');
+        btn.innerHTML = info.icon ? `
+          ${info.icon}
+          <div>
+            <div class="font-medium text-gray-900">${info.name}</div>
+            <div class="text-xs text-gray-500">${info.desc}</div>
+          </div>
+        ` : `<div class="font-medium text-gray-900">${info.name}</div><div class="text-xs text-gray-500">${info.desc}</div>`;
       } else {
-        // Inactive state
-        btn.className = 'product-type-btn flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all hover:border-gray-300';
+        btn.className = 'product-type-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all hover:border-gray-300 flex items-center gap-3';
+        if (btn.dataset.for === 'chevron') btn.classList.add('chevron-type');
+        btn.innerHTML = info.icon ? `
+          ${info.icon}
+          <div>
+            <div class="font-medium text-gray-500">${info.name}</div>
+            <div class="text-xs text-gray-400">${info.desc}</div>
+          </div>
+        ` : `<div class="font-medium text-gray-500">${info.name}</div><div class="text-xs text-gray-400">${info.desc}</div>`;
       }
     });
   },
@@ -181,22 +202,46 @@ const ProductsPage = {
 
   updateColorUI() {
     const colorButtons = document.querySelectorAll('.product-color-btn');
+    const colorInfo = {
+      white_red: { name: 'White / Red', desc: 'Chevron', gradient: 'linear-gradient(135deg, #ffffff 50%, #ef4444 50%)' },
+      yellow_red: { name: 'Yellow / Red', desc: 'Chevron', gradient: 'linear-gradient(135deg, #eab308 50%, #ef4444 50%)' },
+      white: { name: 'White', desc: 'Stripe', color: '#ffffff' },
+      yellow: { name: 'Yellow', desc: 'Stripe', color: '#eab308' }
+    };
     
     colorButtons.forEach(btn => {
       const btnColor = btn.dataset.color;
       const isHidden = btn.classList.contains('hidden');
+      const info = colorInfo[btnColor] || { name: btnColor, desc: '' };
       
       // Skip hidden buttons
       if (isHidden) return;
       
+      const isChevron = btn.dataset.for === 'chevron';
+      const swatchStyle = isChevron 
+        ? `background: ${info.gradient};` 
+        : `background-color: ${info.color || '#fff'};${info.color === '#ffffff' ? ' border: 1px solid #d1d5db;' : ''}`;
+      
       if (btnColor === this.selectedColor) {
-        btn.className = 'product-color-btn flex-1 px-4 py-2.5 border border-gray-900 bg-gray-50 font-medium text-sm transition-all flex items-center justify-center gap-2';
+        btn.className = 'product-color-btn flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all flex items-center gap-3';
         if (btn.dataset.for === 'chevron') btn.classList.add('chevron-color');
         else if (btn.dataset.for === 'stripes') btn.classList.add('stripe-color');
+        btn.innerHTML = `
+          <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style="${swatchStyle}"></div>
+          <div>
+            <div class="font-medium text-gray-900">${info.name}</div>
+            <div class="text-xs text-gray-500">${info.desc}</div>
+          </div>`;
       } else {
-        btn.className = 'product-color-btn flex-1 px-4 py-2.5 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all flex items-center justify-center gap-2';
+        btn.className = 'product-color-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all flex items-center gap-3 hover:border-gray-300';
         if (btn.dataset.for === 'chevron') btn.classList.add('chevron-color');
         else if (btn.dataset.for === 'stripes') btn.classList.add('stripe-color');
+        btn.innerHTML = `
+          <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style="${swatchStyle}"></div>
+          <div>
+            <div class="font-medium text-gray-500">${info.name}</div>
+            <div class="text-xs text-gray-400">${info.desc}</div>
+          </div>`;
       }
     });
   },
@@ -213,11 +258,17 @@ const ProductsPage = {
     
     sizeButtons.forEach(btn => {
       const btnSize = btn.dataset.size;
+      const isSelected = btnSize === this.selectedSize;
       
-      if (btnSize === this.selectedSize) {
-        btn.className = 'product-size-btn flex-1 px-4 py-2 border border-gray-900 bg-gray-50 font-medium text-sm transition-all';
+      if (isSelected) {
+        btn.className = 'product-size-btn flex-1 px-4 py-3 border border-gray-900 bg-gray-50 text-sm transition-all';
+        // Update inner content
+        const label = btnSize === '1x1' ? 'Standard' : 'Large';
+        btn.innerHTML = `<div class="font-medium text-gray-900">${btnSize}</div><div class="text-xs text-gray-500">${label}</div>`;
       } else {
-        btn.className = 'product-size-btn flex-1 px-4 py-2 border border-gray-200 bg-white text-gray-500 font-medium text-sm transition-all hover:border-gray-300';
+        btn.className = 'product-size-btn flex-1 px-4 py-3 border border-gray-200 bg-white text-sm transition-all hover:border-gray-300';
+        const label = btnSize === '1x1' ? 'Standard' : 'Large';
+        btn.innerHTML = `<div class="font-medium text-gray-500">${btnSize}</div><div class="text-xs text-gray-400">${label}</div>`;
       }
     });
   },
@@ -335,17 +386,48 @@ const ProductsPage = {
       return `
       <tr class="hover:bg-gray-50 transition-colors">
         <td class="px-6 py-4">
-          <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${typeConfig.badgeClass}">
-            ${typeConfig.name}
-          </span>
+          ${product.product_type === 'life_saver' ? `
+            <div class="flex items-center gap-2">
+              <svg viewBox="0 0 24 24" class="w-5 h-5">
+                <polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2"/>
+                <text x="12" y="15" text-anchor="middle" font-size="9" font-weight="bold" fill="#1a1a1a">!</text>
+              </svg>
+              <span class="text-sm font-medium text-gray-900">Life Saver</span>
+            </div>
+          ` : `
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${typeConfig.badgeClass}">
+              ${typeConfig.name}
+            </span>
+          `}
         </td>
         <td class="px-6 py-4">
           ${colorConfig ? `
           <div class="flex items-center gap-2">
-            <div class="flex -space-x-1">
-              ${colorConfig.colors.map(color => `<div class="w-4 h-4 rounded-full border border-gray-300" style="background-color: ${color};"></div>`).join('')}
-            </div>
+            ${product.product_type === 'life_saver' ? `
+              <div class="w-6 h-6 relative flex items-center justify-center">
+                <svg viewBox="0 0 24 24" class="w-6 h-6">
+                  <polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2"/>
+                  <text x="12" y="15" text-anchor="middle" font-size="9" font-weight="bold" fill="#1a1a1a">!</text>
+                </svg>
+              </div>
+            ` : product.product_type === 'chevron' ? `
+              <div class="w-6 h-6 rounded-sm shadow-sm border border-gray-200" 
+                   style="background: linear-gradient(135deg, ${colorConfig.colors[0]} 50%, ${colorConfig.colors[1]} 50%);"></div>
+            ` : `
+              <div class="w-6 h-6 rounded-sm shadow-sm border border-gray-200" 
+                   style="background-color: ${colorConfig.colors[0]};"></div>
+            `}
             <span class="text-sm text-gray-700">${colorConfig.name}</span>
+          </div>
+          ` : product.product_type === 'life_saver' ? `
+          <div class="flex items-center gap-2">
+            <div class="w-6 h-6 relative flex items-center justify-center">
+              <svg viewBox="0 0 24 24" class="w-6 h-6">
+                <polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2"/>
+                <text x="12" y="15" text-anchor="middle" font-size="9" font-weight="bold" fill="#1a1a1a">!</text>
+              </svg>
+            </div>
+            <span class="text-sm text-gray-400">Standard</span>
           </div>
           ` : '<span class="text-sm text-gray-400">-</span>'}
         </td>
@@ -454,7 +536,7 @@ const ProductsPage = {
               </p>
             </div>
 
-            <form id="add-product-stock-form" class="space-y-4">
+            <form id="add-product-stock-form" class="space-y-4" action="javascript:void(0);">
               <input type="hidden" id="add-stock-product-id" value="${id}">
 
               <div>
@@ -473,7 +555,7 @@ const ProductsPage = {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn-secondary px-4 py-2" onclick="ProductsPage.closeAddStockModal()">Cancel</button>
-            <button type="button" class="btn-primary px-4 py-2" onclick="ProductsPage.submitAddStock()">Add Stock</button>
+            <button type="submit" form="add-product-stock-form" class="btn-primary px-4 py-2">Add Stock</button>
           </div>
         </div>
       </div>
@@ -483,6 +565,15 @@ const ProductsPage = {
     const existingModal = document.getElementById('modal-add-product-stock');
     if (existingModal) existingModal.remove();
     document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    // Add form submit handler
+    const form = document.getElementById('add-product-stock-form');
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.submitAddStock();
+      });
+    }
 
     // Add event listener for real-time calculation
     const qtyInput = document.getElementById('add-stock-quantity-input');

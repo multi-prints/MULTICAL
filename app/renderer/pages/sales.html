@@ -98,7 +98,7 @@
 
                 <!-- Stock Sale Section -->
                 <div id="stock-sale-section">
-                    <form id="stock-sale-form">
+                    <form id="stock-sale-form" action="javascript:void(0);">
                         <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
@@ -109,29 +109,13 @@
                                 <div>
                                     <label>Sale Type</label>
                                     <div id="sale-type-dropdown" class="mt-1"></div>
-                                    <input type="hidden" name="unit" id="sale-unit-input" value="metres">
-                                </div>
-                            </div>
-                            <div class="bg-gray-50 border border-gray-100 p-3">
-                                <div class="grid grid-cols-3 gap-4 text-sm">
-                                    <div>
-                                        <span class="text-gray-500">Remaining:</span>
-                                        <span id="stock-remaining-info" class="font-medium text-gray-900">-</span>
-                                    </div>
-                                    <div>
-                                        <span class="text-gray-500">Price/m:</span>
-                                        <span id="stock-price-info" class="font-medium text-gray-900">-</span>
-                                    </div>
-                                    <div>
-                                        <span class="text-gray-500">Type:</span>
-                                        <span id="stock-type-info" class="font-medium text-gray-900">-</span>
-                                    </div>
+                                    <input type="hidden" name="sale_unit" id="sale-unit-input" value="metres">
                                 </div>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label id="quantity-label">Metres</label>
-                                    <input type="number" id="sale-stock-quantity" name="quantity" step="0.1" min="0.1" class="w-full mt-1" placeholder="0" required>
+                                    <input type="number" id="sale-stock-quantity" name="stock_quantity" step="0.1" min="0.1" class="w-full mt-1" placeholder="0" required>
                                 </div>
                                 <div>
                                     <label>Payment Method</label>
@@ -144,8 +128,12 @@
                                 <input type="number" id="stock-total-price" name="total_price" step="1" min="1" class="w-full mt-1" placeholder="0" required>
                             </div>
                             <div>
+                                <label>Total Amount</label>
+                                <div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold" id="stock-sale-total">KSh 0.00</div>
+                            </div>
+                            <div>
                                 <label>Customer Name (Optional)</label>
-                                <input type="text" id="stock-customer-name" name="customer_name" class="w-full mt-1" placeholder="Walk-in customer">
+                                <input type="text" id="stock-customer-name" name="customer_name" class="w-full mt-1" placeholder="Walk-in Customer">
                             </div>
                         </div>
                         <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
@@ -157,24 +145,12 @@
 
                 <!-- Product Sale Section -->
                 <div id="product-sale-section" class="hidden">
-                    <form id="sale-form">
+                    <form id="sale-form" action="javascript:void(0);">
                         <div class="space-y-4">
                             <div>
                                 <label>Product</label>
                                 <div id="product-dropdown" class="mt-1"></div>
                                 <input type="hidden" name="product_id" id="sale-product-id-input">
-                            </div>
-                            <div class="bg-gray-50 border border-gray-100 p-3">
-                                <div class="grid grid-cols-2 gap-4 text-sm">
-                                    <div>
-                                        <span class="text-gray-500">Price:</span>
-                                        <span id="product-price-info" class="font-medium text-gray-900">-</span>
-                                    </div>
-                                    <div>
-                                        <span class="text-gray-500">Stock:</span>
-                                        <span id="product-stock-info" class="font-medium text-gray-900">-</span>
-                                    </div>
-                                </div>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
@@ -189,7 +165,11 @@
                             </div>
                             <div>
                                 <label>Selling Price (KSh)</label>
-                                <input type="number" id="sale-total-price" name="selling_price" step="1" min="1" class="w-full mt-1" placeholder="0" required>
+                                <input type="number" id="sale-total-price" name="total_price" step="1" min="1" class="w-full mt-1" placeholder="0" required>
+                            </div>
+                            <div>
+                                <label>Total Amount</label>
+                                <div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold" id="product-sale-total">KSh 0.00</div>
                             </div>
                             <div>
                                 <label>Customer Name (Optional)</label>
@@ -205,17 +185,21 @@
 
                 <!-- Service Sale Section -->
                 <div id="service-sale-section" class="hidden">
-                    <form id="service-sale-form">
+                    <form id="service-sale-form" action="javascript:void(0);">
                         <div class="space-y-4">
                             <div>
                                 <label>Service Name *</label>
                                 <input type="text" id="service-name" name="service_name" class="w-full mt-1" placeholder="e.g., Design, Lamination" required>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label>Price (KSh) *</label>
-                                    <input type="number" id="service-price" name="price" step="1" min="1" class="w-full mt-1" placeholder="0" required>
-                                </div>
+                            <div>
+                                <label>Price (KSh) *</label>
+                                <input type="number" id="service-price" name="price" step="1" min="1" class="w-full mt-1" placeholder="0" required>
+                            </div>
+                            <div>
+                                <label>Total Amount</label>
+                                <div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold" id="service-sale-total">KSh 0.00</div>
+                            </div>
                                 <div>
                                     <label>Payment Method</label>
                                     <div id="service-payment-dropdown" class="mt-1"></div>

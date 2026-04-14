@@ -142,13 +142,15 @@ const PrintingPage = {
     if (btnClose) btnClose.addEventListener('click', closeModal);
     if (btnCancel) btnCancel.addEventListener('click', closeModal);
     
-    if (modal) {
+    if (modal && !modal.dataset.bound) {
+      modal.dataset.bound = 'true';
       modal.addEventListener('click', (e) => {
         if (e.target === modal) closeModal();
       });
     }
 
-    if (form) {
+    if (form && !form.dataset.bound) {
+      form.dataset.bound = 'true';
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         this.handleRecordPrintingJob(new FormData(form));
@@ -188,13 +190,15 @@ const PrintingPage = {
     if (btnCloseMaterial) btnCloseMaterial.addEventListener('click', closeMaterialModal);
     if (btnCancelMaterial) btnCancelMaterial.addEventListener('click', closeMaterialModal);
     
-    if (materialModal) {
+    if (materialModal && !materialModal.dataset.bound) {
+      materialModal.dataset.bound = 'true';
       materialModal.addEventListener('click', (e) => {
         if (e.target === materialModal) closeMaterialModal();
       });
     }
 
-    if (materialForm) {
+    if (materialForm && !materialForm.dataset.bound) {
+      materialForm.dataset.bound = 'true';
       materialForm.addEventListener('submit', (e) => {
         e.preventDefault();
         this.handleAddMaterial(new FormData(materialForm));
@@ -413,7 +417,7 @@ const PrintingPage = {
               <p class="text-sm text-gray-600 mt-1">Current: ${remaining.toFixed(1)}m remaining (${rollsRemaining} rolls)</p>
             </div>
             
-            <form id="add-material-rolls-form" class="space-y-4">
+            <form id="add-material-rolls-form" class="space-y-4" action="javascript:void(0);">
               <input type="hidden" id="add-material-rolls-id" value="${id}">
               
               <div>
@@ -433,7 +437,7 @@ const PrintingPage = {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn-secondary px-4 py-2 rounded-lg" onclick="PrintingPage.closeAddRollsModal()">Cancel</button>
-            <button type="button" class="btn-primary px-4 py-2 rounded-lg" onclick="PrintingPage.submitAddRolls()">Add Rolls</button>
+            <button type="submit" form="add-material-rolls-form" class="btn-primary px-4 py-2 rounded-lg">Add Rolls</button>
           </div>
         </div>
       </div>
@@ -443,6 +447,15 @@ const PrintingPage = {
     const existingModal = document.getElementById('modal-add-material-rolls');
     if (existingModal) existingModal.remove();
     document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    // Add form submit handler
+    const form = document.getElementById('add-material-rolls-form');
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.submitAddRolls();
+      });
+    }
 
     // Add event listener for real-time calculation
     const rollsInput = document.getElementById('add-material-rolls-input');

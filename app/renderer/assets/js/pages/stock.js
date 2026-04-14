@@ -882,7 +882,7 @@ const StockPage = {
               <p class="text-sm text-gray-600 mt-1">Current: ${remaining.toLocaleString()}m remaining (${rollsLeft} rolls)</p>
             </div>
 
-            <form id="add-rolls-form" class="space-y-4">
+            <form id="add-rolls-form" class="space-y-4" action="javascript:void(0);">
               <input type="hidden" id="add-rolls-stock-id" value="${id}">
 
               <div>
@@ -902,7 +902,7 @@ const StockPage = {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn-secondary px-4 py-2" onclick="StockPage.closeAddRollsModal()">Cancel</button>
-            <button type="button" class="btn-primary px-4 py-2" onclick="StockPage.submitAddRolls()">Add Rolls</button>
+            <button type="submit" form="add-rolls-form" class="btn-primary px-4 py-2">Add Rolls</button>
           </div>
         </div>
       </div>
@@ -912,6 +912,15 @@ const StockPage = {
     const existingModal = document.getElementById('modal-add-rolls');
     if (existingModal) existingModal.remove();
     document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+    // Add form submit handler
+    const form = document.getElementById('add-rolls-form');
+    if (form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.submitAddRolls();
+      });
+    }
 
     // Add event listener for real-time calculation
     const rollsInput = document.getElementById('add-rolls-input');

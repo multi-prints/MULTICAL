@@ -88,7 +88,7 @@
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Phone Number</label>
-                            <input type="tel" name="phone" class="w-full" placeholder="Optional">
+                            <input type="tel" name="phone" class="w-full" placeholder="Enter phone number">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Amount Owed</label>
@@ -170,18 +170,22 @@
                 </div>
 
                 <!-- Legend -->
-                <div class="flex items-center gap-6 mt-6 pt-4 border-t border-gray-200">
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 bg-red-500"></div>
-                        <span class="text-xs text-gray-600">Overdue</span>
+                <div class="calendar-legend mt-4">
+                    <div class="calendar-legend-item">
+                        <div class="calendar-legend-dot overdue"></div>
+                        <span>Overdue</span>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 bg-yellow-500"></div>
-                        <span class="text-xs text-gray-600">Due Soon</span>
+                    <div class="calendar-legend-item">
+                        <div class="calendar-legend-dot due-soon"></div>
+                        <span>Due Soon</span>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 bg-brand-500"></div>
-                        <span class="text-xs text-gray-600">Upcoming</span>
+                    <div class="calendar-legend-item">
+                        <div class="calendar-legend-dot upcoming"></div>
+                        <span>Upcoming</span>
+                    </div>
+                    <div class="calendar-legend-item">
+                        <div class="calendar-legend-dot paid"></div>
+                        <span>Paid</span>
                     </div>
                 </div>
 

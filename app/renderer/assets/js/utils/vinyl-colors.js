@@ -625,8 +625,10 @@ const VinylColorUtils = {
     const filterLower = filter.toLowerCase();
 
     if (stickerType === 'reflective') {
-      // Return reflective colors
+      // Return reflective colors (exclude chevron patterns - those are products, not stock)
       for (const [name, info] of Object.entries(VINYL_COLOR_KNOWLEDGE.reflectiveColors)) {
+        // Skip chevron patterns - they are products, not vinyl stock colors
+        if (name.startsWith('chevron')) continue;
         if (!filter || name.includes(filterLower)) {
           suggestions.push({
             name: name.charAt(0).toUpperCase() + name.slice(1),

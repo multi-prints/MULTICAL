@@ -649,7 +649,7 @@ const DebtsPage = {
     const daysInMonth = lastDay.getDate();
     const startingDayOfWeek = firstDay.getDay();
 
-    // Get debts for this month
+    // Get debts for this month (both pending and paid)
     const debtsThisMonth = Store.debts.filter(d => {
       if (!d.due_date) return false;
       const dueDate = new Date(d.due_date);
@@ -702,23 +702,47 @@ const DebtsPage = {
       const debtsForDay = debtsByDay[day] || [];
       if (debtsForDay.length > 0) {
         const currentDate = new Date();
+        currentDate.setHours(0, 0, 0, 0);
         const dayDate = new Date(this.currentYear, this.currentMonth, day);
+        dayDate.setHours(0, 0, 0, 0);
         const daysUntilDue = Math.ceil((dayDate - currentDate) / (1000 * 60 * 60 * 24));
 
-        let indicatorClass = 'upcoming';
-        if (daysUntilDue < 0) {
-          indicatorClass = 'overdue';
+        // Check if all debts are paid
+        const allPaid = debtsForDay.every(d => d.status === 'paid');
+        const hasPending = debtsForDay.some(d => d.status !== 'paid');
+
+        let statusClass = 'upcoming';
+        let statusLabel = 'Upcoming';
+        
+        if (allPaid) {
+          statusClass = 'paid';
+          statusLabel = 'Paid';
+        } else if (daysUntilDue < 0) {
+          statusClass = 'overdue';
+          statusLabel = 'Overdue';
         } else if (daysUntilDue <= 3) {
-          indicatorClass = 'due-soon';
+          statusClass = 'due-soon';
+          statusLabel = daysUntilDue === 0 ? 'Due Today' : daysUntilDue === 1 ? 'Due Tomorrow' : 'Due Soon';
         }
 
+        // Add status class to day
+        dayEl.classList.add('has-debts', `${statusClass}-day`);
+
         const indicator = document.createElement('div');
-        indicator.className = `calendar-debt-indicator ${indicatorClass}`;
+        indicator.className = `calendar-debt-indicator ${statusClass}`;
         dayEl.appendChild(indicator);
 
         const count = document.createElement('div');
         count.className = 'calendar-debt-count';
-        count.textContent = `${debtsForDay.length} debt${debtsForDay.length > 1 ? 's' : ''}`;
+        if (allPaid) {
+          count.textContent = `${debtsForDay.length} paid`;
+        } else if (hasPending) {
+          const pendingCount = debtsForDay.filter(d => d.status !== 'paid').length;
+          const paidCount = debtsForDay.length - pendingCount;
+          count.textContent = paidCount > 0 
+            ? `${pendingCount} pending, ${paidCount} paid`
+            : `${pendingCount} debt${pendingCount > 1 ? 's' : ''}`;
+        }
         dayEl.appendChild(count);
       }
 
@@ -747,24 +771,61 @@ const DebtsPage = {
       debtsContainer.innerHTML = '<p class="text-sm text-gray-500 italic">No debts due on this day</p>';
     } else {
       debtsContainer.innerHTML = debts.map(debt => {
-        const isOverdue = new Date(debt.due_date) < new Date();
+        const isPaid = debt.status === 'paid';
+        
+        // For paid debts, show simple green card
+        if (isPaid) {
+          return `
+            <div class="p-4 rounded-lg border border-green-200 bg-green-50 opacity-75">
+              <div class="flex items-start justify-between">
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <h6 class="font-medium text-gray-900">${debt.customer_name}</h6>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Paid</span>
+                  </div>
+                  <p class="text-lg font-semibold text-gray-900 mt-1 line-through">KSh ${debt.amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                  ${debt.description ? `<p class="text-xs text-gray-500 mt-1">${debt.description}</p>` : ''}
+                </div>
+              </div>
+            </div>
+          `;
+        }
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dueDate = new Date(debt.due_date);
+        dueDate.setHours(0, 0, 0, 0);
+        const daysDiff = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+        
+        let statusClass = '';
+        let statusText = '';
+        let borderClass = 'border-gray-200';
+        
+        if (daysDiff < 0) {
+          statusClass = 'bg-red-100 text-red-700';
+          borderClass = 'border-red-200 bg-red-50';
+          statusText = `Overdue by ${Math.abs(daysDiff)} day${Math.abs(daysDiff) > 1 ? 's' : ''}`;
+        } else if (daysDiff <= 3) {
+          statusClass = 'bg-amber-100 text-amber-700';
+          borderClass = 'border-amber-200 bg-amber-50';
+          statusText = daysDiff === 0 ? 'Due Today' : daysDiff === 1 ? 'Due Tomorrow' : `Due in ${daysDiff} days`;
+        } else {
+          statusClass = 'bg-blue-100 text-blue-700';
+          borderClass = 'border-blue-200 bg-blue-50';
+          statusText = `Due in ${daysDiff} days`;
+        }
+        
         return `
-          <div class="p-3 bg-gray-50 rounded-lg border border-gray-200">
+          <div class="p-4 rounded-lg border ${borderClass}">
             <div class="flex items-start justify-between">
               <div class="flex-1">
-                <h6 class="font-medium text-gray-900">${debt.customer_name}</h6>
-                <p class="text-sm text-gray-600 mt-1">KSh ${debt.amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
+                <div class="flex items-center gap-2">
+                  <h6 class="font-medium text-gray-900">${debt.customer_name}</h6>
+                  <span class="px-2 py-0.5 rounded-full text-xs font-medium ${statusClass}">${statusText}</span>
+                </div>
+                <p class="text-lg font-semibold text-gray-900 mt-1">KSh ${debt.remaining_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</p>
                 ${debt.description ? `<p class="text-xs text-gray-500 mt-1">${debt.description}</p>` : ''}
               </div>
-              <span class="status-badge ${isOverdue ? 'status-badge--error' : 'status-badge--pending'} text-xs">
-                ${isOverdue ? 'Overdue' : 'Pending'}
-              </span>
-            </div>
-            <div class="flex gap-2 mt-3">
-              <button onclick="DebtsPage.markPaid(${debt.id})" class="text-xs font-medium text-green-600 hover:text-green-800">
-                Mark Paid
-              </button>
-              ${debt.phone ? `<span class="text-xs text-gray-400">•</span><span class="text-xs text-gray-600">${debt.phone}</span>` : ''}
             </div>
           </div>
         `;

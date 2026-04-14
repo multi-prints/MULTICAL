@@ -285,7 +285,8 @@ const SalesPage = {
     if (stockQuantity) stockQuantity.addEventListener('input', () => this.calculateStockSaleTotal());
     if (stockTotalPrice) stockTotalPrice.addEventListener('input', () => this.calculateStockSaleTotal());
 
-    if (stockForm) {
+    if (stockForm && !stockForm.dataset.bound) {
+      stockForm.dataset.bound = 'true';
       stockForm.addEventListener('submit', (e) => {
         e.preventDefault();
         const formData = new FormData(stockForm);
@@ -300,7 +301,8 @@ const SalesPage = {
 
     if (totalPriceInput) totalPriceInput.addEventListener('input', () => this.calculateTotal());
 
-    if (form) {
+    if (form && !form.dataset.bound) {
+      form.dataset.bound = 'true';
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         this.handleSubmit(new FormData(form));
@@ -314,7 +316,8 @@ const SalesPage = {
 
     if (servicePriceInput) servicePriceInput.addEventListener('input', () => this.calculateServiceSaleTotal());
 
-    if (serviceForm) {
+    if (serviceForm && !serviceForm.dataset.bound) {
+      serviceForm.dataset.bound = 'true';
       serviceForm.addEventListener('submit', (e) => {
         e.preventDefault();
         this.handleServiceSaleSubmit(new FormData(serviceForm));
@@ -491,7 +494,7 @@ const SalesPage = {
   },
 
   resetProductSaleDisplay() {
-    const totalEl = document.getElementById('sale-total');
+    const totalEl = document.getElementById('product-sale-total');
     const infoEl = document.getElementById('product-sale-info');
     const hintEl = document.getElementById('quantity-hint');
 
@@ -618,7 +621,7 @@ const SalesPage = {
 
   calculateTotal() {
     const totalPriceInput = document.getElementById('sale-total-price');
-    const totalEl = document.getElementById('sale-total');
+    const totalEl = document.getElementById('product-sale-total');
 
     if (!totalPriceInput) return;
     
@@ -770,7 +773,7 @@ const SalesPage = {
         <td class="px-5 py-4 text-sm text-gray-600">${timeDisplay}</td>
         <td class="px-5 py-4">
           <div class="flex items-center gap-2">
-            <span class="status-badge ${sale.type === 'stock' ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-700'}">${sale.type === 'stock' ? 'Stock' : 'Product'}</span>
+            <span class="status-badge ${sale.type === 'stock' ? 'bg-gray-800 text-white' : sale.type === 'service' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-700'}">${sale.type === 'stock' ? 'Stock' : sale.type === 'service' ? 'Service' : 'Product'}</span>
             <span class="text-sm font-medium text-gray-900">${sale.product_name}</span>
           </div>
         </td>
