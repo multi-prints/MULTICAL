@@ -14,13 +14,13 @@
                 <div>
                     <p class="text-gray-500 text-sm font-medium mb-1">Total Revenue</p>
                     <h3 class="text-2xl font-bold text-gray-900" id="stat-revenue">--</h3>
-                    <div
+                    <div id="stat-revenue-change"
                         class="flex items-center gap-1 mt-2 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full w-fit border border-green-100">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
                         </svg>
-                        <span>+12.5%</span>
+                        <span>All time</span>
                     </div>
                 </div>
                 <div class="icon-frame">
@@ -33,19 +33,15 @@
             </div>
         </div>
 
-        <!-- Total Sales -->
+        <!-- Today's Sales -->
         <div class="stat-card-modern">
             <div class="flex items-start justify-between">
                 <div>
-                    <p class="text-gray-500 text-sm font-medium mb-1">Total Sales</p>
+                    <p class="text-gray-500 text-sm font-medium mb-1">Today's Sales</p>
                     <h3 class="text-2xl font-bold text-gray-900" id="stat-sales">--</h3>
-                    <div
+                    <div id="stat-today-revenue"
                         class="flex items-center gap-1 mt-2 text-xs font-medium text-gray-600 bg-gray-50 px-2 py-1 rounded-full w-fit border border-gray-100">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
-                        </svg>
-                        <span>+5.2%</span>
+                        <span>Today: KSh 0</span>
                     </div>
                 </div>
                 <div class="icon-frame">
@@ -81,11 +77,11 @@
         <div class="stat-card-modern">
             <div class="flex items-start justify-between">
                 <div>
-                    <p class="text-gray-500 text-sm font-medium mb-1">Outstanding</p>
+                    <p class="text-gray-500 text-sm font-medium mb-1">Outstanding Debts</p>
                     <h3 class="text-2xl font-bold text-gray-900" id="stat-debts">--</h3>
-                    <div
+                    <div id="stat-debts-count"
                         class="flex items-center gap-1 mt-2 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded-full w-fit border border-red-100">
-                        <span>Action Needed</span>
+                        <span>0 pending</span>
                     </div>
                 </div>
                 <div class="icon-frame">
@@ -108,19 +104,34 @@
                 <div class="flex items-center justify-between mb-6">
                     <div>
                         <h3 class="dashboard-panel-title">Revenue Analytics</h3>
-                        <p class="text-sm text-gray-500">Revenue vs Sales over the last 7 months</p>
+                        <p class="text-sm text-gray-500" id="chart-period-label">Last 7 days revenue breakdown</p>
                     </div>
                     <div class="flex bg-gray-100 rounded-lg p-1">
                         <button id="btn-chart-week"
-                            class="chart-filter-btn px-3 py-1 text-xs font-medium text-white bg-black shadow-sm rounded-md transition-all">Week</button>
+                            class="chart-filter-btn px-3 py-1.5 text-xs font-medium rounded-md transition-all bg-black text-white shadow-sm">Week</button>
                         <button id="btn-chart-month"
-                            class="chart-filter-btn px-3 py-1 text-xs font-medium text-gray-600 rounded-md hover:bg-white hover:shadow-sm transition-all">Month</button>
+                            class="chart-filter-btn px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-600">Month</button>
                         <button id="btn-chart-year"
-                            class="chart-filter-btn px-3 py-1 text-xs font-medium text-gray-600 rounded-md hover:bg-white hover:shadow-sm transition-all">Year</button>
+                            class="chart-filter-btn px-3 py-1.5 text-xs font-medium rounded-md transition-all text-gray-600">Year</button>
                     </div>
                 </div>
-                <div class="chart-container">
+                <div class="chart-container" style="height: 280px;">
                     <canvas id="revenueChart"></canvas>
+                </div>
+                <!-- Summary Stats -->
+                <div class="grid grid-cols-3 gap-4 mt-6 pt-6 border-t border-gray-100">
+                    <div class="text-center">
+                        <p class="text-xs text-gray-500 mb-1">Highest Day</p>
+                        <p class="text-lg font-bold text-gray-900" id="stat-highest-day">--</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-gray-500 mb-1">Average</p>
+                        <p class="text-lg font-bold text-gray-900" id="stat-avg-revenue">--</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-gray-500 mb-1">Period Total</p>
+                        <p class="text-lg font-bold text-gray-900" id="stat-period-total">--</p>
+                    </div>
                 </div>
             </div>
 

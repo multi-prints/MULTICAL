@@ -45,18 +45,21 @@ class LoginPage {
    */
   togglePasswordVisibility(e) {
     e.preventDefault();
-    
+
     const eyeOpen = document.querySelector('.eye-open');
     const eyeClosed = document.querySelector('.eye-closed');
-    
+    const toggleBtn = document.getElementById('togglePassword');
+
     if (this.passwordInput.type === 'password') {
       this.passwordInput.type = 'text';
       eyeOpen.style.display = 'none';
       eyeClosed.style.display = 'block';
+      toggleBtn.classList.add('active');
     } else {
       this.passwordInput.type = 'password';
       eyeOpen.style.display = 'block';
       eyeClosed.style.display = 'none';
+      toggleBtn.classList.remove('active');
     }
   }
 

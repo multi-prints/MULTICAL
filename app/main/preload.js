@@ -47,6 +47,12 @@ contextBridge.exposeInMainWorld('app', {
   }
 });
 
+// Auth API alias for easier access
+contextBridge.exposeInMainWorld('auth', {
+  updatePassword: (username, oldPassword, newPassword) => ipcRenderer.invoke('auth:updatePassword', username, oldPassword, newPassword),
+  updateUsername: (oldUsername, newUsername) => ipcRenderer.invoke('auth:updateUsername', oldUsername, newUsername),
+});
+
 // Database API exposed to renderer
 contextBridge.exposeInMainWorld('db', {
   // ==================== Products ====================

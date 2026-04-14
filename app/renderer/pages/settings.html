@@ -3,7 +3,7 @@
     <div class="flex items-center justify-between mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">Settings</h1>
-            <p class="text-sm text-gray-500 mt-1">Manage your application preferences and business information</p>
+            <p class="text-sm text-gray-500 mt-1">Manage your application preferences and account</p>
         </div>
     </div>
 
@@ -11,20 +11,12 @@
     <div class="mb-6">
         <div class="border-b border-gray-200">
             <nav class="flex gap-8">
-                <button id="tab-general"
+                <button id="tab-account"
                     class="settings-tab active pb-4 px-2 text-sm font-medium border-b-2 border-black text-gray-900 transition-colors">
-                    General
-                </button>
-                <button id="tab-business"
-                    class="settings-tab pb-4 px-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors">
-                    Business Info
-                </button>
-                <button id="tab-pricing"
-                    class="settings-tab pb-4 px-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors">
-                    Pricing
+                    Account
                 </button>
                 <button id="tab-backup"
-                    class="settings-tab pb-4 px-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors">
+                    class="settings-tab pb-4 px-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors admin-only-tab">
                     Backup & Data
                 </button>
                 <button id="tab-about"
@@ -35,140 +27,92 @@
         </div>
     </div>
 
-    <!-- General Settings Panel -->
-    <div id="panel-general" class="settings-panel">
+    <!-- Account Panel -->
+    <div id="panel-account" class="settings-panel">
         <div class="dashboard-panel p-6 mb-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Currency Settings</h3>
-            <div class="grid grid-cols-2 gap-4">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Change Username</h3>
+            <form id="change-username-form" class="space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Currency</label>
-                    <div id="currency-dropdown"></div>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Currency Symbol</label>
-                    <input type="text" id="currency-symbol" value="KSh" class="w-full" readonly>
-                </div>
-            </div>
-        </div>
-
-        <div class="dashboard-panel p-6 mb-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Date & Time</h3>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Date Format</label>
-                    <div id="date-format-dropdown"></div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Current Username</label>
+                    <input type="text" id="current-username" class="w-full bg-gray-50" readonly>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Time Format</label>
-                    <div id="time-format-dropdown"></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="dashboard-panel p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Display Options</h3>
-            <div class="space-y-4">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-900">Show Decimals in Currency</p>
-                        <p class="text-xs text-gray-500">Display amounts with 2 decimal places</p>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" id="show-decimals" class="sr-only peer" checked>
-                        <div
-                            class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-black">
-                        </div>
-                    </label>
-                </div>
-                <div class="flex items-center justify-between">
-                    <div>
-                        <p class="text-sm font-medium text-gray-900">Show Low Stock Alerts</p>
-                        <p class="text-xs text-gray-500">Get notified when stock is running low</p>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" id="low-stock-alerts" class="sr-only peer" checked>
-                        <div
-                            class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-black">
-                        </div>
-                    </label>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Business Info Panel -->
-    <div id="panel-business" class="settings-panel hidden">
-        <div class="dashboard-panel p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Business Information</h3>
-            <form id="business-info-form" class="space-y-4">
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Business Name *</label>
-                        <input type="text" id="business-name" class="w-full" placeholder="Your Business Name" required>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-                        <input type="tel" id="business-phone" class="w-full" placeholder="+254 700 000 000">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-                        <input type="email" id="business-email" class="w-full" placeholder="info@business.com">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Tax PIN</label>
-                        <input type="text" id="business-pin" class="w-full" placeholder="A000000000X">
-                    </div>
-                    <div class="col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Physical Address</label>
-                        <textarea id="business-address" rows="2" class="w-full"
-                            placeholder="Street address, City, Postal Code"></textarea>
-                    </div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">New Username</label>
+                    <input type="text" id="new-username" class="w-full" placeholder="Enter new username" required>
                 </div>
                 <div class="flex justify-end pt-4 border-t border-gray-100">
-                    <button type="submit" class="btn-primary px-6 py-2 rounded-lg shadow-sm">Save Changes</button>
+                    <button type="submit" class="btn-primary px-6 py-2 rounded-lg shadow-sm">Update Username</button>
                 </div>
             </form>
         </div>
-    </div>
-
-    <!-- Pricing Panel -->
-    <div id="panel-pricing" class="settings-panel hidden">
-        <div class="dashboard-panel p-6 mb-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Default Pricing</h3>
-            <p class="text-sm text-gray-500 mb-4">Set default prices for common services and products</p>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Sticker Price per Metre (KSh)</label>
-                    <input type="number" id="default-sticker-price" class="w-full" placeholder="10" step="0.01" min="0">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Printing Price per SQM (KSh)</label>
-                    <input type="number" id="default-printing-price" class="w-full" placeholder="100" step="0.01"
-                        min="0">
-                </div>
-            </div>
-        </div>
 
         <div class="dashboard-panel p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Profit Margins</h3>
-            <p class="text-sm text-gray-500 mb-4">Configure default markup percentages for products</p>
-            <div class="grid grid-cols-2 gap-4">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Change Password</h3>
+            <form id="change-password-form" class="space-y-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Life Saver Markup (%)</label>
-                    <input type="number" id="life-saver-markup" class="w-full" placeholder="30" min="0" max="100">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
+                    <div class="password-input-wrapper">
+                        <input type="password" id="current-password" class="w-full" placeholder="Enter current password" required>
+                        <button type="button" class="password-toggle" data-target="current-password">
+                            <svg class="eye-open" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z">
+                                </path>
+                            </svg>
+                            <svg class="eye-closed" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21">
+                                </path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Chevron Markup (%)</label>
-                    <input type="number" id="chevron-markup" class="w-full" placeholder="30" min="0" max="100">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                    <div class="password-input-wrapper">
+                        <input type="password" id="new-password" class="w-full" placeholder="Enter new password" required>
+                        <button type="button" class="password-toggle" data-target="new-password">
+                            <svg class="eye-open" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z">
+                                </path>
+                            </svg>
+                            <svg class="eye-closed" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21">
+                                </path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Stripes Markup (%)</label>
-                    <input type="number" id="stripes-markup" class="w-full" placeholder="30" min="0" max="100">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Confirm New Password</label>
+                    <div class="password-input-wrapper">
+                        <input type="password" id="confirm-password" class="w-full" placeholder="Confirm new password" required>
+                        <button type="button" class="password-toggle" data-target="confirm-password">
+                            <svg class="eye-open" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z">
+                                </path>
+                            </svg>
+                            <svg class="eye-closed" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21">
+                                </path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
-            </div>
-            <div class="flex justify-end pt-4 border-t border-gray-100 mt-4">
-                <button id="save-pricing" class="btn-primary px-6 py-2 rounded-lg shadow-sm">Save Pricing</button>
-            </div>
+                <div class="flex justify-end pt-4 border-t border-gray-100">
+                    <button type="submit" class="btn-primary px-6 py-2 rounded-lg shadow-sm">Update Password</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -235,8 +179,8 @@
                 <div class="w-20 h-20 bg-black rounded-2xl flex items-center justify-center mx-auto mb-4">
                     <span class="text-3xl font-bold text-white">M</span>
                 </div>
-                <h3 class="text-2xl font-bold text-gray-900 mb-2">MULTICAL</h3>
-                <p class="text-sm text-gray-500 mb-6">Business Management System</p>
+                <h3 class="text-2xl font-bold text-gray-900 mb-2">Multiprints</h3>
+                <p class="text-sm text-gray-500 mb-6">Inventory & Sales Management System</p>
                 <div class="inline-flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-full">
                     <span class="text-sm font-medium text-gray-700">Version</span>
                     <span class="text-sm font-bold text-gray-900" id="app-version">1.0.0</span>
@@ -263,24 +207,20 @@
         </div>
 
         <div class="dashboard-panel p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">Support</h3>
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">Developer</h3>
             <div class="space-y-3">
-                <a href="#"
-                    class="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                    <span class="text-sm font-medium text-gray-900">Documentation</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                    </svg>
-                </a>
-                <a href="#"
-                    class="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                    <span class="text-sm font-medium text-gray-900">Report Issue</span>
-                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                    </svg>
-                </a>
+                <div class="flex justify-between py-2 border-b border-gray-100">
+                    <span class="text-sm text-gray-600">Author</span>
+                    <span class="text-sm font-medium text-gray-900">Godwin Mayodi</span>
+                </div>
+                <div class="flex justify-between py-2 border-b border-gray-100">
+                    <span class="text-sm text-gray-600">Email</span>
+                    <span class="text-sm font-medium text-gray-900">codegoddy@gmail.com</span>
+                </div>
+                <div class="flex justify-between py-2 border-b border-gray-100">
+                    <span class="text-sm text-gray-600">Repository</span>
+                    <a href="https://github.com/codegoddy/MULTICAL" target="_blank" class="text-sm font-medium text-blue-600 hover:underline">github.com/codegoddy/MULTICAL</a>
+                </div>
             </div>
         </div>
     </div>

@@ -1,13 +1,17 @@
 const DashboardPage = {
   chart: null,
+  currentChartPeriod: 'week',
 
   init() {
     // Initialize welcome message first
     this.updateWelcomeMessage();
-    
+
+    // Bind chart filter events
+    this.bindChartEvents();
+
     // Initialize chart
     this.initChart();
-    
+
     // Subscribe to store updates
     Store.subscribe('products', () => {
         this.updateStats();
@@ -19,6 +23,10 @@ const DashboardPage = {
         this.renderRecentSales();
         this.renderActivityFeed();
         this.renderTopProducts();
+    });
+    Store.subscribe('serviceTransactions', () => {
+        this.updateStats();
+        this.updateChart();
     });
     Store.subscribe('debts', () => {
         this.updateStats();
@@ -77,6 +85,8 @@ const DashboardPage = {
     const salesEl = document.getElementById('stat-sales');
     const productsEl = document.getElementById('stat-products');
     const debtsEl = document.getElementById('stat-debts');
+    const todayRevenueEl = document.getElementById('stat-today-revenue');
+    const debtsCountEl = document.getElementById('stat-debts-count');
 
     // Check if elements exist - if not, retry later
     if (!revenueEl || !salesEl || !productsEl || !debtsEl) {
@@ -84,15 +94,216 @@ const DashboardPage = {
       return;
     }
 
-    const revenue = Store.getTotalRevenue?.() || 0;
+    // Calculate total revenue from both sales and service transactions
+    const salesRevenue = Store.sales?.reduce((sum, s) => sum + s.amount, 0) || 0;
+    const serviceRevenue = Store.serviceTransactions?.reduce((sum, t) => sum + t.amount, 0) || 0;
+    const totalRevenue = salesRevenue + serviceRevenue;
+
+    // Today's sales and revenue
+    const today = new Date().toDateString();
+    const todaySales = Store.sales?.filter(s => new Date(s.timestamp).toDateString() === today) || [];
+    const todayServiceTransactions = Store.serviceTransactions?.filter(t => new Date(t.timestamp).toDateString() === today) || [];
+    const todaySalesCount = todaySales.length + todayServiceTransactions.filter(t => t.stock_metres_used > 0).length;
+    const todayRevenue = todaySales.reduce((sum, s) => sum + s.amount, 0) +
+                         todayServiceTransactions.reduce((sum, t) => sum + t.amount, 0);
+
     const salesCount = Store.sales?.length || 0;
     const productsCount = Store.products?.length || 0;
     const outstanding = Store.getTotalOutstanding?.() || 0;
+    const pendingDebts = Store.debts?.filter(d => d.status === 'pending').length || 0;
 
-    revenueEl.textContent = `KSh ${revenue.toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-    salesEl.textContent = salesCount;
+    revenueEl.textContent = `KSh ${totalRevenue.toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    salesEl.textContent = todaySalesCount;
     productsEl.textContent = productsCount;
     debtsEl.textContent = `KSh ${outstanding.toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+    if (todayRevenueEl) {
+      todayRevenueEl.innerHTML = `<span>Today: KSh ${todayRevenue.toLocaleString()}</span>`;
+    }
+
+    if (debtsCountEl) {
+      debtsCountEl.innerHTML = `<span>${pendingDebts} pending</span>`;
+    }
+  },
+
+  bindChartEvents() {
+    const btnWeek = document.getElementById('btn-chart-week');
+    const btnMonth = document.getElementById('btn-chart-month');
+    const btnYear = document.getElementById('btn-chart-year');
+
+    const setActiveBtn = (activeBtn) => {
+      [btnWeek, btnMonth, btnYear].forEach(btn => {
+        if (btn) {
+          btn.classList.remove('bg-black', 'text-white', 'shadow-sm');
+          btn.classList.add('text-gray-600');
+        }
+      });
+      if (activeBtn) {
+        activeBtn.classList.add('bg-black', 'text-white', 'shadow-sm');
+        activeBtn.classList.remove('text-gray-600');
+      }
+    };
+
+    if (btnWeek) {
+      btnWeek.addEventListener('click', () => {
+        this.currentChartPeriod = 'week';
+        setActiveBtn(btnWeek);
+        this.initChart();
+      });
+    }
+
+    if (btnMonth) {
+      btnMonth.addEventListener('click', () => {
+        this.currentChartPeriod = 'month';
+        setActiveBtn(btnMonth);
+        this.initChart();
+      });
+    }
+
+    if (btnYear) {
+      btnYear.addEventListener('click', () => {
+        this.currentChartPeriod = 'year';
+        setActiveBtn(btnYear);
+        this.initChart();
+      });
+    }
+  },
+
+  /**
+   * Get revenue data for the selected period
+   */
+  getRevenueData() {
+    const period = this.currentChartPeriod;
+    const now = new Date();
+    let labels = [];
+    let data = [];
+
+    if (period === 'week') {
+      // Last 7 days
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        labels.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
+
+        // Calculate revenue for this day
+        const dayStart = new Date(date);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(date);
+        dayEnd.setHours(23, 59, 59, 999);
+
+        const salesRevenue = Store.sales
+          .filter(s => {
+            const saleDate = new Date(s.timestamp);
+            return saleDate >= dayStart && saleDate <= dayEnd;
+          })
+          .reduce((sum, s) => sum + s.amount, 0);
+
+        const serviceRevenue = Store.serviceTransactions
+          .filter(t => {
+            const tDate = new Date(t.timestamp);
+            return tDate >= dayStart && tDate <= dayEnd;
+          })
+          .reduce((sum, t) => sum + t.amount, 0);
+
+        data.push(salesRevenue + serviceRevenue);
+      }
+    } else if (period === 'month') {
+      // Last 30 days, grouped by week
+      const weekLabels = ['This Week', 'Last Week', '2 Weeks Ago', '3 Weeks Ago'];
+      labels = weekLabels;
+
+      for (let w = 0; w < 4; w++) {
+        const weekStart = new Date(now);
+        weekStart.setDate(weekStart.getDate() - (w * 7) - 6);
+        weekStart.setHours(0, 0, 0, 0);
+        const weekEnd = new Date(now);
+        weekEnd.setDate(weekEnd.getDate() - (w * 7));
+        weekEnd.setHours(23, 59, 59, 999);
+
+        const salesRevenue = Store.sales
+          .filter(s => {
+            const saleDate = new Date(s.timestamp);
+            return saleDate >= weekStart && saleDate <= weekEnd;
+          })
+          .reduce((sum, s) => sum + s.amount, 0);
+
+        const serviceRevenue = Store.serviceTransactions
+          .filter(t => {
+            const tDate = new Date(t.timestamp);
+            return tDate >= weekStart && tDate <= weekEnd;
+          })
+          .reduce((sum, t) => sum + t.amount, 0);
+
+        data.push(salesRevenue + serviceRevenue);
+      }
+    } else if (period === 'year') {
+      // Last 12 months
+      for (let i = 11; i >= 0; i--) {
+        const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        labels.push(monthDate.toLocaleDateString('en-US', { month: 'short' }));
+
+        const monthStart = new Date(monthDate);
+        const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        const salesRevenue = Store.sales
+          .filter(s => {
+            const saleDate = new Date(s.timestamp);
+            return saleDate >= monthStart && saleDate <= monthEnd;
+          })
+          .reduce((sum, s) => sum + s.amount, 0);
+
+        const serviceRevenue = Store.serviceTransactions
+          .filter(t => {
+            const tDate = new Date(t.timestamp);
+            return tDate >= monthStart && tDate <= monthEnd;
+          })
+          .reduce((sum, t) => sum + t.amount, 0);
+
+        data.push(salesRevenue + serviceRevenue);
+      }
+    }
+
+    return { labels, data };
+  },
+
+  /**
+   * Update chart summary statistics
+   */
+  updateChartStats() {
+    const { labels, data } = this.getRevenueData();
+
+    // Find highest day/period
+    const maxIndex = data.indexOf(Math.max(...data));
+    const highestValue = data[maxIndex];
+    const highestLabel = labels[maxIndex];
+
+    // Calculate average
+    const total = data.reduce((sum, val) => sum + val, 0);
+    const avg = data.length > 0 ? total / data.length : 0;
+
+    // Update DOM
+    const highestEl = document.getElementById('stat-highest-day');
+    const avgEl = document.getElementById('stat-avg-revenue');
+    const totalEl = document.getElementById('stat-period-total');
+    const periodLabel = document.getElementById('chart-period-label');
+
+    if (highestEl) {
+      highestEl.textContent = highestValue > 0 ? `KSh ${highestValue.toLocaleString()}` : 'KSh 0';
+    }
+    if (avgEl) {
+      avgEl.textContent = `KSh ${Math.round(avg).toLocaleString()}`;
+    }
+    if (totalEl) {
+      totalEl.textContent = `KSh ${total.toLocaleString()}`;
+    }
+    if (periodLabel) {
+      const periodTexts = {
+        'week': 'Last 7 days revenue breakdown',
+        'month': 'Last 4 weeks revenue breakdown',
+        'year': 'Last 12 months revenue breakdown'
+      };
+      periodLabel.textContent = periodTexts[this.currentChartPeriod];
+    }
   },
 
   initChart() {
@@ -104,40 +315,24 @@ const DashboardPage = {
         this.chart.destroy();
     }
 
-    // Get last 7 days labels
-    const labels = Array.from({length: 7}, (_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - (6 - i));
-        return d.toLocaleDateString('en-US', { weekday: 'short' });
-    });
+    // Get actual revenue data
+    const { labels, data } = this.getRevenueData();
 
-    // Mock data for the chart (replace with actual logic if needed)
-    // For now, we'll generate some realistic looking data based on sales
-    const dataPoints = labels.map(() => Math.floor(Math.random() * 5000) + 1000);
+    // Update summary stats
+    this.updateChartStats();
 
     this.chart = new Chart(ctx, {
-      type: 'line',
+      type: 'bar',
       data: {
         labels: labels,
         datasets: [{
           label: 'Revenue',
-          data: dataPoints,
-          borderColor: '#000000', // Black line
-          backgroundColor: (context) => {
-            const ctx = context.chart.ctx;
-            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-            gradient.addColorStop(0, 'rgba(0, 0, 0, 0.1)'); // Faint black
-            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-            return gradient;
-          },
-          borderWidth: 2,
-          pointBackgroundColor: '#ffffff',
-          pointBorderColor: '#000000',
-          pointBorderWidth: 2,
-          pointRadius: 4,
-          pointHoverRadius: 6,
-          fill: true,
-          tension: 0.4
+          data: data,
+          backgroundColor: '#000000',
+          borderRadius: 6,
+          borderSkipped: false,
+          barThickness: this.currentChartPeriod === 'week' ? 24 : 32,
+          maxBarThickness: 40
         }]
       },
       options: {
@@ -151,9 +346,17 @@ const DashboardPage = {
             backgroundColor: '#000000',
             titleColor: '#ffffff',
             bodyColor: '#ffffff',
-            padding: 10,
+            padding: 12,
             cornerRadius: 8,
             displayColors: false,
+            titleFont: {
+              size: 12,
+              weight: '600'
+            },
+            bodyFont: {
+              size: 14,
+              weight: 'bold'
+            },
             callbacks: {
                 label: function(context) {
                     return `KSh ${context.parsed.y.toLocaleString()}`;
@@ -175,7 +378,9 @@ const DashboardPage = {
                     size: 11
                 },
                 callback: function(value) {
-                    return 'KSh ' + (value / 1000) + 'k';
+                    if (value >= 1000000) return 'KSh ' + (value / 1000000).toFixed(1) + 'M';
+                    if (value >= 1000) return 'KSh ' + (value / 1000) + 'k';
+                    return 'KSh ' + value;
                 }
             }
           },
@@ -197,20 +402,33 @@ const DashboardPage = {
   },
   
   updateChart() {
-      // In a real app, we would recalculate data based on new sales
-      // For now, doing nothing or we could re-render
-      if (this.chart) {
-          this.chart.update();
-      }
+      // Reinitialize chart with updated data
+      this.initChart();
   },
 
   renderRecentSales() {
     const tbody = document.getElementById('dashboard-recent-sales-table');
     if (!tbody) return;
 
-    const recentSales = [...Store.sales].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 5);
+    // Combine sales and service transactions
+    const salesTransactions = Store.sales.map(s => ({
+      ...s,
+      transactionType: 'sale'
+    }));
 
-    if (recentSales.length === 0) {
+    const serviceTransactions = Store.serviceTransactions
+      .filter(t => t.stock_metres_used > 0) // Only printing jobs
+      .map(t => ({
+        ...t,
+        transactionType: 'printing',
+        product_name: t.service_name
+      }));
+
+    const allTransactions = [...salesTransactions, ...serviceTransactions]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 5);
+
+    if (allTransactions.length === 0) {
       tbody.innerHTML = `
         <tr>
           <td colspan="4" class="px-6 py-8 text-center text-gray-400 italic">
@@ -221,17 +439,22 @@ const DashboardPage = {
       return;
     }
 
-    tbody.innerHTML = recentSales.map(sale => {
-        const product = Store.products.find(p => p.id === sale.product_id);
-        const productName = sale.product_name || (product ? product.name : 'Unknown Product');
-        const date = new Date(sale.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' });
-        
+    tbody.innerHTML = allTransactions.map(transaction => {
+        const productName = transaction.product_name || 'Unknown';
+        const date = new Date(transaction.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' });
+        const typeLabel = transaction.transactionType === 'printing' ? 'Printing' : 'Sale';
+        const statusClass = transaction.is_debt === 1 ? 'status-badge--warning' : 'status-badge--success';
+        const statusLabel = transaction.is_debt === 1 ? 'Debt' : 'Completed';
+
         return `
         <tr class="hover:bg-gray-50 transition-colors">
-            <td class="font-medium text-gray-900">${productName}</td>
+            <td class="font-medium text-gray-900">
+              ${productName}
+              <span class="text-xs text-gray-400 ml-1">(${typeLabel})</span>
+            </td>
             <td class="text-gray-500">${date}</td>
-            <td class="font-medium text-gray-900">KSh ${sale.amount.toLocaleString()}</td>
-            <td><span class="status-badge status-badge--success">Completed</span></td>
+            <td class="font-medium text-gray-900">KSh ${transaction.amount.toLocaleString()}</td>
+            <td><span class="status-badge ${statusClass}">${statusLabel}</span></td>
         </tr>
       `;
     }).join('');

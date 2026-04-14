@@ -29,7 +29,7 @@ module.exports = {
 
   // Development options
   development: {
-    openDevTools: true,
+    openDevTools: false,
     devToolsPosition: 'right'
   }
 };

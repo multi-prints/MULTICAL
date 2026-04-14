@@ -3,77 +3,40 @@
  */
 
 const SettingsPage = {
-  currentTab: 'general',
-  dropdowns: {},
+  currentTab: 'account',
   settings: {
     currency: 'KES',
-    currencySymbol: 'KSh',
-    dateFormat: 'DD/MM/YYYY',
-    timeFormat: '12h',
-    showDecimals: true,
-    lowStockAlerts: true,
-    businessName: '',
-    businessPhone: '',
-    businessEmail: '',
-    businessPIN: '',
-    businessAddress: '',
-    defaultStickerPrice: 10,
-    defaultPrintingPrice: 100,
-    lifeSaverMarkup: 30,
-    chevronMarkup: 30,
-    stripesMarkup: 30
+    currencySymbol: 'KSh'
   },
 
   init() {
     this.loadSettings();
-    this.initializeDropdowns();
+    this.loadCurrentUser();
     this.bindEvents();
     this.loadAppVersion();
     this.loadPlatformInfo();
+    this.hideAdminTabsForEmployee();
   },
 
-  initializeDropdowns() {
-    // Currency dropdown
-    this.dropdowns.currency = new Dropdown('currency-dropdown', {
-      items: [
-        { value: 'KES', label: 'Kenyan Shilling (KSh)' },
-        { value: 'USD', label: 'US Dollar ($)' },
-        { value: 'EUR', label: 'Euro (€)' },
-        { value: 'GBP', label: 'British Pound (£)' }
-      ],
-      selected: this.settings.currency,
-      placeholder: 'Select Currency',
-      onChange: (value) => this.updateCurrency(value)
-    });
-
-    // Date format dropdown
-    this.dropdowns.dateFormat = new Dropdown('date-format-dropdown', {
-      items: [
-        { value: 'MM/DD/YYYY', label: 'MM/DD/YYYY' },
-        { value: 'DD/MM/YYYY', label: 'DD/MM/YYYY' },
-        { value: 'YYYY-MM-DD', label: 'YYYY-MM-DD' }
-      ],
-      selected: this.settings.dateFormat,
-      placeholder: 'Select Date Format',
-      onChange: (value) => {
-        this.settings.dateFormat = value;
-        this.saveSettings();
+  loadCurrentUser() {
+    try {
+      const currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
+      const currentUsernameEl = document.getElementById('current-username');
+      if (currentUsernameEl && currentUser.username) {
+        currentUsernameEl.value = currentUser.username;
       }
-    });
+    } catch (error) {
+      console.error('Error loading current user:', error);
+    }
+  },
 
-    // Time format dropdown
-    this.dropdowns.timeFormat = new Dropdown('time-format-dropdown', {
-      items: [
-        { value: '12h', label: '12 Hour (AM/PM)' },
-        { value: '24h', label: '24 Hour' }
-      ],
-      selected: this.settings.timeFormat,
-      placeholder: 'Select Time Format',
-      onChange: (value) => {
-        this.settings.timeFormat = value;
-        this.saveSettings();
-      }
-    });
+  hideAdminTabsForEmployee() {
+    const role = window.Permissions ? Permissions.getCurrentRole() : 'user';
+    if (role === 'employee') {
+      // Hide Backup & Data tab for employees
+      const backupTab = document.getElementById('tab-backup');
+      if (backupTab) backupTab.style.display = 'none';
+    }
   },
 
   bindEvents() {
@@ -86,29 +49,30 @@ const SettingsPage = {
       });
     });
 
-    // Display options toggles
-    document.getElementById('show-decimals')?.addEventListener('change', (e) => {
-      this.settings.showDecimals = e.target.checked;
-      this.saveSettings();
-    });
-
-    document.getElementById('low-stock-alerts')?.addEventListener('change', (e) => {
-      this.settings.lowStockAlerts = e.target.checked;
-      this.saveSettings();
-    });
-
-    // Business info form
-    const businessForm = document.getElementById('business-info-form');
-    if (businessForm) {
-      businessForm.addEventListener('submit', (e) => {
+    // Change username form
+    const usernameForm = document.getElementById('change-username-form');
+    if (usernameForm) {
+      usernameForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        this.saveBusinessInfo();
+        this.changeUsername();
       });
     }
 
-    // Pricing save
-    document.getElementById('save-pricing')?.addEventListener('click', () => {
-      this.savePricing();
+    // Change password form
+    const passwordForm = document.getElementById('change-password-form');
+    if (passwordForm) {
+      passwordForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.changePassword();
+      });
+    }
+
+    // Password visibility toggles
+    document.querySelectorAll('.password-toggle').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.togglePasswordVisibility(btn);
+      });
     });
 
     // Backup & Data actions
@@ -123,6 +87,25 @@ const SettingsPage = {
     document.getElementById('btn-clear-data')?.addEventListener('click', () => {
       this.clearAllData();
     });
+  },
+
+  togglePasswordVisibility(btn) {
+    const targetId = btn.getAttribute('data-target');
+    const input = document.getElementById(targetId);
+    const eyeOpen = btn.querySelector('.eye-open');
+    const eyeClosed = btn.querySelector('.eye-closed');
+
+    if (input.type === 'password') {
+      input.type = 'text';
+      eyeOpen.style.display = 'none';
+      eyeClosed.style.display = 'block';
+      btn.classList.add('active');
+    } else {
+      input.type = 'password';
+      eyeOpen.style.display = 'block';
+      eyeClosed.style.display = 'none';
+      btn.classList.remove('active');
+    }
   },
 
   switchTab(tabId) {
@@ -151,91 +134,15 @@ const SettingsPage = {
     this.currentTab = tabId;
   },
 
-  updateCurrency(currencyCode) {
-    const currencyMap = {
-      'KES': 'KSh',
-      'USD': '$',
-      'EUR': '€',
-      'GBP': '£'
-    };
-
-    this.settings.currency = currencyCode;
-    this.settings.currencySymbol = currencyMap[currencyCode] || 'KSh';
-
-    const symbolInput = document.getElementById('currency-symbol');
-    if (symbolInput) {
-      symbolInput.value = this.settings.currencySymbol;
-    }
-
-    this.saveSettings();
-  },
-
   loadSettings() {
     try {
       const saved = localStorage.getItem('app_settings');
       if (saved) {
         this.settings = { ...this.settings, ...JSON.parse(saved) };
       }
-      this.applySettings();
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
-  },
-
-  applySettings() {
-    // Update dropdowns with saved values
-    if (this.dropdowns.currency) {
-      this.dropdowns.currency.setValue(this.settings.currency);
-    }
-    if (this.dropdowns.dateFormat) {
-      this.dropdowns.dateFormat.setValue(this.settings.dateFormat);
-    }
-    if (this.dropdowns.timeFormat) {
-      this.dropdowns.timeFormat.setValue(this.settings.timeFormat);
-    }
-
-    // Currency symbol
-    const currencySymbol = document.getElementById('currency-symbol');
-    if (currencySymbol) currencySymbol.value = this.settings.currencySymbol;
-
-    // Display options
-    const showDecimals = document.getElementById('show-decimals');
-    if (showDecimals) showDecimals.checked = this.settings.showDecimals;
-    
-    const lowStockAlerts = document.getElementById('low-stock-alerts');
-    if (lowStockAlerts) lowStockAlerts.checked = this.settings.lowStockAlerts;
-
-    // Business info
-    const businessName = document.getElementById('business-name');
-    if (businessName) businessName.value = this.settings.businessName || '';
-    
-    const businessPhone = document.getElementById('business-phone');
-    if (businessPhone) businessPhone.value = this.settings.businessPhone || '';
-    
-    const businessEmail = document.getElementById('business-email');
-    if (businessEmail) businessEmail.value = this.settings.businessEmail || '';
-    
-    const businessPIN = document.getElementById('business-pin');
-    if (businessPIN) businessPIN.value = this.settings.businessPIN || '';
-    
-    const businessAddress = document.getElementById('business-address');
-    if (businessAddress) businessAddress.value = this.settings.businessAddress || '';
-
-    // Pricing
-    const stickerPrice = document.getElementById('default-sticker-price');
-    if (stickerPrice) stickerPrice.value = this.settings.defaultStickerPrice || 10;
-    
-    const printingPrice = document.getElementById('default-printing-price');
-    if (printingPrice) printingPrice.value = this.settings.defaultPrintingPrice || 100;
-    
-    const lifeSaverMarkup = document.getElementById('life-saver-markup');
-    if (lifeSaverMarkup) lifeSaverMarkup.value = this.settings.lifeSaverMarkup || 30;
-    
-    const chevronMarkup = document.getElementById('chevron-markup');
-    if (chevronMarkup) chevronMarkup.value = this.settings.chevronMarkup || 30;
-    
-    const stripesMarkup = document.getElementById('stripes-markup');
-    if (stripesMarkup) stripesMarkup.value = this.settings.stripesMarkup || 30;
   },
 
   saveSettings() {
@@ -248,24 +155,86 @@ const SettingsPage = {
     }
   },
 
-  saveBusinessInfo() {
-    this.settings.businessName = document.getElementById('business-name')?.value || '';
-    this.settings.businessPhone = document.getElementById('business-phone')?.value || '';
-    this.settings.businessEmail = document.getElementById('business-email')?.value || '';
-    this.settings.businessPIN = document.getElementById('business-pin')?.value || '';
-    this.settings.businessAddress = document.getElementById('business-address')?.value || '';
+  async changeUsername() {
+    const currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
+    const oldUsername = currentUser.username;
+    const newUsername = document.getElementById('new-username')?.value?.trim();
 
-    this.saveSettings();
+    if (!newUsername) {
+      Toast.error('Invalid Username', 'Please enter a new username');
+      return;
+    }
+
+    if (newUsername === oldUsername) {
+      Toast.error('Same Username', 'New username must be different from current username');
+      return;
+    }
+
+    if (newUsername.length < 3) {
+      Toast.error('Too Short', 'Username must be at least 3 characters');
+      return;
+    }
+
+    try {
+      const result = await window.auth.updateUsername(oldUsername, newUsername);
+      
+      if (result.success) {
+        // Update localStorage
+        currentUser.username = newUsername;
+        localStorage.setItem('currentUser', JSON.stringify(currentUser));
+        
+        // Update display
+        document.getElementById('current-username').value = newUsername;
+        document.getElementById('new-username').value = '';
+        
+        Toast.success('Username Changed', `Your username is now ${newUsername}`);
+      } else {
+        Toast.error('Failed', result.error || 'Could not change username');
+      }
+    } catch (error) {
+      console.error('Error changing username:', error);
+      Toast.error('Error', 'Failed to change username');
+    }
   },
 
-  savePricing() {
-    this.settings.defaultStickerPrice = parseFloat(document.getElementById('default-sticker-price')?.value) || 10;
-    this.settings.defaultPrintingPrice = parseFloat(document.getElementById('default-printing-price')?.value) || 100;
-    this.settings.lifeSaverMarkup = parseFloat(document.getElementById('life-saver-markup')?.value) || 30;
-    this.settings.chevronMarkup = parseFloat(document.getElementById('chevron-markup')?.value) || 30;
-    this.settings.stripesMarkup = parseFloat(document.getElementById('stripes-markup')?.value) || 30;
+  async changePassword() {
+    const currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}');
+    const currentPassword = document.getElementById('current-password')?.value;
+    const newPassword = document.getElementById('new-password')?.value;
+    const confirmPassword = document.getElementById('confirm-password')?.value;
 
-    this.saveSettings();
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      Toast.error('Missing Fields', 'Please fill in all password fields');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      Toast.error('Password Mismatch', 'New passwords do not match');
+      return;
+    }
+
+    if (newPassword.length < 4) {
+      Toast.error('Too Short', 'Password must be at least 4 characters');
+      return;
+    }
+
+    try {
+      const result = await window.auth.updatePassword(currentUser.username, currentPassword, newPassword);
+      
+      if (result.success) {
+        // Clear form
+        document.getElementById('current-password').value = '';
+        document.getElementById('new-password').value = '';
+        document.getElementById('confirm-password').value = '';
+        
+        Toast.success('Password Changed', 'Your password has been updated');
+      } else {
+        Toast.error('Failed', result.error || 'Current password is incorrect');
+      }
+    } catch (error) {
+      console.error('Error changing password:', error);
+      Toast.error('Error', 'Failed to change password');
+    }
   },
 
   async loadAppVersion() {
@@ -317,7 +286,7 @@ const SettingsPage = {
       const url = URL.createObjectURL(dataBlob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `multical-backup-${new Date().toISOString().split('T')[0]}.json`;
+      link.download = `multiprints-backup-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -392,7 +361,6 @@ const SettingsPage = {
       if (data.settings) {
         this.settings = { ...this.settings, ...data.settings };
         localStorage.setItem('app_settings', JSON.stringify(this.settings));
-        this.applySettings();
       }
 
       Toast.success('Import Complete', 'Database restored successfully');

@@ -16,10 +16,12 @@ const SalesPage = {
   pickerSelectedDate: null,
   currentPage: 1,
   itemsPerPage: 10,
+  selectedSales: new Set(), // Track selected sale IDs
 
   init() {
     this.initCustomDropdowns();
     this.bindEvents();
+    this.bindSelectionEvents();
     this.render();
     this.updateStats();
 
@@ -320,6 +322,86 @@ const SalesPage = {
         closeModal();
       });
     }
+  },
+
+  // ==================== Selection Events ====================
+
+  bindSelectionEvents() {
+    // Select all checkbox
+    const selectAllCheckbox = document.getElementById('select-all-sales');
+    if (selectAllCheckbox) {
+      selectAllCheckbox.addEventListener('change', (e) => {
+        this.toggleSelectAll(e.target.checked);
+      });
+    }
+
+    // Print selected button
+    const printSelectedBtn = document.getElementById('btn-print-selected-sales');
+    if (printSelectedBtn) {
+      printSelectedBtn.addEventListener('click', () => {
+        this.printSelected();
+      });
+    }
+  },
+
+  toggleSelectAll(checked) {
+    const allSales = Store.sales;
+    if (checked) {
+      allSales.forEach(sale => this.selectedSales.add(sale.id));
+    } else {
+      this.selectedSales.clear();
+    }
+    this.render();
+    this.updateSelectionUI();
+  },
+
+  toggleSaleSelection(saleId) {
+    if (this.selectedSales.has(saleId)) {
+      this.selectedSales.delete(saleId);
+    } else {
+      this.selectedSales.add(saleId);
+    }
+    this.updateSelectionUI();
+    this.updateSelectAllCheckbox();
+  },
+
+  updateSelectionUI() {
+    const printSelectedBtn = document.getElementById('btn-print-selected-sales');
+    const selectedCountEl = document.getElementById('selected-count');
+    const count = this.selectedSales.size;
+
+    if (printSelectedBtn) {
+      if (count > 0) {
+        printSelectedBtn.classList.remove('hidden');
+        printSelectedBtn.classList.add('flex');
+      } else {
+        printSelectedBtn.classList.add('hidden');
+        printSelectedBtn.classList.remove('flex');
+      }
+    }
+
+    if (selectedCountEl) {
+      selectedCountEl.textContent = count;
+    }
+  },
+
+  updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('select-all-sales');
+    if (selectAllCheckbox) {
+      const allSales = Store.sales;
+      selectAllCheckbox.checked = allSales.length > 0 && this.selectedSales.size === allSales.length;
+      selectAllCheckbox.indeterminate = this.selectedSales.size > 0 && this.selectedSales.size < allSales.length;
+    }
+  },
+
+  printSelected() {
+    if (this.selectedSales.size === 0) {
+      Toast.error('No Selection', 'Please select at least one sale to print');
+      return;
+    }
+
+    const selectedSalesArray = Store.sales.filter(sale => this.selectedSales.has(sale.id));
+    Receipt.printMultipleSales(selectedSalesArray);
   },
 
   // ==================== Stock Sale Functions ====================
@@ -646,7 +728,7 @@ const SalesPage = {
     if (allSales.length === 0) {
       tbody.innerHTML = `
         <tr class="text-center">
-            <td colspan="7" class="px-5 py-8 text-gray-500">
+            <td colspan="8" class="px-5 py-8 text-gray-500">
                 <div class="flex flex-col items-center justify-center">
                     <svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
@@ -678,7 +760,14 @@ const SalesPage = {
           saleDate.toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
       
       return `
-      <tr class="hover:bg-gray-50 transition-colors">
+      <tr class="hover:bg-gray-50 transition-colors ${this.selectedSales.has(sale.id) ? 'bg-green-50' : ''}">
+        <td class="px-5 py-4">
+          <input type="checkbox" 
+            class="sale-checkbox w-4 h-4 rounded border-gray-300 cursor-pointer" 
+            data-sale-id="${sale.id}"
+            ${this.selectedSales.has(sale.id) ? 'checked' : ''}
+            onchange="SalesPage.toggleSaleSelection(${sale.id})">
+        </td>
         <td class="px-5 py-4 text-sm text-gray-600">${timeDisplay}</td>
         <td class="px-5 py-4">
           <div class="flex items-center gap-2">
@@ -698,6 +787,13 @@ const SalesPage = {
         <td class="px-5 py-4 text-sm text-gray-600">${sale.customer_name}</td>
         <td class="px-5 py-4">
           <div class="flex items-center gap-2">
+            <button onclick="Receipt.printSale(${sale.id})" 
+              class="text-gray-400 hover:text-green-600 transition-colors" 
+              title="Print receipt">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path>
+              </svg>
+            </button>
             <button onclick="SalesPage.convertToDebt(${sale.id})" 
               class="text-gray-400 hover:text-blue-600 transition-colors" 
               title="Convert to debt">
