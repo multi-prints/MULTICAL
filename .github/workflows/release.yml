@@ -94,12 +94,7 @@ jobs:
         with:
           name: multiprints-${{ matrix.platform }}
           path: |
-            app/dist/*.exe
-            app/dist/*.deb
-            app/dist/*.yml
-            app/dist/*.yaml
-            app/dist/*.blockmap
-            app/dist/latest*.yml
+            app/dist/*
           retention-days: 5
           if-no-files-found: warn
 
