@@ -45,7 +45,7 @@ A modern offline desktop inventory and sales management application built with *
 ## Installation
 
 ### Download
-Check the [Releases](https://github.com/codegoddy/MULTICAL/releases) page for the latest installer for valid platforms (Windows, Linux, macOS).
+Check the [Releases](https://github.com/Spid3rmvn/MULTICAL/releases) page for the latest installer for valid platforms (Windows, Linux, macOS).
 
 ### Build from Source
 
@@ -53,7 +53,7 @@ Check the [Releases](https://github.com/codegoddy/MULTICAL/releases) page for th
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/codegoddy/MULTICAL.git
+    git clone https://github.com/Spid3rmvn/MULTICAL.git
     cd MULTICAL/app
     ```
 
