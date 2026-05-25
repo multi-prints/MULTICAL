@@ -1,0 +1,453 @@
+use leptos::prelude::*;
+use crate::api::{self, Sale, NewSale, Product, StockItem, NewDebt};
+#[path = "../components/dropdown.rs"]
+mod dropdown_comp;
+use dropdown_comp::{CustomDropdown, DropdownItem};
+
+#[derive(Clone, Copy, PartialEq)]
+enum SaleTab { Stock, Product, Service }
+
+#[component]
+pub fn SalesPage() -> impl IntoView {
+    let (sales, set_sales) = signal(Vec::<Sale>::new());
+    let (products, set_products) = signal(Vec::<Product>::new());
+    let (stock, set_stock) = signal(Vec::<StockItem>::new());
+    let (today_total, set_today_total) = signal(0.0f64);
+    let (show_modal, set_show_modal) = signal(false);
+    let (active_tab, set_active_tab) = signal(SaleTab::Stock);
+    let (current_page, set_current_page) = signal(1u32);
+    let (selected, set_selected) = signal(0u32);
+    let (selected_sales, set_selected_sales) = signal(Vec::<i64>::new());
+
+    // Convert-to-debt modal state
+    let (show_convert, set_show_convert) = signal(None::<Sale>);
+    let (convert_customer, set_convert_customer) = signal(String::new());
+    let (convert_phone, set_convert_phone) = signal(String::new());
+    let (convert_paid, set_convert_paid) = signal(String::new());
+    let (convert_due_date, set_convert_due_date) = signal(String::new());
+    let (convert_due_label, set_convert_due_label) = signal(String::new());
+
+    // Stock tab state
+    let (stock_id, set_stock_id) = signal(None::<i64>);
+    let (sale_unit, set_sale_unit) = signal("metres".to_string());
+    let (stock_qty, set_stock_qty) = signal(String::new());
+    let (stock_price, set_stock_price) = signal(String::new());
+    let (stock_payment, set_stock_payment) = signal("cash".to_string());
+    let (stock_cust, set_stock_cust) = signal("Walk-in".to_string());
+
+    // Product tab state
+    let (product_id, set_product_id) = signal(None::<i64>);
+    let (product_qty, set_product_qty) = signal("1".to_string());
+    let (product_price, set_product_price) = signal(0.0f64);
+    let (product_payment, set_product_payment) = signal("cash".to_string());
+    let (product_cust, set_product_cust) = signal("Walk-in".to_string());
+
+    // Service tab state
+    let (svc_name, set_svc_name) = signal(String::new());
+    let (svc_price, set_svc_price) = signal(String::new());
+    let (svc_payment, set_svc_payment) = signal("cash".to_string());
+    let (svc_cust, set_svc_cust) = signal("Walk-in".to_string());
+
+    let items_per_page = 10u32;
+
+    let reload = {
+        let ss = set_sales; let sp = set_products; let sk = set_stock; let tt = set_today_total;
+        move || leptos::task::spawn_local({
+            let ss=ss; let sp=sp; let sk=sk; let tt=tt;
+            async move {
+                if let Ok(s) = api::get_all_sales().await { ss.set(s); }
+                if let Ok(p) = api::get_all_products().await { sp.set(p); }
+                if let Ok(sk_) = api::get_all_stock().await { sk.set(sk_); }
+                if let Ok(t) = api::get_today_total_sales().await { tt.set(t); }
+            }
+        })
+    };
+    reload();
+
+    // Dropdown item signals
+    let stock_dropdown_items = Signal::derive(move || stock.get().into_iter().map(|s| {
+        let remaining = s.total_metres - if s.metres_used.is_nan() { 0.0 } else { s.metres_used };
+        DropdownItem::new(&s.id.to_string(), &format!("{} - {}in ({}) - {}m", s.color, s.size, if s.sticker_type=="reflective" {"Reflective"} else {"Colored"}, remaining as u64))
+            .with_color(&s.color, None).with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
+    }).collect::<Vec<_>>());
+
+    let sale_type_items = Signal::derive(move || vec![
+        DropdownItem::new("metres", "Metres").with_badge("per metre"),
+        DropdownItem::new("rolls", "Whole Rolls").with_badge("50m each"),
+    ]);
+    let payment_method_items = Signal::derive(move || vec![
+        DropdownItem::new("cash", "Cash"),
+        DropdownItem::new("mpesa", "M-Pesa"),
+        DropdownItem::new("till", "Till Number"),
+    ]);
+    let product_dropdown_items = Signal::derive(move || products.get().into_iter().filter(|p| p.stock > 0).map(|p| {
+        DropdownItem::new(&p.id.to_string(), &p.name).with_badge(&format!("{} in stock", p.stock))
+    }).collect::<Vec<_>>());
+
+    let reset_stock_tab = move || {
+        set_stock_id.set(None); set_sale_unit.set("metres".into()); set_stock_qty.set(String::new());
+        set_stock_price.set(String::new()); set_stock_payment.set("cash".into()); set_stock_cust.set("Walk-in".into());
+    };
+    let reset_product_tab = move || {
+        set_product_id.set(None); set_product_qty.set("1".into()); set_product_price.set(0.0);
+        set_product_payment.set("cash".into()); set_product_cust.set("Walk-in".into());
+    };
+    let reset_service_tab = move || {
+        set_svc_name.set(String::new()); set_svc_price.set(String::new());
+        set_svc_payment.set("cash".into()); set_svc_cust.set("Walk-in".into());
+    };
+
+    let close_modal = move || { set_show_modal.set(false); reset_stock_tab(); reset_product_tab(); reset_service_tab(); };
+
+    // Stock sale submit
+    let submit_stock = {
+        let l = reload.clone();
+        move |_| {
+            let sid = stock_id.get();
+            let qty_val: f64 = stock_qty.get().parse().unwrap_or(0.0);
+            let price_val: f64 = stock_price.get().parse().unwrap_or(0.0);
+            if sid.is_none() || qty_val <= 0.0 || price_val <= 0.0 { return; }
+            let metres = if sale_unit.get() == "rolls" { qty_val * 50.0 } else { qty_val };
+            let s = stock.get().iter().find(|s| s.id == sid.unwrap()).cloned();
+            let label = s.as_ref().map(|si| format!("{} {}", si.color, if si.sticker_type=="reflective"{"Reflective"}else{"Colored"})).unwrap_or_default();
+            close_modal();
+            leptos::task::spawn_local(async move {
+                let _ = api::add_sale(&NewSale {
+                    r#type: "stock".into(), product_id: None, stock_id: sid,
+                    product_name: Some(format!("{} Sticker", label)), product_type: None,
+                    sticker_type: s.as_ref().map(|s| s.sticker_type.clone()),
+                    quantity: Some(format!("{}m", metres as u64)), amount: price_val,
+                    payment_method: stock_payment.get(), customer_name: stock_cust.get(), is_debt: 0,
+                }).await;
+                if let Some(st) = &s {
+                    let _ = api::update_stock(st.id, &serde_json::json!({"metres_used": st.metres_used + metres})).await;
+                }
+                l();
+            });
+        }
+    };
+
+    // Product sale submit
+    let submit_product = {
+        let l = reload.clone();
+        move |_| {
+            let pid = product_id.get();
+            let pqty: i64 = product_qty.get().parse().unwrap_or(0);
+            let price = product_price.get();
+            if pid.is_none() || pqty <= 0 || price <= 0.0 { return; }
+            let p = products.get().iter().find(|p| p.id == pid.unwrap()).cloned();
+            let name = p.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+            close_modal();
+            leptos::task::spawn_local(async move {
+                let _ = api::add_sale(&NewSale {
+                    r#type: "product".into(), product_id: pid, stock_id: None,
+                    product_name: Some(name), product_type: p.as_ref().map(|p| p.product_type.clone()),
+                    sticker_type: None, quantity: Some(pqty.to_string()), amount: price,
+                    payment_method: product_payment.get(), customer_name: product_cust.get(), is_debt: 0,
+                }).await;
+                if let Some(pr) = &p {
+                    let _ = api::update_product(pr.id, &api::ProductUpdate {
+                        stock: Some(pr.stock - pqty), name: None, product_type: None, color: None, size: None, selling_price: None,
+                    }).await;
+                }
+                l();
+            });
+        }
+    };
+
+    // Service sale submit
+    let submit_service = {
+        let l = reload.clone();
+        move |_| {
+            let name = svc_name.get();
+            let price: f64 = svc_price.get().parse().unwrap_or(0.0);
+            if name.is_empty() || price <= 0.0 { return; }
+            close_modal();
+            leptos::task::spawn_local(async move {
+                let _ = api::add_sale(&NewSale {
+                    r#type: "service".into(), product_id: None, stock_id: None,
+                    product_name: Some(name), product_type: None, sticker_type: None,
+                    quantity: Some("-".into()), amount: price,
+                    payment_method: svc_payment.get(), customer_name: svc_cust.get(), is_debt: 0,
+                }).await;
+                l();
+            });
+        }
+    };
+
+    let toggle_select = move |id: i64| {
+        set_selected_sales.update(|v| {
+            if let Some(p) = v.iter().position(|x| *x == id) { v.remove(p); } else { v.push(id); }
+        });
+        set_selected.update(|c| { let s = selected_sales.get(); *c = s.len() as u32; });
+    };
+    let select_all = move |checked: bool| {
+        if checked {
+            let ids: Vec<i64> = sales.get().iter().map(|s| s.id).collect();
+            set_selected_sales.set(ids);
+            set_selected.set(sales.get().len() as u32);
+        } else {
+            set_selected_sales.set(Vec::new());
+            set_selected.set(0);
+        }
+    };
+
+    // Convert-to-debt submit
+    let submit_convert = {
+        let l = reload.clone();
+        move |_| {
+            let sale = show_convert.get();
+            if let Some(s) = sale {
+                let name = convert_customer.get();
+                if name.is_empty() { return; }
+                let paid: f64 = convert_paid.get().parse().unwrap_or(0.0);
+                let remaining = s.amount - paid;
+                if remaining <= 0.0 { set_show_convert.set(None); return; }
+                let s_id = s.id;
+                set_show_convert.set(None);
+                leptos::task::spawn_local(async move {
+                    let _ = api::add_debt(&NewDebt {
+                        customer_name: name, phone: Some(convert_phone.get()).filter(|p| !p.is_empty()),
+                        amount: s.amount, paid_amount: Some(paid), remaining_amount: Some(remaining),
+                        due_date: Some(convert_due_date.get()).filter(|d| !d.is_empty()),
+                        description: Some(format!("Sale: {} ({})", s.product_name.as_deref().unwrap_or(""), s.quantity.as_deref().unwrap_or("-"))),
+                        sale_id: Some(s_id),
+                        service_transaction_id: None,
+                    }).await;
+                    l();
+                });
+            }
+        }
+    };
+    let open_convert = move |sale: Option<&Sale>| {
+        if let Some(s) = sale {
+            set_convert_customer.set(s.customer_name.clone());
+            set_convert_phone.set(String::new());
+            set_convert_paid.set("0".into());
+            set_convert_due_date.set(String::new());
+            set_convert_due_label.set(String::new());
+            set_show_convert.set(Some(s.clone()));
+        }
+    };
+
+    // Pagination
+    let total_items = move || sales.get().len() as u32;
+    let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
+    let paginated = move || {
+        let items = sales.get();
+        let start = ((current_page.get() - 1) * items_per_page) as usize;
+        items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
+    };
+
+    let all_revenue = move || sales.get().iter().map(|s| s.amount).sum::<f64>();
+    let product_count = move || sales.get().iter().filter(|s| s.r#type == "product").count();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    view! { <div id="page-sales" class="page-content">
+        // Header
+        <div class="flex items-center justify-between mb-6">
+            <div><h1 class="page-title">"Sales"</h1><p class="page-subtitle">"Track all transactions"</p></div>
+            <div class="flex items-center gap-2">
+                {move || if selected.get() > 0 { view!{<button id="btn-print-selected-sales" class="flex items-center gap-2 px-4 py-2 text-sm bg-green-600 text-white rounded-md">"Print (" {selected.get()} ")"</button>}.into_any() } else { ().into_any() }}
+                <button id="btn-record-sale" class="flex items-center gap-2 btn-primary px-4 py-2 text-sm" on:click=move |_| set_show_modal.set(true)>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Record Sale"</button>
+            </div>
+        </div>
+
+        // Stats
+        <div class="grid grid-cols-4 gap-4 mb-6">
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", today_total.get())}</h3></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Transactions"</p><h3 class="text-xl font-semibold">{move || total_items()}</h3></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Product Sales"</p><h3 class="text-xl font-semibold">{move || product_count()}</h3></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue())}</h3></div>
+        </div>
+
+        // Table
+        <div class="dashboard-panel overflow-hidden">
+            <div class="p-4 border-b border-gray-100"><h2 class="text-sm font-semibold">"Today's Transactions"</h2></div>
+            <table class="w-full data-table">
+                <thead><tr>
+                    <th class="w-10"><input type="checkbox" class="w-4 h-4" prop:checked=move || { let s = selected.get(); let t = total_items(); s > 0 && s == t } on:change=move |e| select_all(event_target_checked(&e)) /></th>
+                    <th>"Time"</th><th>"Item"</th><th>"Qty"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th>
+                </tr></thead>
+                <tbody>
+                    {move || {
+                        let items = paginated();
+                        if items.is_empty() {
+                            view!{<tr class="text-center"><td colspan="8" class="px-5 py-8 text-gray-500"><div class="flex flex-col items-center justify-center"><svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg><p>"No sales recorded."</p></div></td></tr>}.into_any()
+                        } else {
+                            items.into_iter().map(|sale| {
+                                let id = sale.id;
+                                let tm = sale.timestamp.as_ref().and_then(|t| { let s = t.as_str(); if s.len() >= 16 { Some(s[11..16].to_string()) } else { None } }).unwrap_or_default();
+                                let is_sel = move || selected_sales.get().contains(&id);
+                                let typ_label = match sale.r#type.as_str() { "stock" => "Stock", "service" => "Service", _ => "Product" };
+                                let typ_cls = match sale.r#type.as_str() {
+                                    "stock" => "bg-gray-800 text-white", "service" => "bg-blue-500 text-white", _ => "bg-gray-100 text-gray-700"
+                                };
+                                let name = sale.product_name.clone().unwrap_or_else(|| sale.r#type.clone());
+                                let qty_display = sale.quantity.clone().unwrap_or_else(|| "-".into());
+                                let pm_display = sale.payment_method.clone();
+                                let cust_display = sale.customer_name.clone();
+                                let sale_clone = sale.clone();
+                                view!{
+                                    <tr class=move || format!("hover:bg-gray-50 transition-colors {}", if is_sel() {"bg-green-50"} else {""})>
+                                        <td class="px-5 py-4"><input type="checkbox" class="w-4 h-4" prop:checked=is_sel on:change=move |_| toggle_select(id)/></td>
+                                        <td class="px-5 py-4 text-sm text-gray-600">{tm}</td>
+                                        <td class="px-5 py-4"><div class="flex items-center gap-2"><span class=format!("status-badge {}", typ_cls)>{typ_label}</span><span class="text-sm font-medium text-gray-900">{name}</span></div></td>
+                                        <td class="px-5 py-4 text-sm text-gray-600">{qty_display}</td>
+                                        <td class="px-5 py-4 text-sm font-medium text-gray-900">{format!("KSh {:.2}", sale.amount)}</td>
+                                        <td class="px-5 py-4"><span class="status-badge status-badge--success capitalize">{pm_display}</span></td>
+                                        <td class="px-5 py-4 text-sm text-gray-600">{cust_display}</td>
+                                        <td class="px-5 py-4"><div class="flex items-center gap-2">
+                                            <button on:click=move |_| { let s=sale_clone.clone(); open_convert(Some(&s)); } class="text-gray-400 hover:text-blue-600 transition-colors" title="Convert to debt">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+                                            </button>
+                                            <button on:click={ let l=reload.clone(); move |_| { let i=id; leptos::task::spawn_local(async move { let _=api::delete_sale(i).await; l(); });}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                            </button>
+                                        </div></td>
+                                    </tr>
+                                }
+                            }).collect::<Vec<_>>().into_any()
+                        }
+                    }}
+                </tbody>
+            </table>
+            // Pagination
+            {move || { let n = total_items(); if n == 0 { ().into_any() } else {
+                let cp = current_page.get(); let tp = total_pages();
+                let si = (cp - 1) * items_per_page + 1; let ei = (cp * items_per_page).min(n);
+                view!{<div class="flex items-center justify-between px-5 py-3 bg-gray-50 border-t border-gray-200">
+                    <div class="text-sm text-gray-600">"Showing "<span class="font-medium">{si}</span>" to "<span class="font-medium">{ei}</span>" of "<span class="font-medium">{n}</span>" sales"</div>
+                    <div class="flex gap-2">
+                        <button on:click=move |_| { if cp > 1 { set_current_page.set(cp - 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
+                        <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
+                        <button on:click=move |_| { if cp < tp { set_current_page.set(cp + 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp >= tp>"Next"</button>
+                    </div>
+                </div>}.into_any()
+            }}}
+        </div>
+
+        // Record Sale Modal
+        {move || if show_modal.get() { view!{<div id="modal-record-sale" class="modal-overlay open">
+            <div class="modal-container" style="max-width: 760px;">
+                <div class="modal-header"><h3 class="modal-title">"Record New Sale"</h3><button class="modal-close-btn" on:click=move |_| close_modal()><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
+                <div class="modal-body">
+                    // Tabs
+                    <div class="flex gap-1 mb-5 p-1 bg-gray-100 w-fit mx-auto">
+                        <button on:click=move |_| set_active_tab.set(SaleTab::Stock) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Stock {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Stock Sale"</button>
+                        <button on:click=move |_| set_active_tab.set(SaleTab::Product) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Product {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Products"</button>
+                        <button on:click=move |_| set_active_tab.set(SaleTab::Service) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Service {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Service"</button>
+                    </div>
+
+                    // Stock Sale Tab
+                    {move || if active_tab.get() == SaleTab::Stock { view!{<div>
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label>"Stock Item"</label><div class="mt-1">
+                                    <CustomDropdown items=stock_dropdown_items placeholder="Choose sticker".to_string()
+                                        on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_stock_id.set(Some(id)); } })/>
+                                </div></div>
+                                <div><label>"Sale Type"</label><div class="mt-1">
+                                    <CustomDropdown items=sale_type_items placeholder="Metres".to_string()
+                                        on_select=Callback::new(move |v: String| set_sale_unit.set(v))/>
+                                </div></div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label>{move || if sale_unit.get()=="rolls" {"Rolls Sold"} else {"Metres"}}</label>
+                                    <input type="number" step="0.1" min="0.1" class="w-full mt-1" placeholder="0" prop:value=move || stock_qty.get() on:input=move |e| set_stock_qty.set(event_target_value(&e))/></div>
+                                <div><label>"Payment Method"</label><div class="mt-1">
+                                    <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
+                                        on_select=Callback::new(move |v: String| set_stock_payment.set(v))/>
+                                </div></div>
+                            </div>
+                            <div><label>"Total Price (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || stock_price.get() on:input=move |e| set_stock_price.set(event_target_value(&e))/></div>
+                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let p:f64=stock_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</div></div>
+                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || stock_cust.get() on:input=move |e| set_stock_cust.set(event_target_value(&e))/></div>
+                        </div>
+                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
+                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_stock>"Record Stock Sale"</button>
+                        </div>
+                    </div>}.into_any() } else { ().into_any() }}
+
+                    // Product Sale Tab
+                    {move || if active_tab.get() == SaleTab::Product { view!{<div>
+                        <div class="space-y-4">
+                            <div><label>"Product"</label><div class="mt-1">
+                                <CustomDropdown items=product_dropdown_items placeholder="Choose product".to_string()
+                                    on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_product_id.set(Some(id)); } })/>
+                            </div></div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label>"Quantity"</label><input type="number" min="1" class="w-full mt-1" placeholder="1" prop:value=move || product_qty.get() on:input=move |e| set_product_qty.set(event_target_value(&e))/></div>
+                                <div><label>"Payment Method"</label><div class="mt-1">
+                                    <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
+                                        on_select=Callback::new(move |v: String| set_product_payment.set(v))/>
+                                </div></div>
+                            </div>
+                            <div><label>"Selling Price (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/></div>
+                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let q:f64=product_qty.get().parse().unwrap_or(0.0); let p=product_price.get(); format!("KSh {:.2}", q * p)}}</div></div>
+                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || product_cust.get() on:input=move |e| set_product_cust.set(event_target_value(&e))/></div>
+                        </div>
+                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
+                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_product>"Record Product Sale"</button>
+                        </div>
+                    </div>}.into_any() } else { ().into_any() }}
+
+                    // Service Sale Tab
+                    {move || if active_tab.get() == SaleTab::Service { view!{<div>
+                        <div class="space-y-4">
+                            <div><label>"Service Name *"</label><input type="text" class="w-full mt-1" placeholder="e.g., Design, Lamination" prop:value=move || svc_name.get() on:input=move |e| set_svc_name.set(event_target_value(&e))/></div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label>"Price (KSh) *"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || svc_price.get() on:input=move |e| set_svc_price.set(event_target_value(&e))/></div>
+                                <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let p:f64=svc_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</div></div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label>"Payment Method"</label><div class="mt-1">
+                                    <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
+                                        on_select=Callback::new(move |v: String| set_svc_payment.set(v))/>
+                                </div></div>
+                            </div>
+                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || svc_cust.get() on:input=move |e| set_svc_cust.set(event_target_value(&e))/></div>
+                        </div>
+                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
+                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_service>"Record Service Sale"</button>
+                        </div>
+                    </div>}.into_any() } else { ().into_any() }}
+                </div>
+            </div>
+        </div>}.into_any() } else { ().into_any() }}
+
+        // Convert-to-Debt Modal
+        {move || show_convert.get().map(|sale| {
+            let amount = sale.amount;
+            let pname = sale.product_name.clone().unwrap_or_default();
+            let pqty = sale.quantity.clone().unwrap_or_else(|| "-".into());
+            let remaining = move || { let paid:f64 = convert_paid.get().parse().unwrap_or(0.0); (amount - paid).max(0.0) };
+            view!{<div id="modal-convert-debt" class="modal-overlay open"><div class="modal-container" style="max-width: 500px;">
+                <div class="modal-header"><h3 class="modal-title">"Convert Sale to Debt"</h3>
+                    <button class="modal-close-btn" on:click=move |_| set_show_convert.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+                </div>
+                <div class="modal-body">
+                    <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Sale Details"</p>
+                        <p class="font-semibold text-gray-900">{pname}</p>
+                        <p class="text-sm text-gray-600">{format!("{} - KSh {:.0}", pqty, amount)}</p>
+                    </div>
+                    <div class="space-y-4">
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Name *"</label><input type="text" class="w-full" placeholder="Enter customer name" prop:value=move || convert_customer.get() on:input=move |e| set_convert_customer.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Phone"</label><input type="tel" class="w-full" placeholder="Optional" prop:value=move || convert_phone.get() on:input=move |e| set_convert_phone.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Paid *"</label><input type="number" min="0" step="0.01" class="w-full" placeholder="0.00" prop:value=move || convert_paid.get() on:input=move |e| set_convert_paid.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Remaining Debt"</label><div class="px-3 py-2 bg-red-50 border border-red-200 text-lg font-bold text-red-600">{move || format!("KSh {:.0}", remaining())}</div></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><input type="date" class="w-full" prop:value=move || convert_due_date.get() on:input=move |e| set_convert_due_date.set(event_target_value(&e))/></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_convert.set(None)>"Cancel"</button>
+                    <button type="button" class="btn-primary px-4 py-2" on:click=submit_convert>"Create Debt"</button>
+                </div>
+            </div></div>}
+        }).map(|v| v.into_any()).unwrap_or_else(|| ().into_any())}
+    </div> }
+}

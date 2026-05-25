@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/master/tauri-conf.schema.json",
+  "productName": "MULTIPRINTS",
+  "version": "1.1.0",
+  "identifier": "com.multiprints.app",
+  "app": {
+    "windows": [
+      {
+        "title": "MULTIPRINTS",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "build": {
+    "frontendDist": "../src",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "cd ../frontend && trunk build"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "copyright": "Copyright © 2026 Godwin Mayodi",
+    "category": "Office",
+    "shortDescription": "Inventory and Sales Management",
+    "longDescription": "A modern offline desktop inventory and sales management application for tracking products, stock, sales, and customer debts.",
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {}
+}

@@ -123,3 +123,23 @@ coverage.xml
 # Development Tools
 # =========================
 app/reset-password.js
+
+# =========================
+# Rust / Cargo
+# =========================
+target/
+*.rs.bk
+
+# =========================
+# Tauri / Trunk build output
+# =========================
+src/*.html
+src/*.css
+src/*.js
+src/*.wasm
+src/snippets/
+
+# =========================
+# Generated plans
+# =========================
+.plans/

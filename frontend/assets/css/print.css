@@ -1,0 +1,208 @@
+/**
+ * Print Styles for Thermal Receipts
+ * Optimized for 80mm thermal POS printers
+ */
+
+/* Receipt Container Styles */
+.receipt-container {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  width: 280px; /* 80mm ≈ 302px, accounting for margins */
+  padding: 8px;
+  background: white;
+  color: #000;
+}
+
+.receipt-header {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.receipt-business-name {
+  font-size: 16px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.receipt-info {
+  font-size: 11px;
+  color: #333;
+}
+
+.receipt-divider {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  letter-spacing: -1px;
+  text-align: center;
+  margin: 8px 0;
+}
+
+.receipt-meta {
+  margin-bottom: 8px;
+}
+
+.receipt-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.receipt-items-header {
+  font-size: 11px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.receipt-item {
+  margin-bottom: 8px;
+}
+
+.receipt-item-name {
+  font-size: 12px;
+  font-weight: bold;
+  word-wrap: break-word;
+}
+
+.receipt-item-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.receipt-item-price {
+  font-weight: bold;
+}
+
+.receipt-notes {
+  font-size: 10px;
+  color: #666;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.receipt-totals {
+  margin-bottom: 8px;
+}
+
+.receipt-payment {
+  text-transform: capitalize;
+}
+
+.receipt-total-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: bold;
+  margin: 8px 0;
+}
+
+.receipt-footer {
+  text-align: center;
+  font-size: 11px;
+  margin-top: 12px;
+}
+
+/* Preview Modal Styles */
+.receipt-preview-modal {
+  max-width: 400px !important;
+}
+
+.receipt-preview-body {
+  display: flex;
+  justify-content: center;
+  background: #f5f5f5;
+  padding: 20px;
+  border-radius: 8px;
+  margin: 0;
+}
+
+.receipt-preview-wrapper {
+  background: white;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Print Media Queries */
+@media print {
+  /* Hide everything except receipt */
+  body * {
+    visibility: hidden;
+  }
+
+  /* Show only receipt and its children */
+  #receipt-preview-modal,
+  #receipt-preview-modal * {
+    visibility: visible;
+  }
+
+  /* Position receipt at top-left for thermal printer */
+  #receipt-preview-modal {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: auto;
+    background: white;
+    z-index: 9999;
+  }
+
+  /* Hide modal chrome when printing */
+  #receipt-preview-modal .modal-header,
+  #receipt-preview-modal .modal-footer,
+  #receipt-preview-modal .modal-close-btn {
+    display: none !important;
+  }
+
+  /* Style the receipt preview body for printing */
+  #receipt-preview-modal .modal-body {
+    padding: 0 !important;
+    margin: 0 !important;
+    background: white !important;
+  }
+
+  /* Ensure receipt takes full width for printing */
+  #receipt-preview-modal .receipt-preview-body {
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #receipt-preview-modal .receipt-preview-wrapper {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Remove all rounded borders from receipt elements */
+  .receipt-container {
+    border-radius: 0 !important;
+  }
+
+  /* Page setup for thermal printers */
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  /* Ensure no page breaks within receipt */
+  .receipt-container {
+    page-break-inside: avoid;
+    border-radius: 0 !important;
+  }
+
+  /* Remove any inherited rounded borders */
+  .receipt-container * {
+    border-radius: 0 !important;
+  }
+}
+
+/* Print button icon animation */
+.btn-primary svg {
+  flex-shrink: 0;
+}

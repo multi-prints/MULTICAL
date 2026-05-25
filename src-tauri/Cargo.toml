@@ -1,0 +1,32 @@
+[package]
+name = "multiprints"
+version = "1.1.0"
+description = "MULTIPRINTS - Offline Desktop Inventory and Sales Management Application"
+authors = ["Godwin Mayodi <codegoddy@gmail.com>"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codegoddy/MULTICAL"
+
+[lib]
+name = "multiprints_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MULTIPRINTS</title>
+  <link data-trunk rel="css" href="assets/css/fonts.css">
+  <link data-trunk rel="css" href="assets/css/theme.css">
+  <link data-trunk rel="css" href="assets/css/components.css">
+  <link data-trunk rel="css" href="assets/css/print.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+  window.tauriInvoke = async function(cmd, argsJson) {
+    try {
+      var args = JSON.parse(argsJson);
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        var result = await window.__TAURI_INTERNALS__.invoke(cmd, args);
+        return JSON.stringify({ ok: result });
+      }
+      throw new Error('__TAURI_INTERNALS__ not found');
+    } catch(e) {
+      return JSON.stringify({ err: (e.message || e) });
+    }
+  };
+  </script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: { brand: { 50: '#EFF6FF', 100: '#DBEAFE', 200: '#BFDBFE', 300: '#93C5FD', 400: '#60A5FA', 500: '#2563EB', 600: '#1D4ED8', 700: '#1E40AF' } }
+        }
+      }
+    }
+  </script>
+  <link data-trunk rel="rust">
+</head>
+<body></body>
+</html>
