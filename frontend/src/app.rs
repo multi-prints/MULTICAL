@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
-use chrono::Timelike;
-use crate::api::{self, UserInfo, LoginResponse};
+use chrono::{Timelike, Datelike};
+use crate::api::{self, UserInfo, LoginResponse, SuccessResponse};
 #[path = "pages/stock.rs"]
 mod stock_page;
 use stock_page::StockPage as ElectronStockPage;
@@ -87,7 +87,7 @@ pub fn App() -> impl IntoView {
                             <Header />
                             <main class="flex-1 overflow-y-auto p-6">
                                 {move || match p.get() {
-                                    Page::Dashboard => view! { <DashboardPage /> }.into_any(),
+                                    Page::Dashboard => view! { <DashboardPage set_page=sp /> }.into_any(),
                                     Page::Products => view! { <ProductsPage /> }.into_any(),
                                     Page::Stock => view! { <ElectronStockPage /> }.into_any(),
                                     Page::Sales => view! { <ElectronSalesPage /> }.into_any(),
@@ -307,52 +307,204 @@ fn LoginPage(
 }
 
 #[component]
-fn DashboardPage() -> impl IntoView {
-    let (total_revenue, set_total_revenue) = signal(0.0_f64);
-    let (today_total, set_today_total) = signal(0.0_f64);
-    let (sales_count, set_sales_count) = signal(0i64);
-    let (outstanding, set_outstanding) = signal(0.0_f64);
-    let (pending_count, set_pending_count) = signal(0i64);
-    let (recent_sales, set_recent_sales) = signal(Vec::<crate::api::Sale>::new());
+fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
+    let (all_sales, set_all_sales) = signal(Vec::<crate::api::Sale>::new());
+    let (all_svc, set_all_svc) = signal(Vec::<crate::api::ServiceTransaction>::new());
+    let (all_debts, set_all_debts) = signal(Vec::<crate::api::Debt>::new());
+    let (all_products, set_all_products) = signal(Vec::<crate::api::Product>::new());
+    let (chart_period, set_chart_period) = signal("week".to_string());
+    let (hovered_bar, set_hovered_bar) = signal(None::<usize>);
     let (loading, set_loading) = signal(true);
 
     let hour = chrono::Local::now().hour();
     let greeting = if hour < 12 { "Good morning" } else if hour < 18 { "Good afternoon" } else { "Good evening" };
 
     leptos::task::spawn_local(async move {
-        let mut rev = 0.0;
-        let mut today = 0.0;
-        let mut count = 0i64;
-        let mut out = 0.0;
-        let mut pc = 0i64;
-        let mut recent = Vec::new();
-
-        if let Ok(sales) = api::get_all_sales().await {
-            count = sales.len() as i64;
-            rev = sales.iter().map(|s| s.amount).sum();
-            recent = sales.into_iter().take(10).collect();
-        }
-        if let Ok(t) = api::get_today_total_sales().await { today = t; }
-        if let Ok(d) = api::get_all_debts().await {
-            let pending: Vec<_> = d.into_iter().filter(|d| d.status == "pending").collect();
-            pc = pending.len() as i64;
-            out = pending.iter().map(|d| d.remaining_amount).sum();
-        }
-        set_total_revenue.set(rev);
-        set_today_total.set(today);
-        set_sales_count.set(count);
-        set_outstanding.set(out);
-        set_pending_count.set(pc);
-        set_recent_sales.set(recent);
+        if let Ok(s) = api::get_all_sales().await { set_all_sales.set(s); }
+        if let Ok(t) = api::get_all_service_transactions().await { set_all_svc.set(t); }
+        if let Ok(d) = api::get_all_debts().await { set_all_debts.set(d); }
+        if let Ok(p) = api::get_all_products().await { set_all_products.set(p); }
         set_loading.set(false);
     });
 
-    let fmt = |amount: f64| format!("KSh {:.2}", amount);
+    let fmt_k = |a: f64| if a >= 1_000_000.0 { format!("KSh {:.1}M", a / 1_000_000.0) } else if a >= 1000.0 { format!("KSh {}k", (a / 1000.0) as i64) } else { format!("KSh {:.0}", a) };
+    let fmt_f = |a: f64| format!("KSh {:.0}", a);
+
+    // ---- derived stats ----
+    let total_revenue = move || {
+        let sr: f64 = all_sales.get().iter().map(|s| s.amount).sum();
+        let sv: f64 = all_svc.get().iter().map(|t| t.amount).sum();
+        sr + sv
+    };
+
+    let today_stats = {
+        let sales = all_sales;
+        let svc = all_svc;
+        move || {
+            let today = chrono::Local::now().date_naive().to_string();
+            let s = sales.get(); let t = svc.get();
+            let sc = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).count();
+            let tc = t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).count();
+            let sr: f64 = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).map(|x| x.amount).sum();
+            let tr: f64 = t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).map(|x| x.amount).sum();
+            ((sc + tc) as i64, sr + tr)
+        }
+    };
+
+    let debt_stats = {
+        let debts = all_debts;
+        move || {
+            let p: Vec<_> = debts.get().into_iter().filter(|d| d.status == "pending").collect();
+            (p.iter().map(|d| d.remaining_amount).sum::<f64>(), p.len() as i64)
+        }
+    };
+
+    // ---- chart data ----
+    let chart_data = {
+        let sales = all_sales;
+        let svc = all_svc;
+        let period = chart_period;
+        move || {
+            let p = period.get();
+            let s = sales.get();
+            let t = svc.get();
+            let today = chrono::Local::now().date_naive();
+            let mut labels: Vec<String> = Vec::new();
+            let mut data: Vec<f64> = Vec::new();
+
+            fn day_rev(sales: &[crate::api::Sale], svc: &[crate::api::ServiceTransaction], ds: &str) -> f64 {
+                let sr: f64 = sales.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(ds)).map(|x| x.amount).sum();
+                let tr: f64 = svc.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(ds)).map(|x| x.amount).sum();
+                sr + tr
+            }
+
+            if p == "week" {
+                for i in (0..7).rev() {
+                    let d = today - chrono::Duration::days(i);
+                    labels.push(d.format("%a").to_string());
+                    data.push(day_rev(&s, &t, &d.to_string()));
+                }
+            } else if p == "month" {
+                for w in 0..4 {
+                    let end = today - chrono::Duration::days((w * 7) as i64);
+                    let start = end - chrono::Duration::days(6);
+                    labels.push(format!("{}–{}", start.format("%d"), end.format("%d %b")));
+                    let mut total = 0.0;
+                    for d in 0..7 {
+                        let day = start + chrono::Duration::days(d);
+                        total += day_rev(&s, &t, &day.to_string());
+                    }
+                    data.push(total);
+                }
+                labels.reverse(); data.reverse();
+            } else {
+                for i in (0..12).rev() {
+                    let m = today - chrono::Duration::days(i * 30);
+                    let ms = format!("{}-{:02}", m.year(), m.month());
+                    labels.push(m.format("%b").to_string());
+                    let total: f64 = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&ms)).map(|x| x.amount).sum::<f64>()
+                        + t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&ms)).map(|x| x.amount).sum::<f64>();
+                    data.push(total);
+                }
+            }
+            (labels, data)
+        }
+    };
+
+    // ---- chart summary ----
+    let chart_stats = move || {
+        let (_, data) = chart_data();
+        if data.is_empty() { return ("KSh 0".to_string(), "KSh 0".to_string(), "KSh 0".to_string()); }
+        let max = data.iter().cloned().fold(0.0_f64, f64::max);
+        let sum: f64 = data.iter().sum();
+        let avg = sum / data.len() as f64;
+        (fmt_f(max), fmt_f(avg as i64 as f64), fmt_f(sum))
+    };
+
+    let chart_period_label = move || match chart_period.get().as_str() {
+        "month" => "Last 4 weeks",
+        "year" => "Last 12 months",
+        _ => "Last 7 days",
+    };
+
+    // ---- recent transactions (combined) ----
+    let recent_txns = move || {
+        let mut items: Vec<(String, String, f64, bool, String)> = Vec::new(); // name, date, amount, is_debt, type_label
+        for s in all_sales.get().iter() {
+            items.push((
+                s.product_name.clone().unwrap_or(s.r#type.clone()),
+                s.timestamp.as_deref().unwrap_or("").split('T').next().unwrap_or("").to_string(),
+                s.amount, s.is_debt > 0,
+                "Sale".into(),
+            ));
+        }
+        for t in all_svc.get().iter() {
+            if t.stock_metres_used > 0.0 {
+                items.push((
+                    t.service_name.clone(),
+                    t.timestamp.as_deref().unwrap_or("").split('T').next().unwrap_or("").to_string(),
+                    t.amount, t.is_debt > 0,
+                    "Printing".into(),
+                ));
+            }
+        }
+        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.truncate(5);
+        items
+    };
+
+    // ---- activity feed ----
+    let activity_items = move || {
+        let mut items: Vec<(String, String, String)> = Vec::new(); // (type, text, time)
+        for s in all_sales.get().iter().take(20) {
+            let time = s.timestamp.as_deref().and_then(|t| t.get(11..16)).unwrap_or("").to_string();
+            let name = s.product_name.clone().unwrap_or(s.r#type.clone());
+            items.push(("sale".into(), format!("{} — KSh {:.0}", name, s.amount), time));
+        }
+        for d in all_debts.get().iter().take(20) {
+            let time = d.created_at.as_deref().and_then(|t| t.get(11..16)).unwrap_or("").to_string();
+            items.push(("debt".into(), format!("Debt: {} — KSh {:.0}", d.customer_name, d.amount), time));
+        }
+        items.sort_by(|a, b| b.2.cmp(&a.2));
+        items.truncate(8);
+        items
+    };
+
+    // ---- top products ----
+    let top_products = move || {
+        let products = all_products.get();
+        let sales = all_sales.get();
+        let mut counts: Vec<(i64, i64, String)> = Vec::new(); // (id, qty, name)
+        for s in sales.iter() {
+            if let Some(pid) = s.product_id {
+                if let Some(pos) = counts.iter().position(|(id, _, _)| *id == pid) {
+                    let qty: i64 = s.quantity.as_deref().and_then(|q| q.parse().ok()).unwrap_or(1);
+                    counts[pos].1 += qty;
+                } else {
+                    let qty: i64 = s.quantity.as_deref().and_then(|q| q.parse().ok()).unwrap_or(1);
+                    let name = products.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_else(|| format!("Product #{}", pid));
+                    counts.push((pid, qty, name));
+                }
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.truncate(4);
+        counts
+    };
+
+    // ---- chart SVG constants ----
+    let chart_w = 640.0_f64;
+    let chart_h = 260.0_f64;
+    let pad_l = 60.0;
+    let pad_r = 20.0;
+    let pad_t = 20.0;
+    let pad_b = 36.0;
 
     view! {
+        <Show when=move || !loading.get() fallback=|| view! { <div class="page-content"><p class="text-gray-500">"Loading dashboard..."</p></div> }>
         <div class="page-content">
             <div class="mb-6">
-                <h1 class="text-[22px] font-semibold text-[#0A0A0A] tracking-[-0.02em] mb-1">{greeting} "Admin"</h1>
+                <h1 class="text-[22px] font-semibold text-[#0A0A0A] tracking-[-0.02em] mb-1">{greeting} ", Admin"</h1>
                 <p class="text-sm text-[#525252]">"Here's what's happening today."</p>
             </div>
 
@@ -361,7 +513,7 @@ fn DashboardPage() -> impl IntoView {
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Total Revenue"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || fmt(total_revenue.get())}</h3>
+                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || fmt_f(total_revenue())}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-green-600">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
                                 <span>"All time"</span>
@@ -372,14 +524,13 @@ fn DashboardPage() -> impl IntoView {
                         </div>
                     </div>
                 </div>
-
                 <div class="bg-white border border-[#E5E5E5] p-5">
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || sales_count.get()}</h3>
+                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || { let (c, _) = today_stats(); c }}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-gray-500">
-                                <span>{move || format!("Today: KSh {:.2}", today_total.get())}</span>
+                                <span>{move || { let (_, r) = today_stats(); format!("Today: KSh {:.0}", r) }}</span>
                             </div>
                         </div>
                         <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
@@ -387,14 +538,13 @@ fn DashboardPage() -> impl IntoView {
                         </div>
                     </div>
                 </div>
-
                 <div class="bg-white border border-[#E5E5E5] p-5">
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Outstanding Debts"</p>
-                            <h3 class="text-xl font-semibold text-[#EF4444]">{move || fmt(outstanding.get())}</h3>
+                            <h3 class="text-xl font-semibold text-[#EF4444]">{move || { let (o, _) = debt_stats(); fmt_f(o) }}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-red-500">
-                                <span>{move || format!("{} pending", pending_count.get())}</span>
+                                <span>{move || { let (_, c) = debt_stats(); format!("{} pending", c) }}</span>
                             </div>
                         </div>
                         <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
@@ -406,76 +556,210 @@ fn DashboardPage() -> impl IntoView {
 
             <div class="grid grid-cols-3 gap-6">
                 <div class="col-span-2 space-y-6">
+                    // ---- Revenue Chart ----
                     <div class="bg-white border border-[#E5E5E5] p-5">
                         <div class="flex items-center justify-between mb-5">
                             <div>
                                 <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em]">"Revenue"</h3>
-                                <p class="text-xs text-gray-500 mt-0.5">"Last 7 days"</p>
+                                <p class="text-xs text-gray-500 mt-0.5">{move || chart_period_label()}</p>
+                            </div>
+                            <div class="flex border border-gray-200 rounded overflow-hidden">
+                                {let cp_rd = chart_period;
+                                let cp_wr = set_chart_period;
+                                let periods = [("week", "Week"), ("month", "Month"), ("year", "Year")];
+                                periods.iter().map(|(val, label)| {
+                                    let v = *val;
+                                    view! {
+                                        <button
+                                            on:click=move |_| cp_wr.set(v.to_string())
+                                            class={move || if cp_rd.get() == v { "px-3 py-1.5 text-xs font-medium bg-[#2563EB] text-white" } else { "px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50" }}
+                                        >{*label}</button>
+                                    }
+                                }).collect::<Vec<_>>()}
                             </div>
                         </div>
-                        <div class="relative w-full h-[280px] flex items-center justify-center text-gray-400 text-sm">
-                            "Chart will appear here"
+                        <div class="relative w-full" style="overflow-x:auto">
+                            <svg viewBox=move || format!("0 0 {} {}", chart_w, chart_h) class="w-full" style="min-height:260px;max-height:320px">
+                                // Y-axis gridlines + labels
+                                {move || {
+                                    let (_, data) = chart_data();
+                                    let max_val = data.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+                                    let step = if max_val <= 1000.0 { 200.0 } else if max_val <= 5000.0 { 1000.0 } else if max_val <= 20000.0 { 5000.0 } else if max_val <= 100_000.0 { 20000.0 } else { (max_val / 5.0).max(1000.0) };
+                                    let n_ticks = ((max_val / step).ceil() as usize).max(1);
+                                    let plot_h = chart_h - pad_t - pad_b;
+                                    let mut lines = Vec::new();
+                                    for i in 0..=n_ticks {
+                                        let val = i as f64 * step;
+                                        if val > max_val + step * 0.5 { continue; }
+                                        let y = pad_t + plot_h - (val / max_val.max(step)) * plot_h;
+                                        let label = if val >= 1_000_000.0 { format!("{:.1}M", val/1_000_000.0) } else if val >= 1000.0 { format!("{}k", (val/1000.0) as i64) } else { format!("{:.0}", val) };
+                                        lines.push(view! {
+                                            <g>
+                                                <line x1=pad_l y1=y x2=chart_w-pad_r y2=y stroke="#f3f4f6" stroke-width="1"/>
+                                                <text x=pad_l-8.0 y=y+4.0 text-anchor="end" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">"KSh " {label}</text>
+                                            </g>
+                                        }.into_any());
+                                    }
+                                    lines.into_any()
+                                }}
+                                // Bars
+                                {move || {
+                                    let (labels, data) = chart_data();
+                                    if data.is_empty() { return view! { <text x=chart_w/2.0 y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="13">"No data"</text> }.into_any(); }
+                                    let max_val = data.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+                                    let plot_h = chart_h - pad_t - pad_b;
+                                    let plot_w = chart_w - pad_l - pad_r;
+                                    let bar_gap = 4.0;
+                                    let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
+                                    let hovered = hovered_bar;
+                                    data.iter().enumerate().map(|(i, &val)| {
+                                        let bar_h = (val / max_val * plot_h).max(if val > 0.0 { 3.0 } else { 0.0 });
+                                        let x = pad_l + i as f64 * (bar_w + bar_gap);
+                                        let y = pad_t + plot_h - bar_h;
+                                        let is_hovered = move || hovered.get() == Some(i);
+                                        view! {
+                                            <g>
+                                                <rect
+                                                    x=x y=y width=bar_w height=bar_h
+                                                    rx="4" ry="4"
+                                                    fill={move || if is_hovered() { "#374151" } else { "#111827" }}
+                                                    style="cursor:pointer;transition:fill 0.15s"
+                                                    on:mouseenter=move |_| set_hovered_bar.set(Some(i))
+                                                    on:mouseleave=move |_| set_hovered_bar.set(None)
+                                                ></rect>
+                                                // tooltip
+                                                {move || if hovered.get() == Some(i) {
+                                                    view! {
+                                                        <g>
+                                                            <rect x=x-20.0 y=y-28.0 width=bar_w+40.0 height=22.0 rx="6" fill="#111827"></rect>
+                                                            <text x=x+bar_w/2.0 y=y-13.0 text-anchor="middle" fill="white" font-size="12" font-weight="bold" font-family="Inter,system-ui,sans-serif">{fmt_f(val)}</text>
+                                                        </g>
+                                                    }.into_any()
+                                                } else { ().into_any() }}
+                                            </g>
+                                        }.into_any()
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                                // X-axis labels
+                                {move || {
+                                    let (labels, data) = chart_data();
+                                    if data.is_empty() { return ().into_any(); }
+                                    let plot_w = chart_w - pad_l - pad_r;
+                                    let bar_gap = 4.0;
+                                    let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
+                                    labels.iter().enumerate().map(|(i, lbl)| {
+                                        let x = pad_l + i as f64 * (bar_w + bar_gap) + bar_w / 2.0;
+                                        view! {
+                                            <text x=x y=chart_h-6.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{lbl.clone()}</text>
+                                        }.into_any()
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                            </svg>
+                        </div>
+                        // Summary stats
+                        <div class="grid grid-cols-3 gap-4 mt-5 pt-5 border-t border-gray-100">
+                            <div class="text-center">
+                                <p class="text-xs text-gray-500 mb-1">"Highest Day"</p>
+                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (h, _, _) = chart_stats(); h }}</p>
+                            </div>
+                            <div class="text-center">
+                                <p class="text-xs text-gray-500 mb-1">"Average"</p>
+                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (_, a, _) = chart_stats(); a }}</p>
+                            </div>
+                            <div class="text-center">
+                                <p class="text-xs text-gray-500 mb-1">"Period Total"</p>
+                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (_, _, t) = chart_stats(); t }}</p>
+                            </div>
                         </div>
                     </div>
 
+                    // ---- Recent Transactions ----
                     <div class="bg-white border border-[#E5E5E5] p-5">
                         <div class="flex items-center justify-between mb-4">
                             <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em]">"Recent Transactions"</h3>
-                            <span class="text-xs font-medium text-[#2563EB] cursor-pointer">"View all"</span>
+                            <span class="text-xs font-medium text-[#2563EB] cursor-pointer" on:click=move |_| set_page.set(Page::Sales)>"View all"</span>
                         </div>
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left">
-                                <thead>
-                                    <tr>
-                                        <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Item"</th>
-                                        <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Date"</th>
-                                        <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Amount"</th>
-                                        <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Status"</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {move || recent_sales.get().into_iter().map(|s| {
-                                        let is_debt = s.is_debt > 0;
-                                        let status_text = if is_debt && s.is_debt == 1 { "Pending" } else if is_debt { "Paid" } else { "Completed" };
-                                        let is_pending = is_debt && s.is_debt == 1;
-                                        let date = s.timestamp.as_deref().unwrap_or("").split('T').next().unwrap_or("").to_string();
+                        <table class="w-full text-left">
+                            <thead>
+                                <tr>
+                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Item"</th>
+                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Date"</th>
+                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Amount"</th>
+                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Status"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {move || {
+                                    let items = recent_txns();
+                                    if items.is_empty() {
+                                        return view! { <tr><td colspan="4" class="px-6 py-8 text-center text-gray-400 italic">"No transactions yet"</td></tr> }.into_any();
+                                    }
+                                    items.into_iter().map(|(name, date, amount, is_debt, typ)| {
+                                        let status = if is_debt { ("Debt", "bg-[#FFFBEB] text-[#F59E0B]") } else { ("Completed", "bg-[#ECFDF5] text-[#10B981]") };
                                         view! {
                                             <tr class="border-b border-[#F0F0F0] hover:bg-[#F5F5F5] transition-all duration-100">
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{s.product_name.unwrap_or(s.r#type)}</td>
+                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{name} <span class="text-xs text-gray-400 ml-1">"(" {typ} ")"</span></td>
                                                 <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{date}</td>
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">"KSh " {s.amount}</td>
-                                                <td class="px-4 py-[14px]">
-                                                    <span class={if is_pending { "inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded bg-[#FFFBEB] text-[#F59E0B]" } else { "inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded bg-[#ECFDF5] text-[#10B981]" }}>
-                                                        {status_text}
-                                                    </span>
-                                                </td>
+                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">"KSh " {amount}</td>
+                                                <td class="px-4 py-[14px]"><span class={format!("inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded {}", status.1)}>{status.0}</span></td>
                                             </tr>
                                         }
-                                    }).collect::<Vec<_>>()}
-                                </tbody>
-                            </table>
-                        </div>
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
+                // ---- Right Column ----
                 <div class="space-y-6">
+                    // Activity Feed
                     <div class="bg-white border border-[#E5E5E5] p-5">
                         <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em] mb-5">"Activity"</h3>
                         <div class="relative">
                             {move || {
-                                let items = recent_sales.get();
+                                let items = activity_items();
                                 if items.is_empty() {
                                     return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No recent activity"</p> }.into_any();
                                 }
-                                items.into_iter().take(8).enumerate().map(|(i, s)| {
-                                    let is_last = i == 7;
-                                    let time = s.timestamp.as_deref().and_then(|t| t.get(11..16)).map(|ts| ts.to_string()).unwrap_or_default();
+                                let len = items.len();
+                                items.into_iter().enumerate().map(|(i, (typ, text, time))| {
+                                    let is_last = i == len - 1;
+                                    let dot_color = if typ == "debt" { "bg-[#F59E0B]" } else { "bg-[#2563EB]" };
                                     view! {
                                         <div class="relative pl-5 pb-5">
                                             {if !is_last { view! { <div class="absolute top-1.5 left-[5px] bottom-[-4px] w-px bg-[#E5E5E5]"></div> }.into_any() } else { ().into_any() }}
-                                            <div class="absolute top-1 left-0 w-2.5 h-2.5 rounded-full bg-[#2563EB]"></div>
-                                            <p class="text-sm font-medium text-[#0A0A0A]">{s.product_name.clone().unwrap_or(s.r#type.clone())}</p>
-                                            <p class="text-xs text-[#525252] mt-0.5">{s.customer_name.clone()} " - " {time}</p>
+                                            <div class={format!("absolute top-1 left-0 w-2.5 h-2.5 rounded-full {}", dot_color)}></div>
+                                            <p class="text-sm font-medium text-[#0A0A0A]">{text}</p>
+                                            <p class="text-xs text-[#525252] mt-0.5">{time}</p>
+                                        </div>
+                                    }
+                                }).collect::<Vec<_>>().into_any()
+                            }}
+                        </div>
+                    </div>
+
+                    // Top Products
+                    <div class="bg-white border border-[#E5E5E5] p-5">
+                        <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em] mb-5">"Top Products"</h3>
+                        <div class="space-y-4">
+                            {move || {
+                                let items = top_products();
+                                if items.is_empty() {
+                                    return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No sales data available"</p> }.into_any();
+                                }
+                                let max_qty = items.first().map(|(_, q, _)| *q as f64).unwrap_or(1.0);
+                                items.into_iter().map(|(_, qty, name)| {
+                                    let pct = (qty as f64 / max_qty * 100.0).min(100.0);
+                                    view! {
+                                        <div>
+                                            <div class="flex justify-between text-sm mb-1">
+                                                <span class="font-medium text-[#0A0A0A]">{name}</span>
+                                                <span class="text-gray-500">"{qty} sold"</span>
+                                            </div>
+                                            <div class="w-full bg-gray-100 rounded-full h-1.5">
+                                                <div class="bg-[#111827] h-1.5 rounded-full" style=move || format!("width:{}%", pct)></div>
+                                            </div>
                                         </div>
                                     }
                                 }).collect::<Vec<_>>().into_any()
@@ -485,6 +769,7 @@ fn DashboardPage() -> impl IntoView {
                 </div>
             </div>
         </div>
+        </Show>
     }
 }
 
@@ -500,64 +785,105 @@ fn ProductsPage() -> impl IntoView {
     let (stock_pstock, set_stock_pstock) = signal(0i64);
     let (stock_qty, set_stock_qty) = signal(0i64);
     let (add_qty, set_add_qty) = signal(0i64);
+    let (add_error, set_add_error) = signal(None::<String>);
     let (sel_type, set_sel_type) = signal("life_saver".to_string());
     let (sel_color, set_sel_color) = signal("white_red".to_string());
     let (sel_size, set_sel_size) = signal("1x1".to_string());
     let per_page = 10u32;
 
-    let load = { let sp = set_products; move || { leptos::task::spawn_local(async move {
-        if let Ok(p) = api::get_all_products().await { sp.set(p); }
-    });}};
-    load();
+    // Shared refetch helper
+    let refetch = {
+        let sp = set_products;
+        move || { leptos::task::spawn_local(async move { if let Ok(p) = api::get_all_products().await { sp.set(p); } }); }
+    };
+    refetch();
 
+    // ---- Actions ----
+    let add_action: Action<(String, Option<String>, Option<String>, i64), Result<api::Product, String>, SyncStorage> = Action::new_unsync(move |input: &(String, Option<String>, Option<String>, i64)| {
+        let (pt, color_opt, size_opt, qty) = input.clone();
+        let pname = if pt == "life_saver" { "Life Saver".into() }
+            else if pt == "stripes" { format!("{} Stripes", if color_opt.as_deref() == Some("white") {"White"} else {"Yellow"}) }
+            else { let cn = if color_opt.as_deref() == Some("white_red") {"White / Red"} else {"Yellow / Red"}; format!("{} Chevron ({})", cn, size_opt.as_deref().unwrap_or("1x1")) };
+        async move {
+            api::add_product(&crate::api::NewProduct {
+                name: pname, product_type: pt, color: color_opt, size: size_opt, selling_price: 0.0, stock: qty,
+            }).await
+        }
+    });
+    let delete_action: Action<i64, Result<SuccessResponse, String>, SyncStorage> = Action::new_unsync(move |id: &i64| { let id = *id; async move { api::delete_product(id).await } });
+    let stock_action: Action<(i64, i64, i64), Result<SuccessResponse, String>, SyncStorage> = Action::new_unsync(move |(pid, add_qty, current): &(i64, i64, i64)| {
+        let (pid, add_qty, current) = (*pid, *add_qty, *current);
+        async move {
+            api::update_product(pid, &crate::api::ProductUpdate {
+                stock: Some(current + add_qty), name: None, product_type: None, color: None, size: None, selling_price: None,
+            }).await
+        }
+    });
+
+    // Watch actions for completion -> refetch & close modals
+    let add_ver = add_action.version();
+    create_effect(move |_| {
+        let _ = add_ver.get();
+        if let Some(result) = add_action.value().get() {
+            match result {
+                Ok(_) => { set_show_add.set(false); set_add_qty.set(0); set_add_error.set(None); refetch(); }
+                Err(e) => { set_add_error.set(Some(e)); }
+            }
+        }
+    });
+    let del_ver = delete_action.version();
+    create_effect(move |_| {
+        let _ = del_ver.get();
+        if let Some(Ok(_)) = delete_action.value().get() { set_del_id.set(None); refetch(); }
+    });
+    let stock_ver = stock_action.version();
+    create_effect(move |_| {
+        let _ = stock_ver.get();
+        if let Some(Ok(_)) = stock_action.value().get() { set_show_stock.set(false); set_stock_qty.set(0); refetch(); }
+    });
+
+    // ---- Actions: trigger via signals to avoid moving Action into view closures ----
+    // Add product trigger
+    let (add_trigger, set_add_trigger) = signal(false);
+    let add_payload = store_value((String::new(), String::new(), String::new(), 0i64));
+    create_effect(move |_| {
+        if add_trigger.get() {
+            let (pt, col, sz, qty) = add_payload.get_value();
+            let pname = if pt == "life_saver" { "Life Saver".into() }
+                else if pt == "stripes" { format!("{} Stripes", if col == "white" {"White"} else {"Yellow"}) }
+                else { let cn = if col == "white_red" {"White / Red"} else {"Yellow / Red"}; format!("{} Chevron ({})", cn, sz) };
+            let color_opt = if pt == "life_saver" { None } else { Some(col.clone()) };
+            let size_opt = if pt == "chevron" { Some(sz.clone()) } else { None };
+            add_action.dispatch((pt, color_opt, size_opt, qty));
+            set_add_trigger.set(false);
+        }
+    });
+
+    // Delete product trigger
+    let (del_trigger, set_del_trigger) = signal(None::<i64>);
+    create_effect(move |_| {
+        if let Some(id) = del_trigger.get() {
+            delete_action.dispatch(id);
+            set_del_trigger.set(None);
+        }
+    });
+
+    // Add stock trigger
+    let (stock_trigger, set_stock_trigger) = signal(false);
+    let stock_payload = store_value((0i64, 0i64, 0i64));
+    create_effect(move |_| {
+        if stock_trigger.get() {
+            stock_action.dispatch(stock_payload.get_value());
+            set_stock_trigger.set(false);
+        }
+    });
+
+    // ---- Derived stats ----
     let total = move || products.get().len();
     let ls_s = move || products.get().iter().filter(|p| p.product_type == "life_saver").map(|p| p.stock).sum::<i64>();
     let ch_s = move || products.get().iter().filter(|p| p.product_type == "chevron").map(|p| p.stock).sum::<i64>();
     let st_s = move || products.get().iter().filter(|p| p.product_type == "stripes").map(|p| p.stock).sum::<i64>();
     let sv = move || products.get().iter().map(|p| p.stock as f64 * p.selling_price).sum::<f64>();
-
-    let handle_add = move |_| {
-            let pt = sel_type.get(); let col = sel_color.get(); let sz = sel_size.get(); let q = add_qty.get();
-            if q <= 0 { return; }
-            let (color_opt, size_opt, pname) = if pt == "life_saver" {
-                (None, None, "Life Saver".to_string())
-            } else if pt == "stripes" {
-                (Some(col.clone()), None, format!("{} Stripes", if col == "white" {"White"} else {"Yellow"}))
-            } else {
-                let cn = if col == "white_red" {"White / Red"} else {"Yellow / Red"};
-                (Some(col.clone()), Some(sz.clone()), format!("{} Chevron ({})", cn, sz))
-            };
-            leptos::task::spawn_local(async move {
-                let _ = api::add_product(&crate::api::NewProduct {
-                    name: pname, product_type: pt, color: color_opt, size: size_opt, selling_price: 0.0, stock: q,
-                }).await;
-                set_show_add.set(false);
-                let sp = set_products;
-                leptos::task::spawn_local(async move { if let Ok(p) = api::get_all_products().await { sp.set(p); } });
-            });
-        };
-
-    let handle_delete = move |id: i64| {
-        let l = load.clone();
-        leptos::task::spawn_local(async move {
-            let _ = api::delete_product(id).await;
-            set_del_id.set(None); l();
-        });
-    };
-
-    let handle_stock = move |_| {
-        if let Some(pid) = stock_pid.get() {
-            let q = stock_qty.get(); if q <= 0 { return; }
-            let l = load.clone();
-            let s = stock_pstock.get();
-            leptos::task::spawn_local(async move {
-                let _ = api::update_product(pid, &crate::api::ProductUpdate {
-                    stock: Some(s + q), name: None, product_type: None, color: None, size: None, selling_price: None,
-                }).await;
-                set_show_stock.set(false); l();
-            });
-        }
-    };
 
     let cls = move |base: &str, active: bool| {
         if active { format!("{} border-2 border-gray-900 bg-gray-50 rounded", base) }
@@ -565,6 +891,11 @@ fn ProductsPage() -> impl IntoView {
     };
     let tx = move |active: bool| if active { "font-medium text-gray-900" } else { "font-medium text-gray-500" };
     let sx = move |active: bool| if active { "text-xs text-gray-500" } else { "text-xs text-gray-400" };
+
+    // Extract pending signals before the view (avoid moving Action into closures)
+    let add_pending = add_action.pending();
+    let del_pending = delete_action.pending();
+    let stock_pending = stock_action.pending();
 
     view! {
         <div class="page-content">
@@ -588,12 +919,12 @@ fn ProductsPage() -> impl IntoView {
             </div>
 
             <div class="bg-white border border-[#E5E5E5] overflow-hidden">
-                <table class="w-full data-table"><thead><tr>
+                <table class="w-full table-fixed data-table"><thead><tr>
                     <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-left">"Type"</th>
                     <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-left">"Color"</th>
                     <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-left">"Size"</th>
                     <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-left">"Stock"</th>
-                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-right">"Actions"</th>
+                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5] text-left">"Actions"</th>
                 </tr></thead><tbody>
                     {move || {
                         let all = products.get();
@@ -616,7 +947,6 @@ fn ProductsPage() -> impl IntoView {
                             let is_ls = p.product_type == "life_saver";
                             let is_ch = p.product_type == "chevron";
                             let badged = if is_ls { "bg-green-100 text-green-800" } else if is_ch { "bg-orange-100 text-orange-800" } else { "bg-blue-100 text-blue-800" };
-                            let stock_badge = if p.stock > 10 { "bg-[#ECFDF5] text-[#10B981]" } else if p.stock > 0 { "bg-[#FFFBEB] text-[#F59E0B]" } else { "bg-[#FEF2F2] text-[#EF4444]" };
                             let color_cell = if let Some(ref col) = p.color {
                                 let swatch = if is_ch {
                                     let (c1, c2) = if col == "white_red" { ("#ffffff", "#ef4444") } else { ("#eab308", "#ef4444") };
@@ -659,15 +989,15 @@ fn ProductsPage() -> impl IntoView {
                                     <td class="px-4 py-[14px] text-sm">{color_cell}</td>
                                     <td class="px-4 py-[14px] text-sm text-[#525252] font-medium">{p.size.unwrap_or_else(|| "-".into())}</td>
                                     <td class="px-4 py-[14px]">
-                                        <div class="flex items-center gap-2">
-                                            <span class=move || format!("inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded {}", stock_badge)>{p.stock} " Units"</span>
-                                            <button on:click=move |_| { set_stock_pid.set(Some(p.id)); set_stock_pname.set(p.name.clone()); set_stock_pstock.set(p.stock); set_stock_qty.set(0); set_show_stock.set(true); } class="px-2 py-1 text-xs font-medium bg-black text-white rounded hover:bg-gray-800 transition-colors">"+ Add"</button>
-                                        </div>
+                                        <span class="text-sm font-medium text-[#0A0A0A]">{p.stock} " units"</span>
                                     </td>
-                                    <td class="px-4 py-[14px] text-right">
-                                        <button on:click=move |_| { set_del_id.set(Some(p.id)); } class="text-gray-400 hover:text-red-600 transition-colors">
-                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                        </button>
+                                    <td class="px-4 py-[14px]">
+                                        <div class="flex items-center gap-2">
+                                            <button on:click=move |_| { set_stock_pid.set(Some(p.id)); set_stock_pname.set(p.name.clone()); set_stock_pstock.set(p.stock); set_stock_qty.set(0); set_show_stock.set(true); } class="px-2.5 py-1 text-xs font-medium bg-[#2563EB] text-white rounded hover:bg-[#1D4ED8] transition-colors">"+ Add"</button>
+                                            <button on:click=move |_| { set_del_id.set(Some(p.id)); } class="text-gray-400 hover:text-red-600 transition-colors">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             }
@@ -688,7 +1018,7 @@ fn ProductsPage() -> impl IntoView {
                             <div class="flex gap-2 items-center">
                                 <button on:click=move |_| set_page.set(((page.get() as i32 - 1).max(1)) as u32) class={if cur <= 1 { "px-3 py-1 text-sm font-medium rounded bg-gray-200 text-gray-400 cursor-not-allowed" } else { "px-3 py-1 text-sm font-medium rounded bg-black text-white hover:bg-gray-800" }} disabled=move || cur <= 1>"Previous"</button>
                                 <span class="px-3 py-1 text-sm font-medium text-gray-700">"Page " {cur} " of " {tp}</span>
-                                <button on:click=move |_| set_page.set((page.get() + 1).min(tp)) class={if cur >= tp { "px-3 py-1 text-sm font-medium rounded bg-gray-200 text-gray-400 cursor-not-allowed" } else { "px-3 py-1 text-sm font-medium rounded bg-black text-white hover:bg-gray-800" }} disabled=move || cur >= tp>"Next"</button>
+                                <button on:click=move |_| set_page.set((page.get() + 1).min(tp)) class={if cur >= tp { "px-3 py-1 text-sm font-medium rounded bg-gray-200 text-gray-400 cursor-not-allowed" } else { "px-3 py-1 text-sm font-medium rounded bg-black text-white hover:bg-gray-800" }} disabled=move || {cur >= tp}>"Next"</button>
                             </div>
                         </div>
                     }.into_any()
@@ -774,7 +1104,14 @@ fn ProductsPage() -> impl IntoView {
                     </div>
                     <div class="flex justify-end gap-2.5 px-6 py-4 bg-[#F5F5F5] border-t border-[#F0F0F0]">
                         <button on:click=move |_| { set_show_add.set(false); set_add_qty.set(0); set_sel_type.set("life_saver".into()); set_sel_color.set("white_red".into()); set_sel_size.set("1x1".into()); } class="px-4 py-2 text-sm font-medium bg-white text-[#0A0A0A] border border-[#E5E5E5] cursor-pointer transition-colors hover:bg-[#F5F5F5]">"Cancel"</button>
-                        <button on:click=move |e| { handle_add(e); set_add_qty.set(0); } class="px-4 py-2 text-sm font-medium bg-[#2563EB] text-white border-none cursor-pointer transition-colors hover:bg-[#1D4ED8]">"Save"</button>
+                        <button
+on:click=move |_| {
+add_payload.set_value((sel_type.get(), sel_color.get(), sel_size.get(), add_qty.get()));
+set_add_trigger.set(true);
+}
+disabled=move || add_pending.get()
+class="px-4 py-2 text-sm font-medium bg-[#2563EB] text-white border-none cursor-pointer transition-colors hover:bg-[#1D4ED8] disabled:opacity-50 disabled:cursor-not-allowed"
+>{move || if add_pending.get() { "Saving..." } else { "Save" }}</button>
                     </div>
                 </div>
             </div>
@@ -805,7 +1142,12 @@ fn ProductsPage() -> impl IntoView {
                     </div>
                     <div class="flex justify-end gap-2.5 px-6 py-4 bg-[#F5F5F5] border-t border-[#F0F0F0]">
                         <button on:click=move |_| set_show_stock.set(false) class="px-4 py-2 text-sm font-medium bg-white text-[#0A0A0A] border border-[#E5E5E5] hover:bg-[#F5F5F5]">"Cancel"</button>
-                        <button on:click=handle_stock class="px-4 py-2 text-sm font-medium bg-[#2563EB] text-white border-none hover:bg-[#1D4ED8]">"Add Stock"</button>
+                        <button
+on:click=move |_| { if let (Some(pid), qty, cur) = (stock_pid.get(), stock_qty.get(), stock_pstock.get()) { if qty > 0 { stock_payload.set_value((pid, qty, cur));
+set_stock_trigger.set(true); } } }
+disabled=move || stock_pending.get()
+class="px-4 py-2 text-sm font-medium bg-[#2563EB] text-white border-none hover:bg-[#1D4ED8] disabled:opacity-50 disabled:cursor-not-allowed"
+>{move || if stock_pending.get() { "Adding..." } else { "Add Stock" }}</button>
                     </div>
                 </div>
             </div>
@@ -818,7 +1160,11 @@ fn ProductsPage() -> impl IntoView {
                     <p class="text-sm text-gray-600 mb-6">"Are you sure you want to delete this product? This action cannot be undone."</p>
                     <div class="flex justify-end gap-3">
                         <button on:click=move |_| set_del_id.set(None) class="px-4 py-2 text-sm font-medium bg-white text-[#0A0A0A] border border-[#E5E5E5] hover:bg-[#F5F5F5]">"Cancel"</button>
-                        <button on:click=move |_| { if let Some(id) = del_id.get() { handle_delete(id); } } class="px-4 py-2 text-sm font-medium bg-red-600 text-white border-none hover:bg-red-700">"Delete"</button>
+                        <button
+on:click=move |_| { if let Some(id) = del_id.get() { set_del_trigger.set(Some(id)); } }
+disabled=move || del_pending.get()
+class="px-4 py-2 text-sm font-medium bg-red-600 text-white border-none hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+>{move || if del_pending.get() { "Deleting..." } else { "Delete" }}</button>
                     </div>
                 </div>
             </div>

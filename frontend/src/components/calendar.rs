@@ -145,3 +145,111 @@ pub fn CalendarModal(
         </div></div>}.into_any()}else{().into_any()}}
     }
 }
+
+/// Compact inline date picker — opens below a trigger element.
+/// `date_r` / `date_w` are the YYYY-MM-DD value, `label` is a display string (e.g. "15 May 2026").
+#[component]
+pub fn MiniCalendar(
+    date_r: ReadSignal<String>,
+    date_w: WriteSignal<String>,
+    #[allow(unused)] label: WriteSignal<String>,
+) -> impl IntoView {
+    let (open, set_open) = signal(false);
+    let (month, set_month) = signal(chrono::Local::now().month() as i32 - 1);
+    let (year, set_year) = signal(chrono::Local::now().year());
+
+    let prev = move |_| {
+        if month.get() == 0 { set_month.set(11); set_year.update(|y| *y -= 1); }
+        else { set_month.update(|m| *m -= 1); }
+    };
+    let next = move |_| {
+        if month.get() == 11 { set_month.set(0); set_year.update(|y| *y += 1); }
+        else { set_month.update(|m| *m += 1); }
+    };
+    let month_label = move || format!("{} {}", MONTHS[month.get() as usize], year.get());
+
+    let select_date = move |d: u32| {
+        let m = month.get() + 1;
+        let y = year.get();
+        let val = format!("{:04}-{:02}-{:02}", y, m, d);
+        date_w.set(val.clone());
+        label.set(format!("{} {} {}", d, MONTHS[(m - 1) as usize], y));
+        set_open.set(false);
+    };
+
+    view! {
+        <div class="inline-block">
+            <button type="button"
+                class="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white hover:border-gray-300 transition-colors flex items-center gap-2"
+                on:click=move |_| set_open.set(true)
+            >
+                <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+                <span>{move || {
+                    let d = date_r.get();
+                    if d.is_empty() { "Pick date".to_string() }
+                    else { format_date_display(&d) }
+                }}</span>
+            </button>
+        </div>
+        {move || if open.get() {
+            view!{<div class="modal-overlay open" on:click=move |_| set_open.set(false)>
+                <div class="modal-container" style="max-width:340px" on:click=move |e| e.stop_propagation()>
+                    <div class="modal-header">
+                        <h3 class="modal-title">"Pick a Date"</h3>
+                        <button class="modal-close-btn" on:click=move |_| set_open.set(false)>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="flex items-center justify-between mb-4">
+                            <button on:click=prev class="p-1.5 hover:bg-gray-100 rounded transition-colors">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                            </button>
+                            <span class="text-sm font-semibold text-gray-900">{month_label}</span>
+                            <button on:click=next class="p-1.5 hover:bg-gray-100 rounded transition-colors">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-7 gap-1 text-center mb-1">
+                            {["Su","Mo","Tu","We","Th","Fr","Sa"].into_iter().map(|h| view!{<div class="text-[10px] font-medium text-gray-400 py-1">{h}</div>}).collect::<Vec<_>>()}
+                        </div>
+                        <div class="grid grid-cols-7 gap-1 text-center">
+                            {move || {
+                                let m = month.get(); let y = year.get();
+                                let first = chrono::NaiveDate::from_ymd_opt(y, (m+1) as u32, 1).unwrap();
+                                let so = first.weekday().num_days_from_sunday() as usize;
+                                let today = chrono::Local::now().date_naive();
+                                let sel_val = date_r.get();
+                                let mut cells: Vec<leptos::prelude::AnyView> = Vec::new();
+                                for _ in 0..so { cells.push(view!{<div></div>}.into_any()); }
+                                for d in 1..=dim(m, y) {
+                                    let dd = chrono::NaiveDate::from_ymd_opt(y, (m+1) as u32, d).unwrap();
+                                    let is_today = dd == today;
+                                    let is_sel = sel_val == format!("{:04}-{:02}-{:02}", y, m+1, d);
+                                    let cls = if is_sel { "bg-black text-white rounded-full font-medium" }
+                                        else if is_today { "border border-black rounded-full font-medium" }
+                                        else { "hover:bg-gray-100 rounded-full" };
+                                    let d2 = d;
+                                    cells.push(view!{<div class=format!("text-sm py-2 cursor-pointer transition-colors {}", cls)
+                                        on:click=move |_| select_date(d2)
+                                    >{d2}</div>}.into_any());
+                                }
+                                cells.into_any()
+                            }}
+                        </div>
+                    </div>
+                </div>
+            </div>}.into_any()
+        } else { ().into_any() }}
+    }
+}
+
+fn format_date_display(date_str: &str) -> String {
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        format!("{} {} {}", d.day(), MONTHS[(d.month() - 1) as usize], d.year())
+    } else {
+        date_str.to_string()
+    }
+}

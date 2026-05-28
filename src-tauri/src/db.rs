@@ -429,7 +429,20 @@ impl Database {
         ).map_err(|e| e.to_string())?;
 
         let id = conn.last_insert_rowid();
-        self.get_stock(id).map(|s| s.unwrap())
+        // IMPORTANT: do not call self.get_stock(id) here while holding the mutex,
+        // because get_stock() also locks the same mutex and deadlocks the UI.
+        conn.query_row(
+            "SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM stock WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(StockItem {
+                    id: row.get(0)?, color: row.get(1)?, size: row.get(2)?,
+                    sticker_type: row.get(3)?, rolls: row.get(4)?,
+                    metres_per_roll: row.get(5)?, total_metres: row.get(6)?,
+                    metres_used: row.get(7)?, created_at: row.get(8)?, updated_at: row.get(9)?,
+                })
+            },
+        ).map_err(|e| e.to_string())
     }
 
     pub fn update_stock(&self, id: i64, updates: StockUpdate) -> Result<(), String> {
@@ -908,7 +921,19 @@ impl Database {
         ).map_err(|e| e.to_string())?;
 
         let id = conn.last_insert_rowid();
-        self.get_service(id).map(|s| s.unwrap())
+        // IMPORTANT: do not call self.get_service(id) here while holding the mutex,
+        // because get_service() also locks the same mutex and deadlocks the UI.
+        conn.query_row(
+            "SELECT id, name, description, price, unit, uses_stock, is_active, created_at, updated_at FROM services WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Service {
+                    id: row.get(0)?, name: row.get(1)?, description: row.get(2)?,
+                    price: row.get(3)?, unit: row.get(4)?, uses_stock: row.get(5)?,
+                    is_active: row.get(6)?, created_at: row.get(7)?, updated_at: row.get(8)?,
+                })
+            },
+        ).map_err(|e| e.to_string())
     }
 
     pub fn update_service(&self, id: i64, updates: ServiceUpdate) -> Result<(), String> {
@@ -996,15 +1021,21 @@ impl Database {
         let id = conn.last_insert_rowid();
 
         // Auto-deduct stock metres_used if stock was used
+        // IMPORTANT: use inline queries to avoid deadlocking the mutex
         if let (Some(stock_id), stock_metres) = (tx.stock_id, tx.stock_metres_used) {
             if stock_metres > 0.0 {
-                if let Some(stock_item) = self.get_stock(stock_id)? {
-                    let new_metres_used = stock_item.metres_used + stock_metres;
-                    self.update_stock(stock_id, StockUpdate {
-                        metres_used: Some(new_metres_used),
-                        color: None, size: None, sticker_type: None, rolls: None,
-                        metres_per_roll: None, total_metres: None,
-                    })?;
+                let current_metres_used: Option<f64> = conn
+                    .query_row(
+                        "SELECT metres_used FROM stock WHERE id = ?1",
+                        params![stock_id],
+                        |row| row.get(0),
+                    ).ok();
+                if let Some(current_used) = current_metres_used {
+                    let new_metres_used = current_used + stock_metres;
+                    conn.execute(
+                        "UPDATE stock SET metres_used = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                        params![new_metres_used, stock_id],
+                    ).map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -1122,7 +1153,21 @@ impl Database {
         ).map_err(|e| e.to_string())?;
 
         let id = conn.last_insert_rowid();
-        self.get_printing_material(id).map(|m| m.unwrap())
+        // IMPORTANT: do not call self.get_printing_material(id) here while holding the mutex,
+        // because get_printing_material() also locks the same mutex and deadlocks the UI.
+        conn.query_row(
+            "SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at FROM printing_materials WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(PrintingMaterial {
+                    id: row.get(0)?, name: row.get(1)?, material_type: row.get(2)?,
+                    width: row.get(3)?, rolls: row.get(4)?,
+                    metres_per_roll: row.get(5)?, total_metres: row.get(6)?,
+                    metres_used: row.get(7)?, color: row.get(8)?,
+                    created_at: row.get(9)?, updated_at: row.get(10)?,
+                })
+            },
+        ).map_err(|e| e.to_string())
     }
 
     pub fn update_printing_material(&self, id: i64, updates: PrintingMaterialUpdate) -> Result<(), String> {

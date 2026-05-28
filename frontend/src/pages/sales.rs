@@ -3,6 +3,12 @@ use crate::api::{self, Sale, NewSale, Product, StockItem, NewDebt};
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
+#[path = "../components/calendar.rs"]
+mod calendar_comp;
+use calendar_comp::MiniCalendar;
+#[path = "../components/receipt.rs"]
+mod receipt_comp;
+use receipt_comp::{ReceiptModal, open_multi_sale_receipt, open_sale_receipt};
 
 #[derive(Clone, Copy, PartialEq)]
 enum SaleTab { Stock, Product, Service }
@@ -26,6 +32,11 @@ pub fn SalesPage() -> impl IntoView {
     let (convert_paid, set_convert_paid) = signal(String::new());
     let (convert_due_date, set_convert_due_date) = signal(String::new());
     let (convert_due_label, set_convert_due_label) = signal(String::new());
+
+    // Receipt / Print state
+    let (show_receipt, set_show_receipt) = signal(false);
+    let (receipt_html, set_receipt_html) = signal(String::new());
+    let (receipt_title, set_receipt_title) = signal(String::new());
 
     // Stock tab state
     let (stock_id, set_stock_id) = signal(None::<i64>);
@@ -192,6 +203,22 @@ pub fn SalesPage() -> impl IntoView {
         }
     };
 
+    // Print selected sales receipt
+    let print_selected = {
+        let sales = sales;
+        let selected_sales = selected_sales;
+        let set_show = set_show_receipt;
+        let set_html = set_receipt_html;
+        let set_title = set_receipt_title;
+        move |_| {
+            let sel_ids = selected_sales.get();
+            if sel_ids.is_empty() { return; }
+            let all = sales.get();
+            let selected: Vec<Sale> = all.into_iter().filter(|s| sel_ids.contains(&s.id)).collect();
+            open_multi_sale_receipt(&selected, set_show, set_html, set_title);
+        }
+    };
+
     // Convert-to-debt submit
     let submit_convert = {
         let l = reload.clone();
@@ -248,7 +275,7 @@ pub fn SalesPage() -> impl IntoView {
         <div class="flex items-center justify-between mb-6">
             <div><h1 class="page-title">"Sales"</h1><p class="page-subtitle">"Track all transactions"</p></div>
             <div class="flex items-center gap-2">
-                {move || if selected.get() > 0 { view!{<button id="btn-print-selected-sales" class="flex items-center gap-2 px-4 py-2 text-sm bg-green-600 text-white rounded-md">"Print (" {selected.get()} ")"</button>}.into_any() } else { ().into_any() }}
+                {move || if selected.get() > 0 { view!{<button id="btn-print-selected-sales" class="btn-secondary flex items-center gap-2 px-4 py-2 text-sm" on:click=print_selected><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>"Print (" {selected.get()} ")"</button>}.into_any() } else { ().into_any() }}
                 <button id="btn-record-sale" class="flex items-center gap-2 btn-primary px-4 py-2 text-sm" on:click=move |_| set_show_modal.set(true)>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Record Sale"</button>
             </div>
@@ -267,7 +294,7 @@ pub fn SalesPage() -> impl IntoView {
             <div class="p-4 border-b border-gray-100"><h2 class="text-sm font-semibold">"Today's Transactions"</h2></div>
             <table class="w-full data-table">
                 <thead><tr>
-                    <th class="w-10"><input type="checkbox" class="w-4 h-4" prop:checked=move || { let s = selected.get(); let t = total_items(); s > 0 && s == t } on:change=move |e| select_all(event_target_checked(&e)) /></th>
+                    <th class="w-10"><label class="custom-checkbox"><input type="checkbox" prop:checked=move || { let s = selected.get(); let t = total_items(); s > 0 && s == t } on:change=move |e| select_all(event_target_checked(&e)) /><span class="checkmark"></span></label></th>
                     <th>"Time"</th><th>"Item"</th><th>"Qty"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th>
                 </tr></thead>
                 <tbody>
@@ -291,7 +318,7 @@ pub fn SalesPage() -> impl IntoView {
                                 let sale_clone = sale.clone();
                                 view!{
                                     <tr class=move || format!("hover:bg-gray-50 transition-colors {}", if is_sel() {"bg-green-50"} else {""})>
-                                        <td class="px-5 py-4"><input type="checkbox" class="w-4 h-4" prop:checked=is_sel on:change=move |_| toggle_select(id)/></td>
+                                        <td class="px-5 py-4"><label class="custom-checkbox"><input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/><span class="checkmark"></span></label></td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{tm}</td>
                                         <td class="px-5 py-4"><div class="flex items-center gap-2"><span class=format!("status-badge {}", typ_cls)>{typ_label}</span><span class="text-sm font-medium text-gray-900">{name}</span></div></td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{qty_display}</td>
@@ -299,6 +326,9 @@ pub fn SalesPage() -> impl IntoView {
                                         <td class="px-5 py-4"><span class="status-badge status-badge--success capitalize">{pm_display}</span></td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{cust_display}</td>
                                         <td class="px-5 py-4"><div class="flex items-center gap-2">
+                                            <button on:click={let s=sale_clone.clone(); move |_| open_sale_receipt(&s, set_show_receipt, set_receipt_html, set_receipt_title)} class="text-gray-400 hover:text-gray-700 transition-colors" title="Print receipt">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+                                            </button>
                                             <button on:click=move |_| { let s=sale_clone.clone(); open_convert(Some(&s)); } class="text-gray-400 hover:text-blue-600 transition-colors" title="Convert to debt">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
                                             </button>
@@ -322,7 +352,7 @@ pub fn SalesPage() -> impl IntoView {
                     <div class="flex gap-2">
                         <button on:click=move |_| { if cp > 1 { set_current_page.set(cp - 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
                         <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
-                        <button on:click=move |_| { if cp < tp { set_current_page.set(cp + 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp >= tp>"Next"</button>
+                        <button on:click=move |_| { if cp < tp { set_current_page.set(cp + 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if tp <= cp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button>
                     </div>
                 </div>}.into_any()
             }}}
@@ -440,7 +470,7 @@ pub fn SalesPage() -> impl IntoView {
                         <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Phone"</label><input type="tel" class="w-full" placeholder="Optional" prop:value=move || convert_phone.get() on:input=move |e| set_convert_phone.set(event_target_value(&e))/></div>
                         <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Paid *"</label><input type="number" min="0" step="0.01" class="w-full" placeholder="0.00" prop:value=move || convert_paid.get() on:input=move |e| set_convert_paid.set(event_target_value(&e))/></div>
                         <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Remaining Debt"</label><div class="px-3 py-2 bg-red-50 border border-red-200 text-lg font-bold text-red-600">{move || format!("KSh {:.0}", remaining())}</div></div>
-                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><input type="date" class="w-full" prop:value=move || convert_due_date.get() on:input=move |e| set_convert_due_date.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><MiniCalendar date_r=convert_due_date date_w=set_convert_due_date label=set_convert_due_label/></div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -449,5 +479,7 @@ pub fn SalesPage() -> impl IntoView {
                 </div>
             </div></div>}
         }).map(|v| v.into_any()).unwrap_or_else(|| ().into_any())}
+
+        <ReceiptModal show=Signal::derive(move || show_receipt.get()) set_show=set_show_receipt receipt_html=Signal::derive(move || receipt_html.get()) title=Signal::derive(move || receipt_title.get())/>
     </div> }
 }

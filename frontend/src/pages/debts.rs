@@ -6,7 +6,7 @@ mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
 #[path = "../components/calendar.rs"]
 mod calendar_comp;
-use calendar_comp::CalendarModal;
+use calendar_comp::{CalendarModal, MiniCalendar};
 
 #[component]
 pub fn DebtsPage() -> impl IntoView {
@@ -22,6 +22,7 @@ pub fn DebtsPage() -> impl IntoView {
     let (phone, set_phone) = signal(String::new());
     let (amt, set_amt) = signal(String::new());
     let (due, set_due) = signal(String::new());
+    let (due_label, set_due_label) = signal(String::new());
     let (desc, set_desc) = signal(String::new());
     // Payment form
     let (pay_amt, set_pay_amt) = signal(String::new());
@@ -78,7 +79,7 @@ pub fn DebtsPage() -> impl IntoView {
                     sale_id: None, service_transaction_id: None,
                 }).await;
                 set_cust.set(String::new()); set_phone.set(String::new()); set_amt.set(String::new());
-                set_due.set(String::new()); set_desc.set(String::new()); l();
+                set_due.set(String::new()); set_due_label.set(String::new()); set_desc.set(String::new()); l();
             });
         }
     };
@@ -118,7 +119,7 @@ pub fn DebtsPage() -> impl IntoView {
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                     "Calendar View"</button>
                 <button class="flex items-center gap-2 bg-brand-500 text-white px-4 py-2 text-sm font-medium hover:bg-brand-600 transition-all"
-                    on:click=move |_| { set_cust.set(String::new()); set_phone.set(String::new()); set_amt.set(String::new()); set_due.set(String::new()); set_desc.set(String::new()); set_show_add.set(true); }>
+                    on:click=move |_| { set_cust.set(String::new()); set_phone.set(String::new()); set_amt.set(String::new()); set_due.set(String::new()); set_due_label.set(String::new()); set_desc.set(String::new()); set_show_add.set(true); }>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                     "Add Debt"</button>
             </div>
@@ -159,7 +160,7 @@ pub fn DebtsPage() -> impl IntoView {
                                         <td class="px-5 py-4"><div class="flex items-center gap-2">
                                             {if is_pending { view!{<>
                                                 <button on:click=move |_| { set_pay_amt.set(String::new()); set_pay_notes.set(String::new()); set_pay_method.set("cash".into()); set_show_pay.set(Some(debt_clone.clone())); } class="px-3 py-1 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors">"Pay"</button>
-                                                <button on:click={let did=id;let l=reload.clone();move|_|{leptos::task::spawn_local(async move{let _=api::mark_debt_paid(did).await;l();});}} class="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors">"Mark Paid"</button>
+                                                <button on:click={let did=id;let l=reload.clone();move|_|{leptos::task::spawn_local(async move{let _=api::mark_debt_paid(did).await;l();});}} class="btn-primary px-3 py-1 text-xs font-medium rounded-md">"Mark Paid"</button>
                                             </>}.into_any() } else { ().into_any() }}
                                             <button on:click=move |_| open_history(&debt_clone2) class="text-gray-400 hover:text-gray-600 transition-colors" title="Payment history">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -183,7 +184,7 @@ pub fn DebtsPage() -> impl IntoView {
                     <div class="flex gap-2">
                         <button on:click=move |_| { if cp>1 {set_current_page.set(cp-1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
                         <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
-                        <button on:click=move |_| { if cp<tp {set_current_page.set(cp+1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp>=tp>"Next"</button>
+                        <button on:click=move |_| { if cp<tp {set_current_page.set(cp+1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button>
                     </div>
                 </div>}.into_any()
             }}}
@@ -195,7 +196,7 @@ pub fn DebtsPage() -> impl IntoView {
                 <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Name"</label><input type="text" class="w-full" placeholder="Enter customer name" prop:value=move || cust.get() on:input=move |e| set_cust.set(event_target_value(&e))/></div>
                 <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Phone Number"</label><input type="tel" class="w-full" placeholder="Enter phone number" prop:value=move || phone.get() on:input=move |e| set_phone.set(event_target_value(&e))/></div>
                 <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Owed"</label><input type="number" step="0.01" class="w-full" placeholder="0.00" prop:value=move || amt.get() on:input=move |e| set_amt.set(event_target_value(&e))/></div>
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><input type="date" class="w-full" prop:value=move || due.get() on:input=move |e| set_due.set(event_target_value(&e))/></div>
+                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><MiniCalendar date_r=due date_w=set_due label=set_due_label/></div>
                 <div class="col-span-2"><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Description"</label><textarea rows="2" class="w-full" placeholder="What was purchased?" prop:value=move || desc.get() on:input=move |e| set_desc.set(event_target_value(&e))></textarea></div>
             </div>
         </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_add.set(false)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=add_debt>"Save Debt"</button></div></div></div>}.into_any() } else { ().into_any() }}

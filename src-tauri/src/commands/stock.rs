@@ -24,8 +24,8 @@ pub fn get_stock_by_color_size_type(
 }
 
 #[tauri::command]
-pub fn add_stock(db: State<'_, Database>, stock_item: NewStockItem) -> Result<StockItem, String> {
-    db.add_stock(stock_item)
+pub fn add_stock(db: State<'_, Database>, item: NewStockItem) -> Result<StockItem, String> {
+    db.add_stock(item)
 }
 
 #[tauri::command]
