@@ -65,7 +65,7 @@ cargo install tauri-cli --version '^2'
 
 ### Clone the repository
 ```bash
-git clone git@github.com:codegoddy/MULTICAL.git
+git clone git@github.com:multi-prints/MULTICAL.git
 cd MULTICAL
 ```
 

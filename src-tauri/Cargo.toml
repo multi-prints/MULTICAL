@@ -1,11 +1,11 @@
 [package]
 name = "multiprints"
-version = "1.1.0"
+version = "1.1.1"
 description = "MULTIPRINTS - Offline Desktop Inventory and Sales Management Application"
 authors = ["Godwin Mayodi <codegoddy@gmail.com>"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/codegoddy/MULTICAL"
+repository = "https://github.com/multi-prints/MULTICAL"
 
 [lib]
 name = "multiprints_lib"

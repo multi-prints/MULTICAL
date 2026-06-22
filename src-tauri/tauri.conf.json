@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/master/tauri-conf.schema.json",
   "productName": "MULTIPRINTS",
-  "version": "1.1.0",
-  "identifier": "com.multiprints.app",
+  "version": "1.1.1",
+  "identifier": "com.multiprints.desktop",
   "app": {
     "windows": [
       {
@@ -23,8 +23,8 @@
   },
   "build": {
     "frontendDist": "../src",
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "cd ../frontend && trunk build"
+    "beforeDevCommand": "cd frontend && trunk serve --release --port 1420",
+    "beforeBuildCommand": "cd frontend && trunk build"
   },
   "bundle": {
     "active": true,
@@ -38,7 +38,7 @@
     ],
     "resources": [],
     "copyright": "Copyright © 2026 Godwin Mayodi",
-    "category": "Office",
+    "category": "Business",
     "shortDescription": "Inventory and Sales Management",
     "longDescription": "A modern offline desktop inventory and sales management application for tracking products, stock, sales, and customer debts.",
     "linux": {

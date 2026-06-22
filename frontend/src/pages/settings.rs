@@ -17,7 +17,7 @@ pub fn SettingsPage(
     let (active_tab, set_active_tab) = signal(SettingsTab::Account);
     let (msg, set_msg) = signal(None::<(bool, String)>);
     let (users, set_users) = signal(Vec::<User>::new());
-    let (app_version, set_app_version) = signal("1.1.0".to_string());
+    let (app_version, set_app_version) = signal("1.1.1".to_string());
     let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
 
     // Username change
@@ -224,7 +224,7 @@ pub fn SettingsPage(
                 <div class="space-y-3">
                     <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Author"</span><span class="text-sm font-medium text-gray-900">"Godwin Mayodi"</span></div>
                     <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Email"</span><span class="text-sm font-medium text-gray-900">"codegoddy@gmail.com"</span></div>
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Repository"</span><a href="https://github.com/codegoddy/MULTICAL" target="_blank" class="text-sm font-medium text-brand-500 hover:underline">"github.com/codegoddy/MULTICAL"</a></div>
+                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Repository"</span><a href="https://github.com/multi-prints/MULTICAL" target="_blank" class="text-sm font-medium text-brand-500 hover:underline">"github.com/multi-prints/MULTICAL"</a></div>
                 </div>
             </div>
         </div>}.into_any() } else { ().into_any() }}
