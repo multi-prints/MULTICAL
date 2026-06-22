@@ -24,10 +24,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            bundle_glob: src-tauri/target/release/bundle/nsis/*.exe
+            bundle_glob: target/release/bundle/nsis/*.exe
             artifact_name: multiprints-windows
           - os: ubuntu-latest
-            bundle_glob: src-tauri/target/release/bundle/deb/*.deb
+            bundle_glob: target/release/bundle/deb/*.deb
             artifact_name: multiprints-linux
 
     runs-on: ${{ matrix.os }}
@@ -48,8 +48,14 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
+      - name: Add WASM target
+        run: rustup target add wasm32-unknown-unknown
+
       - name: Install Trunk
         run: cargo install trunk --locked
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -69,7 +75,7 @@ jobs:
       - name: List build artifacts
         run: |
           echo "=== Bundle output ==="
-          find src-tauri/target/release/bundle -type f | sort || true
+          find target/release/bundle -type f | sort || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
