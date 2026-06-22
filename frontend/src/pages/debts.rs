@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use std::cmp::Ordering;
 use crate::api::{self, Debt, NewDebt, NewDebtPayment, DebtPayment};
 
 #[path = "../components/dropdown.rs"]
@@ -8,6 +9,30 @@ use dropdown_comp::{CustomDropdown, DropdownItem};
 mod calendar_comp;
 use calendar_comp::{CalendarModal, MiniCalendar};
 
+fn format_debt_datetime(ts: &Option<String>) -> String {
+    ts.as_ref()
+        .and_then(|t| {
+            chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.3f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S"))
+                .ok()
+        })
+        .map(|dt| {
+            let today = chrono::Local::now().date_naive();
+            let payment_day = dt.date();
+            let time = dt.format("%I:%M %p").to_string();
+
+            if payment_day == today {
+                format!("Today {}", time)
+            } else if payment_day == today.pred_opt().unwrap_or(today) {
+                format!("Yesterday {}", time)
+            } else {
+                dt.format("%d/%m/%Y %I:%M %p").to_string()
+            }
+        })
+        .or_else(|| ts.clone())
+        .unwrap_or_else(|| "-".to_string())
+}
+
 #[component]
 pub fn DebtsPage() -> impl IntoView {
     let (debts, set_debts) = signal(Vec::<Debt>::new());
@@ -16,6 +41,8 @@ pub fn DebtsPage() -> impl IntoView {
     let (show_pay, set_show_pay) = signal(None::<Debt>);
     let (show_history, set_show_history) = signal(None::<Debt>);
     let (current_page, set_current_page) = signal(1u32);
+    let (search, set_search) = signal(String::new());
+    let (sort_by, set_sort_by) = signal("newest".to_string());
     let items_per_page = 10u32;
     // Add debt form
     let (cust, set_cust) = signal(String::new());
@@ -44,6 +71,12 @@ pub fn DebtsPage() -> impl IntoView {
         DropdownItem::new("mpesa", "M-Pesa"),
         DropdownItem::new("till", "Till Number"),
     ]);
+    let sort_items = Signal::derive(move || vec![
+        DropdownItem::new("newest", "Newest First"),
+        DropdownItem::new("oldest", "Oldest First"),
+        DropdownItem::new("amount_desc", "Highest Remaining"),
+        DropdownItem::new("amount_asc", "Lowest Remaining"),
+    ]);
 
     let total_outstanding = move || debts.get().iter().filter(|d| d.status == "pending").map(|d| d.remaining_amount).sum::<f64>();
     let paid_month = move || {
@@ -56,10 +89,41 @@ pub fn DebtsPage() -> impl IntoView {
         debts.get().iter().filter(|d| d.status == "pending" && d.due_date.as_ref().map_or(false, |dd| dd < &today)).count()
     };
 
-    let total_items = move || debts.get().len() as u32;
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        set_current_page.set(1);
+    });
+
+    let filtered_debts = move || {
+        let query = search.get().trim().to_lowercase();
+        let sort = sort_by.get();
+        let mut items = debts.get().into_iter().filter(|debt| {
+            if query.is_empty() {
+                true
+            } else {
+                debt.customer_name.to_lowercase().contains(&query)
+                    || debt.phone.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || debt.description.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || debt.status.to_lowercase().contains(&query)
+                    || debt.due_date.as_deref().unwrap_or("").to_lowercase().contains(&query)
+            }
+        }).collect::<Vec<_>>();
+
+        items.sort_by(|a, b| match sort.as_str() {
+            "oldest" => a.created_at.cmp(&b.created_at),
+            "amount_desc" => b.remaining_amount.partial_cmp(&a.remaining_amount).unwrap_or(Ordering::Equal),
+            "amount_asc" => a.remaining_amount.partial_cmp(&b.remaining_amount).unwrap_or(Ordering::Equal),
+            _ => b.created_at.cmp(&a.created_at),
+        });
+
+        items
+    };
+
+    let total_items = move || filtered_debts().len() as u32;
     let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
     let paginated = move || {
-        let items = debts.get();
+        let items = filtered_debts();
         let start = ((current_page.get() - 1) * items_per_page) as usize;
         items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
     };
@@ -134,6 +198,25 @@ pub fn DebtsPage() -> impl IntoView {
 
         // Table
         <div class="dashboard-panel overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <h2 class="text-sm font-semibold">"Debt Records"</h2>
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                        type="text"
+                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
+                        placeholder="Search customer, phone, note..."
+                        prop:value=move || search.get()
+                        on:input=move |e| set_search.set(event_target_value(&e))
+                    />
+                    <div class="min-w-[220px]">
+                        <CustomDropdown
+                            items=sort_items
+                            placeholder="Newest First".to_string()
+                            on_select=Callback::new(move |v: String| set_sort_by.set(v))
+                        />
+                    </div>
+                </div>
+            </div>
             <table class="w-full data-table">
                 <thead><tr><th>"Customer"</th><th>"Phone"</th><th>"Total Amount"</th><th>"Paid"</th><th>"Remaining"</th><th>"Due Date"</th><th>"Status"</th><th>"Actions"</th></tr></thead>
                 <tbody>
@@ -225,7 +308,10 @@ pub fn DebtsPage() -> impl IntoView {
             view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 700px;"><div class="modal-header"><h3 class="modal-title">"Payment History"</h3><button class="modal-close-btn" on:click=move |_| set_show_history.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
                 <div class="bg-gray-50 p-4 mb-4">
                     <div class="flex justify-between items-start mb-2"><div><p class="text-xs text-gray-500">"Customer"</p><p class="font-semibold text-gray-900">{d.customer_name.clone()}</p></div><div class="text-right"><p class="text-xs text-gray-500">"Total Debt"</p><p class="font-semibold text-gray-900">{format!("KSh {:.0}", total)}</p></div></div>
-                    <div class="flex justify-between items-center pt-2 border-t border-gray-200"><div><p class="text-xs text-gray-500">"Total Paid"</p><p class="font-medium text-green-600">{format!("KSh {:.0}", paid)}</p></div><div class="text-right"><p class="text-xs text-gray-500">"Remaining"</p><p class="font-bold text-red-600">{format!("KSh {:.0}", rem)}</p></div></div>
+                    <div class="grid grid-cols-2 gap-4 pt-2 border-t border-gray-200">
+                        <div><p class="text-xs text-gray-500">"Total Paid"</p><p class="font-medium text-green-600">{format!("KSh {:.0}", paid)}</p></div>
+                        <div class="text-right"><p class="text-xs text-gray-500">"Remaining"</p><p class="font-bold text-red-600">{format!("KSh {:.0}", rem)}</p></div>
+                    </div>
                 </div>
                 <div class="overflow-hidden border border-gray-200"><table class="w-full data-table">
                     <thead><tr><th>"Date & Time"</th><th>"Amount"</th><th>"Payment Method"</th></tr></thead>
@@ -234,8 +320,8 @@ pub fn DebtsPage() -> impl IntoView {
                             let ps = payments.get();
                             if ps.is_empty() { view!{<tr><td colspan="3" class="px-5 py-8 text-center text-gray-500">"No payments recorded yet."</td></tr>}.into_any() }
                             else { ps.into_iter().map(|p| {
-                                let dt = p.payment_date.unwrap_or_default();
-                                view!{<tr class="border-b border-gray-50"><td class="px-4 py-3 text-sm text-gray-600">{dt}</td><td class="px-4 py-3 text-sm font-medium">{format!("KSh {:.2}", p.amount)}</td><td class="px-4 py-3 text-sm text-gray-600 capitalize">{p.payment_method}</td></tr>}
+                                let dt = format_debt_datetime(&p.payment_date);
+                                view!{<tr class="border-b border-gray-50"><td class="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{dt}</td><td class="px-4 py-3 text-sm font-medium">{format!("KSh {:.2}", p.amount)}</td><td class="px-4 py-3 text-sm text-gray-600 capitalize">{p.payment_method}</td></tr>}
                             }).collect::<Vec<_>>().into_any() }
                         }}
                     </tbody>

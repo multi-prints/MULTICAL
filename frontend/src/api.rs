@@ -170,6 +170,7 @@ pub struct Debt {
     pub sale_id: Option<i64>,
     pub service_transaction_id: Option<i64>,
     pub paid_at: Option<String>,
+    pub last_payment_at: Option<String>,
     pub created_at: Option<String>,
 }
 
@@ -380,7 +381,9 @@ api_fn!(get_total_outstanding, "get_total_outstanding", f64);
 api_fn!(get_paid_this_month, "get_paid_this_month", f64);
 api_fn!(get_overdue_debts, "get_overdue_debts", Vec<Debt>);
 api_fn!(add_debt_payment, "add_debt_payment", payment: &NewDebtPayment, DebtPayment);
-api_fn!(get_debt_payments, "get_debt_payments", debt_id: i64, Vec<DebtPayment>);
+pub async fn get_debt_payments(debt_id: i64) -> Result<Vec<DebtPayment>, String> {
+    tauri_invoke_inner("get_debt_payments", &serde_json::json!({ "debtId": debt_id })).await
+}
 api_fn!(delete_debt_payment, "delete_debt_payment", id: i64, SuccessResponse);
 api_fn!(get_all_services, "get_all_services", Vec<Service>);
 api_fn!(get_active_services, "get_active_services", Vec<Service>);

@@ -1,5 +1,8 @@
 use leptos::prelude::*;
+use log::error;
+use std::cmp::Ordering;
 use crate::api::{self, Sale, NewSale, Product, StockItem, NewDebt};
+use super::stock_page::get_hex as stock_color_hex;
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
@@ -13,6 +16,30 @@ use receipt_comp::{ReceiptModal, open_multi_sale_receipt, open_sale_receipt};
 #[derive(Clone, Copy, PartialEq)]
 enum SaleTab { Stock, Product, Service }
 
+fn format_sale_timestamp(ts: &Option<String>) -> String {
+    ts.as_ref()
+        .and_then(|t| {
+            chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.3f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S"))
+                .ok()
+        })
+        .map(|dt| {
+            let today = chrono::Local::now().date_naive();
+            let sale_day = dt.date();
+            let time = dt.format("%I:%M %p").to_string();
+
+            if sale_day == today {
+                format!("Today {}", time)
+            } else if sale_day == today.pred_opt().unwrap_or(today) {
+                format!("Yesterday {}", time)
+            } else {
+                dt.format("%d/%m/%Y %I:%M %p").to_string()
+            }
+        })
+        .or_else(|| ts.clone())
+        .unwrap_or_else(|| "-".to_string())
+}
+
 #[component]
 pub fn SalesPage() -> impl IntoView {
     let (sales, set_sales) = signal(Vec::<Sale>::new());
@@ -24,6 +51,8 @@ pub fn SalesPage() -> impl IntoView {
     let (current_page, set_current_page) = signal(1u32);
     let (selected, set_selected) = signal(0u32);
     let (selected_sales, set_selected_sales) = signal(Vec::<i64>::new());
+    let (search, set_search) = signal(String::new());
+    let (sort_by, set_sort_by) = signal("newest".to_string());
 
     // Convert-to-debt modal state
     let (show_convert, set_show_convert) = signal(None::<Sale>);
@@ -45,6 +74,8 @@ pub fn SalesPage() -> impl IntoView {
     let (stock_price, set_stock_price) = signal(String::new());
     let (stock_payment, set_stock_payment) = signal("cash".to_string());
     let (stock_cust, set_stock_cust) = signal("Walk-in".to_string());
+    let (stock_submit_error, set_stock_submit_error) = signal(None::<String>);
+    let (stock_submitting, set_stock_submitting) = signal(false);
 
     // Product tab state
     let (product_id, set_product_id) = signal(None::<i64>);
@@ -78,8 +109,9 @@ pub fn SalesPage() -> impl IntoView {
     // Dropdown item signals
     let stock_dropdown_items = Signal::derive(move || stock.get().into_iter().map(|s| {
         let remaining = s.total_metres - if s.metres_used.is_nan() { 0.0 } else { s.metres_used };
+        let color_hex = stock_color_hex(&s.color);
         DropdownItem::new(&s.id.to_string(), &format!("{} - {}in ({}) - {}m", s.color, s.size, if s.sticker_type=="reflective" {"Reflective"} else {"Colored"}, remaining as u64))
-            .with_color(&s.color, None).with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
+            .with_color(&s.color, Some(color_hex)).with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
     }).collect::<Vec<_>>());
 
     let sale_type_items = Signal::derive(move || vec![
@@ -91,13 +123,23 @@ pub fn SalesPage() -> impl IntoView {
         DropdownItem::new("mpesa", "M-Pesa"),
         DropdownItem::new("till", "Till Number"),
     ]);
+    let sort_items = Signal::derive(move || vec![
+        DropdownItem::new("newest", "Newest First"),
+        DropdownItem::new("oldest", "Oldest First"),
+        DropdownItem::new("amount_desc", "Highest Amount"),
+        DropdownItem::new("amount_asc", "Lowest Amount"),
+    ]);
     let product_dropdown_items = Signal::derive(move || products.get().into_iter().filter(|p| p.stock > 0).map(|p| {
-        DropdownItem::new(&p.id.to_string(), &p.name).with_badge(&format!("{} in stock", p.stock))
+        let color = p.color.clone().unwrap_or_default();
+        DropdownItem::new(&p.id.to_string(), &p.name)
+            .with_badge(&format!("{} in stock", p.stock))
+            .with_product_preview(&p.product_type, if color.trim().is_empty() { None } else { Some(color.as_str()) })
     }).collect::<Vec<_>>());
 
     let reset_stock_tab = move || {
         set_stock_id.set(None); set_sale_unit.set("metres".into()); set_stock_qty.set(String::new());
         set_stock_price.set(String::new()); set_stock_payment.set("cash".into()); set_stock_cust.set("Walk-in".into());
+        set_stock_submit_error.set(None); set_stock_submitting.set(false);
     };
     let reset_product_tab = move || {
         set_product_id.set(None); set_product_qty.set("1".into()); set_product_price.set(0.0);
@@ -114,25 +156,95 @@ pub fn SalesPage() -> impl IntoView {
     let submit_stock = {
         let l = reload.clone();
         move |_| {
+            if stock_submitting.get() {
+                return;
+            }
+
             let sid = stock_id.get();
             let qty_val: f64 = stock_qty.get().parse().unwrap_or(0.0);
             let price_val: f64 = stock_price.get().parse().unwrap_or(0.0);
-            if sid.is_none() || qty_val <= 0.0 || price_val <= 0.0 { return; }
-            let metres = if sale_unit.get() == "rolls" { qty_val * 50.0 } else { qty_val };
-            let s = stock.get().iter().find(|s| s.id == sid.unwrap()).cloned();
-            let label = s.as_ref().map(|si| format!("{} {}", si.color, if si.sticker_type=="reflective"{"Reflective"}else{"Colored"})).unwrap_or_default();
-            close_modal();
-            leptos::task::spawn_local(async move {
-                let _ = api::add_sale(&NewSale {
-                    r#type: "stock".into(), product_id: None, stock_id: sid,
-                    product_name: Some(format!("{} Sticker", label)), product_type: None,
-                    sticker_type: s.as_ref().map(|s| s.sticker_type.clone()),
-                    quantity: Some(format!("{}m", metres as u64)), amount: price_val,
-                    payment_method: stock_payment.get(), customer_name: stock_cust.get(), is_debt: 0,
-                }).await;
-                if let Some(st) = &s {
-                    let _ = api::update_stock(st.id, &serde_json::json!({"metres_used": st.metres_used + metres})).await;
+            if sid.is_none() {
+                set_stock_submit_error.set(Some("Choose a stock item first.".into()));
+                return;
+            }
+            if qty_val <= 0.0 {
+                set_stock_submit_error.set(Some("Enter a valid quantity to sell.".into()));
+                return;
+            }
+            if price_val <= 0.0 {
+                set_stock_submit_error.set(Some("Enter a valid total price.".into()));
+                return;
+            }
+
+            let selected_stock = match stock.get().iter().find(|s| s.id == sid.unwrap()).cloned() {
+                Some(item) => item,
+                None => {
+                    set_stock_submit_error.set(Some("The selected stock item could not be found.".into()));
+                    return;
                 }
+            };
+
+            let unit = sale_unit.get();
+            let metres = if unit == "rolls" { qty_val * selected_stock.metres_per_roll } else { qty_val };
+            let used = if selected_stock.metres_used.is_nan() { 0.0 } else { selected_stock.metres_used };
+            let remaining = (selected_stock.total_metres - used).max(0.0);
+            if metres > remaining {
+                set_stock_submit_error.set(Some(format!("Only {:.1}m remains for this stock item.", remaining)));
+                return;
+            }
+
+            let sid = sid.unwrap();
+            let payment_method = stock_payment.get();
+            let customer_name = stock_cust.get();
+            let label = format!(
+                "{} {}",
+                selected_stock.color,
+                if selected_stock.sticker_type == "reflective" { "Reflective" } else { "Colored" }
+            );
+            let quantity_label = if unit == "rolls" {
+                format!("{} rolls ({}m)", qty_val, metres)
+            } else {
+                format!("{}m", metres)
+            };
+
+            set_stock_submit_error.set(None);
+            set_stock_submitting.set(true);
+            leptos::task::spawn_local(async move {
+                match api::add_sale(&NewSale {
+                    r#type: "stock".into(), product_id: None, stock_id: Some(sid),
+                    product_name: Some(format!("{} Sticker", label)), product_type: None,
+                    sticker_type: Some(selected_stock.sticker_type.clone()),
+                    quantity: Some(quantity_label), amount: price_val,
+                    payment_method, customer_name, is_debt: 0,
+                }).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("add_sale failed: {}", e);
+                        set_stock_submit_error.set(Some(format!("Could not record the sale: {}", e)));
+                        set_stock_submitting.set(false);
+                        return;
+                    }
+                }
+
+                if let Err(e) = api::update_stock(
+                    selected_stock.id,
+                    &serde_json::json!({"metres_used": used + metres}),
+                ).await {
+                    error!("update_stock failed after sale insert: {}", e);
+                    set_stock_submit_error.set(Some(format!("Sale was saved, but stock could not be updated: {}", e)));
+                    set_stock_submitting.set(false);
+                    return;
+                }
+
+                set_show_modal.set(false);
+                set_stock_id.set(None);
+                set_sale_unit.set("metres".into());
+                set_stock_qty.set(String::new());
+                set_stock_price.set(String::new());
+                set_stock_payment.set("cash".into());
+                set_stock_cust.set("Walk-in".into());
+                set_stock_submit_error.set(None);
+                set_stock_submitting.set(false);
                 l();
             });
         }
@@ -258,11 +370,43 @@ pub fn SalesPage() -> impl IntoView {
         }
     };
 
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        set_current_page.set(1);
+    });
+
+    let filtered_sales = move || {
+        let query = search.get().trim().to_lowercase();
+        let sort = sort_by.get();
+        let mut items = sales.get().into_iter().filter(|sale| {
+            if query.is_empty() {
+                true
+            } else {
+                sale.product_name.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || sale.customer_name.to_lowercase().contains(&query)
+                    || sale.payment_method.to_lowercase().contains(&query)
+                    || sale.quantity.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || sale.r#type.to_lowercase().contains(&query)
+                    || sale.timestamp.as_deref().unwrap_or("").to_lowercase().contains(&query)
+            }
+        }).collect::<Vec<_>>();
+
+        items.sort_by(|a, b| match sort.as_str() {
+            "oldest" => a.timestamp.cmp(&b.timestamp),
+            "amount_desc" => b.amount.partial_cmp(&a.amount).unwrap_or(Ordering::Equal),
+            "amount_asc" => a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal),
+            _ => b.timestamp.cmp(&a.timestamp),
+        });
+
+        items
+    };
+
     // Pagination
-    let total_items = move || sales.get().len() as u32;
+    let total_items = move || filtered_sales().len() as u32;
     let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
     let paginated = move || {
-        let items = sales.get();
+        let items = filtered_sales();
         let start = ((current_page.get() - 1) * items_per_page) as usize;
         items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
     };
@@ -291,11 +435,29 @@ pub fn SalesPage() -> impl IntoView {
 
         // Table
         <div class="dashboard-panel overflow-hidden">
-            <div class="p-4 border-b border-gray-100"><h2 class="text-sm font-semibold">"Today's Transactions"</h2></div>
+            <div class="p-4 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <h2 class="text-sm font-semibold">"Sales Transactions"</h2>
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                        type="text"
+                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
+                        placeholder="Search item, customer, payment..."
+                        prop:value=move || search.get()
+                        on:input=move |e| set_search.set(event_target_value(&e))
+                    />
+                    <div class="min-w-[220px]">
+                        <CustomDropdown
+                            items=sort_items
+                            placeholder="Newest First".to_string()
+                            on_select=Callback::new(move |v: String| set_sort_by.set(v))
+                        />
+                    </div>
+                </div>
+            </div>
             <table class="w-full data-table">
                 <thead><tr>
                     <th class="w-10"><label class="custom-checkbox"><input type="checkbox" prop:checked=move || { let s = selected.get(); let t = total_items(); s > 0 && s == t } on:change=move |e| select_all(event_target_checked(&e)) /><span class="checkmark"></span></label></th>
-                    <th>"Time"</th><th>"Item"</th><th>"Qty"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th>
+                    <th>"Date / Time"</th><th>"Item"</th><th>"Qty"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th>
                 </tr></thead>
                 <tbody>
                     {move || {
@@ -305,7 +467,7 @@ pub fn SalesPage() -> impl IntoView {
                         } else {
                             items.into_iter().map(|sale| {
                                 let id = sale.id;
-                                let tm = sale.timestamp.as_ref().and_then(|t| { let s = t.as_str(); if s.len() >= 16 { Some(s[11..16].to_string()) } else { None } }).unwrap_or_default();
+                                let tm = format_sale_timestamp(&sale.timestamp);
                                 let is_sel = move || selected_sales.get().contains(&id);
                                 let typ_label = match sale.r#type.as_str() { "stock" => "Stock", "service" => "Service", _ => "Product" };
                                 let typ_cls = match sale.r#type.as_str() {
@@ -319,7 +481,7 @@ pub fn SalesPage() -> impl IntoView {
                                 view!{
                                     <tr class=move || format!("hover:bg-gray-50 transition-colors {}", if is_sel() {"bg-green-50"} else {""})>
                                         <td class="px-5 py-4"><label class="custom-checkbox"><input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/><span class="checkmark"></span></label></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{tm}</td>
+                                        <td class="px-5 py-4 text-sm text-gray-600 whitespace-nowrap">{tm}</td>
                                         <td class="px-5 py-4"><div class="flex items-center gap-2"><span class=format!("status-badge {}", typ_cls)>{typ_label}</span><span class="text-sm font-medium text-gray-900">{name}</span></div></td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{qty_display}</td>
                                         <td class="px-5 py-4 text-sm font-medium text-gray-900">{format!("KSh {:.2}", sale.amount)}</td>
@@ -394,10 +556,17 @@ pub fn SalesPage() -> impl IntoView {
                             <div><label>"Total Price (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || stock_price.get() on:input=move |e| set_stock_price.set(event_target_value(&e))/></div>
                             <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let p:f64=stock_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</div></div>
                             <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || stock_cust.get() on:input=move |e| set_stock_cust.set(event_target_value(&e))/></div>
+                            {move || stock_submit_error.get().map(|msg| view! {
+                                <div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                                    {msg}
+                                </div>
+                            })}
                         </div>
                         <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
                             <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_stock>"Record Stock Sale"</button>
+                            <button type="button" class="btn-primary px-4 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed" on:click=submit_stock disabled=move || stock_submitting.get()>
+                                {move || if stock_submitting.get() { "Recording..." } else { "Record Stock Sale" }}
+                            </button>
                         </div>
                     </div>}.into_any() } else { ().into_any() }}
 

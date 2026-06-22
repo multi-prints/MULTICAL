@@ -147,6 +147,7 @@ pub struct Debt {
     pub sale_id: Option<i64>,
     pub service_transaction_id: Option<i64>,
     pub paid_at: Option<String>,
+    pub last_payment_at: Option<String>,
     pub created_at: Option<String>,
 }
 

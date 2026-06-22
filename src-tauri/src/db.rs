@@ -8,6 +8,34 @@ pub struct Database {
     pub conn: Mutex<Connection>,
 }
 
+fn infer_debt_payment_method(
+    conn: &Connection,
+    sale_id: Option<i64>,
+    service_transaction_id: Option<i64>,
+) -> String {
+    if let Some(sid) = sale_id {
+        if let Ok(method) = conn.query_row(
+            "SELECT payment_method FROM sales WHERE id = ?1",
+            params![sid],
+            |row| row.get::<_, String>(0),
+        ) {
+            return method;
+        }
+    }
+
+    if let Some(tid) = service_transaction_id {
+        if let Ok(method) = conn.query_row(
+            "SELECT payment_method FROM service_transactions WHERE id = ?1",
+            params![tid],
+            |row| row.get::<_, String>(0),
+        ) {
+            return method;
+        }
+    }
+
+    "cash".to_string()
+}
+
 impl Database {
     /// Open (or create) the database at the given path
     pub fn new(db_path: PathBuf) -> Result<Self, String> {
@@ -207,6 +235,113 @@ impl Database {
         conn.execute_batch(
             "UPDATE debts SET remaining_amount = amount - COALESCE(paid_amount, 0)"
         ).map_err(|e| e.to_string())?;
+
+        // Normalize debts already marked as paid
+        conn.execute_batch(
+            "UPDATE debts SET paid_amount = amount, remaining_amount = 0, paid_at = COALESCE(paid_at, CURRENT_TIMESTAMP) WHERE status = 'paid'"
+        ).map_err(|e| e.to_string())?;
+
+        // Ensure paid debts have a settlement payment entry for any unpaid remainder
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.id, d.amount, d.paid_at, d.sale_id, d.service_transaction_id, COALESCE(SUM(dp.amount), 0)
+                 FROM debts d
+                 LEFT JOIN debt_payments dp ON dp.debt_id = d.id
+                 WHERE d.status = 'paid'
+                 GROUP BY d.id, d.amount, d.paid_at, d.sale_id, d.service_transaction_id
+                 HAVING COALESCE(SUM(dp.amount), 0) < d.amount"
+            )
+            .map_err(|e| e.to_string())?;
+
+        let paid_debts_missing_settlement = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, f64>(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        for (id, amount, paid_at, sale_id, service_transaction_id, recorded_total) in paid_debts_missing_settlement {
+            let missing_amount = (amount - recorded_total).max(0.0);
+            if missing_amount > 0.0 {
+                let payment_method = infer_debt_payment_method(&conn, sale_id, service_transaction_id);
+                let payment_date = paid_at.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string());
+                conn.execute(
+                    "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, missing_amount, payment_method, Some("Marked as paid".to_string()), payment_date],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Backfill missing payment history for debts that already have recorded payments
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, amount, paid_amount, remaining_amount, status, sale_id, service_transaction_id, paid_at, created_at
+                 FROM debts
+                 WHERE NOT EXISTS (SELECT 1 FROM debt_payments dp WHERE dp.debt_id = debts.id)
+                   AND (paid_amount > 0 OR status = 'paid')"
+            )
+            .map_err(|e| e.to_string())?;
+
+        let debts_to_backfill = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        for (id, amount, paid_amount, _remaining_amount, status, sale_id, service_transaction_id, paid_at, created_at) in debts_to_backfill {
+            let payment_method = infer_debt_payment_method(&conn, sale_id, service_transaction_id);
+            let fallback_ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+            let initial_ts = created_at.clone().or_else(|| paid_at.clone()).unwrap_or_else(|| fallback_ts.clone());
+            let final_ts = paid_at.clone().or_else(|| created_at.clone()).unwrap_or_else(|| fallback_ts.clone());
+
+            let initial_paid = if status == "paid" {
+                paid_amount.min(amount).max(0.0)
+            } else {
+                paid_amount.max(0.0)
+            };
+
+            if initial_paid > 0.0 {
+                conn.execute(
+                    "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, initial_paid, payment_method.clone(), Some("Initial payment".to_string()), initial_ts],
+                ).map_err(|e| e.to_string())?;
+            }
+
+            if status == "paid" {
+                let settlement_amount = (amount - initial_paid).max(0.0);
+                if settlement_amount > 0.0 {
+                    conn.execute(
+                        "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![id, settlement_amount, payment_method, Some("Marked as paid".to_string()), final_ts.clone()],
+                    ).map_err(|e| e.to_string())?;
+                }
+
+                conn.execute(
+                    "UPDATE debts SET paid_amount = ?1, remaining_amount = 0, paid_at = COALESCE(paid_at, ?2) WHERE id = ?3",
+                    params![amount, final_ts, id],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
 
         println!("Database migrations completed");
         Ok(())
@@ -587,7 +722,7 @@ impl Database {
     pub fn get_all_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM debts ORDER BY created_at DESC")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
@@ -596,7 +731,7 @@ impl Database {
                 amount: row.get(3)?, paid_amount: row.get(4)?, remaining_amount: row.get(5)?,
                 due_date: row.get(6)?, description: row.get(7)?, status: row.get(8)?,
                 sale_id: row.get(9)?, service_transaction_id: row.get(10)?,
-                paid_at: row.get(11)?, created_at: row.get(12)?,
+                paid_at: row.get(11)?, last_payment_at: row.get(12)?, created_at: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -606,7 +741,7 @@ impl Database {
     pub fn get_pending_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM debts WHERE status = 'pending' ORDER BY created_at DESC")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
@@ -615,7 +750,7 @@ impl Database {
                 amount: row.get(3)?, paid_amount: row.get(4)?, remaining_amount: row.get(5)?,
                 due_date: row.get(6)?, description: row.get(7)?, status: row.get(8)?,
                 sale_id: row.get(9)?, service_transaction_id: row.get(10)?,
-                paid_at: row.get(11)?, created_at: row.get(12)?,
+                paid_at: row.get(11)?, last_payment_at: row.get(12)?, created_at: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -627,20 +762,35 @@ impl Database {
         let paid_amount = debt.paid_amount.unwrap_or(0.0);
         let remaining_amount = debt.remaining_amount.unwrap_or(debt.amount - paid_amount);
         let created_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+        let status = if remaining_amount <= 0.0 { "paid" } else { "pending" };
+        let paid_at = if paid_amount > 0.0 && remaining_amount <= 0.0 {
+            Some(created_at.clone())
+        } else {
+            None
+        };
 
         conn.execute(
-            "INSERT INTO debts (customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10)",
-            params![debt.customer_name, debt.phone, debt.amount, paid_amount, remaining_amount, debt.due_date, debt.description, debt.sale_id, debt.service_transaction_id, created_at],
+            "INSERT INTO debts (customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![debt.customer_name, debt.phone, debt.amount, paid_amount, remaining_amount, debt.due_date, debt.description, status, debt.sale_id, debt.service_transaction_id, paid_at, created_at],
         ).map_err(|e| e.to_string())?;
 
         let id = conn.last_insert_rowid();
+
+        if paid_amount > 0.0 {
+            let payment_method = infer_debt_payment_method(&conn, debt.sale_id, debt.service_transaction_id);
+            conn.execute(
+                "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, paid_amount, payment_method, Some("Initial payment".to_string()), created_at.clone()],
+            ).map_err(|e| e.to_string())?;
+        }
+
         Ok(Debt {
             id, customer_name: debt.customer_name, phone: debt.phone,
             amount: debt.amount, paid_amount, remaining_amount,
             due_date: debt.due_date, description: debt.description,
-            status: "pending".to_string(), sale_id: debt.sale_id,
+            status: status.to_string(), sale_id: debt.sale_id,
             service_transaction_id: debt.service_transaction_id,
-            paid_at: None, created_at: Some(created_at),
+            paid_at: paid_at.clone(), last_payment_at: if paid_amount > 0.0 { Some(created_at.clone()) } else { None }, created_at: Some(created_at),
         })
     }
 
@@ -671,15 +821,30 @@ impl Database {
     pub fn mark_debt_paid(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        let (sale_id, transaction_id): (Option<i64>, Option<i64>) = conn
-            .query_row("SELECT sale_id, service_transaction_id FROM debts WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+        let (sale_id, transaction_id, amount, paid_amount, remaining_amount): (Option<i64>, Option<i64>, f64, f64, f64) = conn
+            .query_row(
+                "SELECT sale_id, service_transaction_id, amount, paid_amount, remaining_amount FROM debts WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                }
+            )
             .map_err(|e| e.to_string())?;
 
+        let paid_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+        let settlement_amount = remaining_amount.max(0.0);
+
+        if settlement_amount > 0.0 {
+            let payment_method = infer_debt_payment_method(&conn, sale_id, transaction_id);
+            conn.execute(
+                "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, settlement_amount, payment_method, Some("Marked as paid".to_string()), paid_at.clone()],
+            ).map_err(|e| e.to_string())?;
+        }
+
         conn.execute(
-            "UPDATE debts SET status = 'paid', paid_at = CURRENT_TIMESTAMP, remaining_amount = 0 WHERE id = ?1",
-            params![id],
+            "UPDATE debts SET status = 'paid', paid_amount = ?1, paid_at = ?2, remaining_amount = 0 WHERE id = ?3",
+            params![amount.max(paid_amount), paid_at.clone(), id],
         ).map_err(|e| e.to_string())?;
 
         if let Some(sid) = sale_id {
@@ -697,7 +862,7 @@ impl Database {
     pub fn get_debt_by_sale_id(&self, sale_id: i64) -> Result<Option<Debt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM debts WHERE sale_id = ?1")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.sale_id = ?1")
             .map_err(|e| e.to_string())?;
 
         let mut rows = stmt.query_map(params![sale_id], |row| {
@@ -706,7 +871,7 @@ impl Database {
                 amount: row.get(3)?, paid_amount: row.get(4)?, remaining_amount: row.get(5)?,
                 due_date: row.get(6)?, description: row.get(7)?, status: row.get(8)?,
                 sale_id: row.get(9)?, service_transaction_id: row.get(10)?,
-                paid_at: row.get(11)?, created_at: row.get(12)?,
+                paid_at: row.get(11)?, last_payment_at: row.get(12)?, created_at: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -716,7 +881,7 @@ impl Database {
     pub fn get_debt_by_transaction_id(&self, transaction_id: i64) -> Result<Option<Debt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM debts WHERE service_transaction_id = ?1")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.service_transaction_id = ?1")
             .map_err(|e| e.to_string())?;
 
         let mut rows = stmt.query_map(params![transaction_id], |row| {
@@ -725,7 +890,7 @@ impl Database {
                 amount: row.get(3)?, paid_amount: row.get(4)?, remaining_amount: row.get(5)?,
                 due_date: row.get(6)?, description: row.get(7)?, status: row.get(8)?,
                 sale_id: row.get(9)?, service_transaction_id: row.get(10)?,
-                paid_at: row.get(11)?, created_at: row.get(12)?,
+                paid_at: row.get(11)?, last_payment_at: row.get(12)?, created_at: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -759,7 +924,7 @@ impl Database {
     pub fn get_overdue_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM debts WHERE status = 'pending' AND due_date IS NOT NULL AND DATE(due_date) < DATE('now')")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' AND d.due_date IS NOT NULL AND DATE(d.due_date) < DATE('now')")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
@@ -768,7 +933,7 @@ impl Database {
                 amount: row.get(3)?, paid_amount: row.get(4)?, remaining_amount: row.get(5)?,
                 due_date: row.get(6)?, description: row.get(7)?, status: row.get(8)?,
                 sale_id: row.get(9)?, service_transaction_id: row.get(10)?,
-                paid_at: row.get(11)?, created_at: row.get(12)?,
+                paid_at: row.get(11)?, last_payment_at: row.get(12)?, created_at: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
 

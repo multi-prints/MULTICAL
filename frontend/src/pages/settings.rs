@@ -2,6 +2,10 @@ use leptos::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use crate::api::{self, User, UserInfo};
 
+#[path = "../components/dropdown.rs"]
+mod dropdown_comp;
+use dropdown_comp::{CustomDropdown, DropdownItem};
+
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab { Account, Backup, About }
 
@@ -28,6 +32,10 @@ pub fn SettingsPage(
 
     let cur_user = move || user.get().map(|u| u.username).unwrap_or_default();
     let is_admin = move || user.get().map(|u| u.role.as_str() == "admin").unwrap_or(false);
+    let role_items = Signal::derive(move || vec![
+        DropdownItem::new("employee", "Employee"),
+        DropdownItem::new("admin", "Admin"),
+    ]);
 
     let load_users = move || {
         leptos::task::spawn_local(async move {
@@ -225,12 +233,12 @@ pub fn SettingsPage(
         {move || if is_admin() { view!{<div class="dashboard-panel p-6 mt-6">
             <h3 class="text-base font-semibold text-gray-900 mb-4">"User Management"</h3>
             <div class="grid grid-cols-3 gap-4 mb-6">
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Username"</label><input type="text" class="w-full" placeholder="Username" prop:value=move || new_user.get() on:input=move |e| set_new_user.set(event_target_value(&e))/></div>
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Password"</label><input type="password" class="w-full" placeholder="Password" prop:value=move || new_upass.get() on:input=move |e| set_new_upass.set(event_target_value(&e))/></div>
+                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Username"</label><input type="text" class="w-full border border-[#E5E5E5] rounded px-3 py-2 text-sm font-sans text-[#0A0A0A] bg-white outline-none" placeholder="Username" prop:value=move || new_user.get() on:input=move |e| set_new_user.set(event_target_value(&e))/></div>
+                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Password"</label><input type="password" class="w-full border border-[#E5E5E5] rounded px-3 py-2 text-sm font-sans text-[#0A0A0A] bg-white outline-none" placeholder="Password" prop:value=move || new_upass.get() on:input=move |e| set_new_upass.set(event_target_value(&e))/></div>
                 <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Role"</label>
-                    <select class="w-full" on:change=move |e| set_new_role.set(event_target_value(&e))>
-                        <option value="employee">"Employee"</option><option value="admin">"Admin"</option>
-                    </select></div>
+                    <div class="w-full">
+                        <CustomDropdown items=role_items placeholder="Employee".to_string() on_select=Callback::new(move |v: String| set_new_role.set(v))/>
+                    </div></div>
             </div>
             <button class="btn-primary px-6 py-2" on:click=add_user>"Add User"</button>
             <div class="mt-6"><table class="w-full data-table">

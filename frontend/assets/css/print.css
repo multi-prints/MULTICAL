@@ -1,92 +1,157 @@
 /**
- * Print Styles for Thermal Receipts
- * Optimized for 80mm thermal POS printers
+ * Thermal Receipt Styles
+ * Refined for on-screen preview and 80mm receipt printing
  */
 
-/* Receipt Container Styles */
 .receipt-container {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 12px;
-  line-height: 1.4;
-  width: 280px; /* 80mm ≈ 302px, accounting for margins */
-  padding: 8px;
-  background: white;
-  color: #000;
+  width: 300px;
+  padding: 14px 14px 18px;
+  background: #fff;
+  color: #111;
+  font-family: 'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+.receipt-paper-accent {
+  height: 6px;
+  margin: -14px -14px 12px;
+  background: repeating-linear-gradient(
+    90deg,
+    #111 0,
+    #111 8px,
+    transparent 8px,
+    transparent 14px
+  );
+  opacity: 0.8;
 }
 
 .receipt-header {
   text-align: center;
-  margin-bottom: 8px;
 }
 
 .receipt-business-name {
-  font-size: 16px;
-  font-weight: bold;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  letter-spacing: 1px;
   margin-bottom: 4px;
 }
 
-.receipt-info {
-  font-size: 11px;
-  color: #333;
-}
-
-.receipt-divider {
-  font-family: 'Courier New', Courier, monospace;
+.receipt-document-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid #111;
   font-size: 10px;
-  letter-spacing: -1px;
-  text-align: center;
-  margin: 8px 0;
-}
-
-.receipt-meta {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   margin-bottom: 8px;
 }
 
-.receipt-row {
+.receipt-info {
+  font-size: 10px;
+  color: #444;
+  margin-top: 2px;
+}
+
+.receipt-rule {
+  border-top: 1.5px dashed #111;
+  margin: 10px 0;
+}
+
+.receipt-rule--soft {
+  border-top-style: dotted;
+  border-top-color: #777;
+}
+
+.receipt-meta,
+.receipt-summary {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.receipt-meta-row,
+.receipt-row,
+.receipt-total-row {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  font-size: 11px;
-  margin-bottom: 2px;
+  gap: 12px;
 }
 
-.receipt-items-header {
-  font-size: 11px;
-  font-weight: bold;
-  margin-bottom: 6px;
+.receipt-meta-row span:first-child,
+.receipt-row span:first-child {
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 10px;
 }
 
-.receipt-item {
+.receipt-meta-row span:last-child,
+.receipt-row span:last-child {
+  text-align: right;
+  font-weight: 600;
+  color: #111;
+}
+
+.receipt-meta-compact {
+  max-width: 150px;
+  font-size: 9px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.receipt-section-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #111;
   margin-bottom: 8px;
+}
+
+.receipt-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.receipt-item-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.receipt-item-copy {
+  flex: 1;
+  min-width: 0;
 }
 
 .receipt-item-name {
   font-size: 12px;
-  font-weight: bold;
-  word-wrap: break-word;
+  font-weight: 800;
+  color: #111;
+  word-break: break-word;
 }
 
-.receipt-item-details {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  margin-top: 2px;
-}
-
-.receipt-item-price {
-  font-weight: bold;
-}
-
-.receipt-notes {
+.receipt-item-meta {
+  margin-top: 3px;
   font-size: 10px;
   color: #666;
-  margin-top: 4px;
-  font-style: italic;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
-.receipt-totals {
-  margin-bottom: 8px;
+.receipt-item-amount {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .receipt-payment {
@@ -94,54 +159,58 @@
 }
 
 .receipt-total-row {
-  display: flex;
-  justify-content: space-between;
   font-size: 14px;
-  font-weight: bold;
-  margin: 8px 0;
+  font-weight: 900;
+  letter-spacing: 0.04em;
 }
 
 .receipt-footer {
+  margin-top: 8px;
   text-align: center;
-  font-size: 11px;
-  margin-top: 12px;
 }
 
-/* Preview Modal Styles */
+.receipt-footer-title {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.receipt-footer-copy {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #555;
+}
+
 .receipt-preview-modal {
-  max-width: 400px !important;
+  max-width: 460px !important;
 }
 
 .receipt-preview-body {
   display: flex;
   justify-content: center;
-  background: #f5f5f5;
-  padding: 20px;
-  border-radius: 8px;
+  background: linear-gradient(180deg, #f5f5f5 0%, #ececec 100%);
+  padding: 24px;
   margin: 0;
 }
 
 .receipt-preview-wrapper {
-  background: white;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
+  border-radius: 0;
   overflow: hidden;
 }
 
-/* Print Media Queries */
 @media print {
-  /* Hide everything except receipt */
   body * {
     visibility: hidden;
   }
 
-  /* Show only receipt and its children */
   #receipt-preview-modal,
   #receipt-preview-modal * {
     visibility: visible;
   }
 
-  /* Position receipt at top-left for thermal printer */
   #receipt-preview-modal {
     position: fixed;
     left: 0;
@@ -152,25 +221,17 @@
     z-index: 9999;
   }
 
-  /* Hide modal chrome when printing */
   #receipt-preview-modal .modal-header,
   #receipt-preview-modal .modal-footer,
   #receipt-preview-modal .modal-close-btn {
     display: none !important;
   }
 
-  /* Style the receipt preview body for printing */
-  #receipt-preview-modal .modal-body {
-    padding: 0 !important;
-    margin: 0 !important;
-    background: white !important;
-  }
-
-  /* Ensure receipt takes full width for printing */
+  #receipt-preview-modal .modal-body,
   #receipt-preview-modal .receipt-preview-body {
-    background: white !important;
     padding: 0 !important;
     margin: 0 !important;
+    background: white !important;
   }
 
   #receipt-preview-modal .receipt-preview-wrapper {
@@ -179,30 +240,22 @@
     margin: 0 !important;
   }
 
-  /* Remove all rounded borders from receipt elements */
-  .receipt-container {
+  .receipt-container,
+  .receipt-container * {
     border-radius: 0 !important;
   }
 
-  /* Page setup for thermal printers */
   @page {
     size: 80mm auto;
     margin: 0;
   }
 
-  /* Ensure no page breaks within receipt */
   .receipt-container {
+    width: 80mm;
     page-break-inside: avoid;
-    border-radius: 0 !important;
-  }
-
-  /* Remove any inherited rounded borders */
-  .receipt-container * {
-    border-radius: 0 !important;
   }
 }
 
-/* Print button icon animation */
 .btn-primary svg {
   flex-shrink: 0;
 }

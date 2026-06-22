@@ -1,9 +1,34 @@
 use leptos::prelude::*;
+use std::cmp::Ordering;
 use crate::api::{self, ServiceTransaction, PrintingMaterial, NewPrintingMaterial, NewServiceTransaction, NewDebt};
 
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
+
+fn format_printing_timestamp(ts: &Option<String>) -> String {
+    ts.as_ref()
+        .and_then(|t| {
+            chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.3f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S"))
+                .ok()
+        })
+        .map(|dt| {
+            let today = chrono::Local::now().date_naive();
+            let job_day = dt.date();
+            let time = dt.format("%I:%M %p").to_string();
+
+            if job_day == today {
+                format!("Today {}", time)
+            } else if job_day == today.pred_opt().unwrap_or(today) {
+                format!("Yesterday {}", time)
+            } else {
+                dt.format("%d/%m/%Y %I:%M %p").to_string()
+            }
+        })
+        .or_else(|| ts.clone())
+        .unwrap_or_else(|| "-".to_string())
+}
 
 #[component]
 pub fn PrintingPage() -> impl IntoView {
@@ -12,6 +37,8 @@ pub fn PrintingPage() -> impl IntoView {
     let (show_record, set_show_record) = signal(false);
     let (show_add_mat, set_show_add_mat) = signal(false);
     let (current_page, set_current_page) = signal(1u32);
+    let (search, set_search) = signal(String::new());
+    let (sort_by, set_sort_by) = signal("newest".to_string());
     let items_per_page = 10u32;
 
     // Record job state
@@ -74,12 +101,50 @@ pub fn PrintingPage() -> impl IntoView {
         DropdownItem::new("mpesa", "M-Pesa"),
         DropdownItem::new("till", "Till Number"),
     ]);
+    let sort_items = Signal::derive(move || vec![
+        DropdownItem::new("newest", "Newest First"),
+        DropdownItem::new("oldest", "Oldest First"),
+        DropdownItem::new("amount_desc", "Highest Amount"),
+        DropdownItem::new("amount_asc", "Lowest Amount"),
+    ]);
+
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        set_current_page.set(1);
+    });
+
+    let filtered_jobs = move || {
+        let query = search.get().trim().to_lowercase();
+        let sort = sort_by.get();
+        let mut items = printing_jobs().into_iter().filter(|job| {
+            if query.is_empty() {
+                true
+            } else {
+                job.service_name.to_lowercase().contains(&query)
+                    || job.customer_name.to_lowercase().contains(&query)
+                    || job.payment_method.to_lowercase().contains(&query)
+                    || job.material_type.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || job.material_size.as_deref().unwrap_or("").to_lowercase().contains(&query)
+                    || job.timestamp.as_deref().unwrap_or("").to_lowercase().contains(&query)
+            }
+        }).collect::<Vec<_>>();
+
+        items.sort_by(|a, b| match sort.as_str() {
+            "oldest" => a.timestamp.cmp(&b.timestamp),
+            "amount_desc" => b.amount.partial_cmp(&a.amount).unwrap_or(Ordering::Equal),
+            "amount_asc" => a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal),
+            _ => b.timestamp.cmp(&a.timestamp),
+        });
+
+        items
+    };
 
     // Pagination
-    let total_items = move || printing_jobs().len() as u32;
+    let total_items = move || filtered_jobs().len() as u32;
     let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
     let paginated = move || {
-        let items = printing_jobs();
+        let items = filtered_jobs();
         let start = ((current_page.get() - 1) * items_per_page) as usize;
         items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
     };
@@ -282,18 +347,36 @@ pub fn PrintingPage() -> impl IntoView {
 
         // Jobs Table
         <div class="dashboard-panel overflow-hidden">
-            <div class="p-5 border-b border-gray-100"><h2 class="dashboard-panel-title">"Today's Printing Jobs"</h2></div>
+            <div class="p-5 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <h2 class="dashboard-panel-title">"Printing Jobs"</h2>
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                        type="text"
+                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
+                        placeholder="Search job, customer, material..."
+                        prop:value=move || search.get()
+                        on:input=move |e| set_search.set(event_target_value(&e))
+                    />
+                    <div class="min-w-[220px]">
+                        <CustomDropdown
+                            items=sort_items
+                            placeholder="Newest First".to_string()
+                            on_select=Callback::new(move |v: String| set_sort_by.set(v))
+                        />
+                    </div>
+                </div>
+            </div>
             <table class="w-full data-table">
-                <thead><tr><th>"Time"</th><th>"Job Details"</th><th>"Metres"</th><th>"Material"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th></tr></thead>
+                <thead><tr><th>"Date / Time"</th><th>"Job Details"</th><th>"Metres"</th><th>"Material"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th></tr></thead>
                 <tbody>
                     {move || {
                         let items = paginated();
                         if items.is_empty() {
-                            view!{<tr><td colspan="8" class="px-5 py-8 text-center text-gray-500">"No printing jobs recorded today."</td></tr>}.into_any()
+                            view!{<tr><td colspan="8" class="px-5 py-8 text-center text-gray-500">"No printing jobs recorded."</td></tr>}.into_any()
                         } else {
                             items.into_iter().map(|t| {
                                 let id = t.id;
-                                let tm = t.timestamp.as_ref().and_then(|ts| { let s = ts.as_str(); if s.len() >= 16 { Some(s[11..16].to_string()) } else { None } }).unwrap_or_default();
+                                let tm = format_printing_timestamp(&t.timestamp);
                                 let mat = if let Some(ref sz) = t.material_size { format!("{}m {}", sz, t.material_type.as_deref().unwrap_or("")) } else { "N/A".into() };
                                 let name = t.service_name.clone();
                                 let pm_label = t.payment_method.clone();
@@ -301,7 +384,7 @@ pub fn PrintingPage() -> impl IntoView {
                                 let txn_clone = t.clone();
                                 view!{
                                     <tr class="hover:bg-gray-50 transition-colors">
-                                        <td class="px-5 py-4 text-sm text-gray-500">{tm}</td>
+                                        <td class="px-5 py-4 text-sm text-gray-500 whitespace-nowrap">{tm}</td>
                                         <td class="px-5 py-4"><p class="text-sm font-medium text-gray-900">{name}</p></td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{format!("{:.1}m", t.stock_metres_used)}</td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{mat}</td>
