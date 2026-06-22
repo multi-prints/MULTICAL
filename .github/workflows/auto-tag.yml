@@ -5,7 +5,10 @@ on:
     branches:
       - main
     paths:
-      - 'app/**'
+      - 'frontend/**'
+      - 'src-tauri/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/**'
 
 jobs:
@@ -21,20 +24,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Check for version change
         id: check_version
         run: |
-          # Get the current version from package.json
-          CURRENT_VERSION=$(cat app/package.json | grep '"version"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' | tr -d ',')
+          CURRENT_VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
           echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           
-          # Check if this version already has a tag
           if git tag -l "v$CURRENT_VERSION" | grep -q "v$CURRENT_VERSION"; then
             echo "Tag v$CURRENT_VERSION already exists"
             echo "should_tag=false" >> $GITHUB_OUTPUT
@@ -43,53 +39,16 @@ jobs:
             echo "should_tag=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Auto bump version (optional)
-        id: bump_version
-        if: steps.check_version.outputs.should_tag == 'false'
-        run: |
-          # If no version change detected, auto-bump patch version
-          CURRENT_VERSION=${{ steps.check_version.outputs.version }}
-          
-          # Split version into parts
-          MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
-          MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
-          PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
-          
-          # Increment patch version
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-          
-          echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
-          
-          # Update package.json
-          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" app/package.json
-          
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "should_tag=true" >> $GITHUB_OUTPUT
-
       - name: Configure Git
-        if: steps.check_version.outputs.should_tag == 'true' || steps.bump_version.outputs.should_tag == 'true'
+        if: steps.check_version.outputs.should_tag == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit version bump (if auto-bumped)
-        if: steps.bump_version.outputs.should_tag == 'true'
-        run: |
-          NEW_VERSION=${{ steps.bump_version.outputs.new_version }}
-          git add app/package.json
-          git commit -m "chore: bump version to v$NEW_VERSION [skip ci]"
-          git push
-
       - name: Create and push tag
-        if: steps.check_version.outputs.should_tag == 'true' || steps.bump_version.outputs.should_tag == 'true'
+        if: steps.check_version.outputs.should_tag == 'true'
         run: |
-          if [ "${{ steps.bump_version.outputs.new_version }}" != "" ]; then
-            VERSION="${{ steps.bump_version.outputs.new_version }}"
-          else
-            VERSION="${{ steps.check_version.outputs.version }}"
-          fi
-          
+          VERSION="${{ steps.check_version.outputs.version }}"
           echo "Creating tag v$VERSION"
           git tag -a "v$VERSION" -m "Release v$VERSION - Automated build"
           git push origin "v$VERSION"
@@ -99,8 +58,6 @@ jobs:
         run: |
           if [ "${{ steps.check_version.outputs.should_tag }}" == "true" ]; then
             echo "✅ Tagged version ${{ steps.check_version.outputs.version }}"
-          elif [ "${{ steps.bump_version.outputs.should_tag }}" == "true" ]; then
-            echo "✅ Auto-bumped to version ${{ steps.bump_version.outputs.new_version }} and tagged"
           else
             echo "ℹ️ Tag already exists, skipping"
           fi

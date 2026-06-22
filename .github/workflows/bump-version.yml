@@ -25,23 +25,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Bump version
         id: bump
         run: |
-          CURRENT_VERSION=$(cat app/package.json | grep '"version"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' | tr -d ',')
+          CURRENT_VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
           
-          # Split version
           MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
           MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
           PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
           
-          # Bump based on input
           case "${{ inputs.version_type }}" in
             major)
               MAJOR=$((MAJOR + 1))
@@ -61,8 +54,10 @@ jobs:
           echo "New version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           
-          # Update package.json
-          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" app/package.json
+          sed -i "0,/^version = \"$CURRENT_VERSION\"/s//version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
+          sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+          sed -i "0,/^version = \"$CURRENT_VERSION\"/s//version = \"$NEW_VERSION\"/" frontend/Cargo.toml
+          sed -i "s/\"$CURRENT_VERSION\".to_string()/\"$NEW_VERSION\".to_string()/" frontend/src/pages/settings.rs
 
       - name: Configure Git
         run: |
@@ -73,7 +68,7 @@ jobs:
         run: |
           NEW_VERSION=${{ steps.bump.outputs.new_version }}
           
-          git add app/package.json
+          git add src-tauri/Cargo.toml src-tauri/tauri.conf.json frontend/Cargo.toml frontend/src/pages/settings.rs
           git commit -m "chore: bump version to v$NEW_VERSION"
           git push
           

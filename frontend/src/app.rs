@@ -10,22 +10,22 @@ use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use crate::api::{self, UserInfo, LoginResponse};
 #[path = "pages/products.rs"]
 mod products_page;
-use products_page::ProductsPage as ElectronProductsPage;
+use products_page::ProductsPage as ProductsPageView;
 #[path = "pages/stock.rs"]
 mod stock_page;
-use stock_page::StockPage as ElectronStockPage;
+use stock_page::StockPage as StockPageView;
 #[path = "pages/sales.rs"]
 mod sales_page;
-use sales_page::SalesPage as ElectronSalesPage;
+use sales_page::SalesPage as SalesPageView;
 #[path = "pages/printing.rs"]
 mod printing_page;
-use printing_page::PrintingPage as ElectronPrintingPage;
+use printing_page::PrintingPage as PrintingPageView;
 #[path = "pages/debts.rs"]
 mod debts_page;
-use debts_page::DebtsPage as ElectronDebtsPage;
+use debts_page::DebtsPage as DebtsPageView;
 #[path = "pages/settings.rs"]
 mod settings_page;
-use settings_page::SettingsPage as ElectronSettingsPage;
+use settings_page::SettingsPage as SettingsPageView;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -166,15 +166,15 @@ pub fn App() -> impl IntoView {
                                         if role == "admin" {
                                             view! { <DashboardPage set_page=sp /> }.into_any()
                                         } else {
-                                            view! { <ElectronSalesPage show_revenue_stats=false /> }.into_any()
+                                            view! { <SalesPageView show_revenue_stats=false /> }.into_any()
                                         }
                                     },
-                                    Page::Products => view! { <ElectronProductsPage /> }.into_any(),
-                                    Page::Stock => view! { <ElectronStockPage /> }.into_any(),
-                                    Page::Sales => view! { <ElectronSalesPage show_revenue_stats=role == "admin" /> }.into_any(),
-                                    Page::Printing => view! { <ElectronPrintingPage show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
-                                    Page::Debts => view! { <ElectronDebtsPage /> }.into_any(),
-                                    Page::Settings => view! { <ElectronSettingsPage user=user set_user=set_user /> }.into_any(),
+                                    Page::Products => view! { <ProductsPageView /> }.into_any(),
+                                    Page::Stock => view! { <StockPageView /> }.into_any(),
+                                    Page::Sales => view! { <SalesPageView show_revenue_stats=role == "admin" /> }.into_any(),
+                                    Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
+                                    Page::Debts => view! { <DebtsPageView /> }.into_any(),
+                                    Page::Settings => view! { <SettingsPageView user=user set_user=set_user /> }.into_any(),
                                 }}
                             </main>
                         </div>

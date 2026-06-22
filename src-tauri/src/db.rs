@@ -402,7 +402,7 @@ impl Database {
     pub fn add_product(&self, product: NewProduct) -> Result<Product, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        // Match Electron: find existing variant by type/color/size, update stock instead of insert
+        // Preserve legacy behavior: find existing variant by type/color/size, update stock instead of insert
         let existing_id: Option<i64> = {
             let mut stmt = conn
                 .prepare("SELECT id, color, size FROM products WHERE product_type = ?1")
