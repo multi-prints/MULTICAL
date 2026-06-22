@@ -31,7 +31,7 @@ fn format_printing_timestamp(ts: &Option<String>) -> String {
 }
 
 #[component]
-pub fn PrintingPage() -> impl IntoView {
+pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> impl IntoView {
     let (jobs, set_jobs) = signal(Vec::<ServiceTransaction>::new());
     let (materials, set_materials) = signal(Vec::<PrintingMaterial>::new());
     let (show_record, set_show_record) = signal(false);
@@ -285,10 +285,12 @@ pub fn PrintingPage() -> impl IntoView {
         <div class="flex items-center justify-between mb-6">
             <div><h1 class="page-title">"Printing Services"</h1><p class="page-subtitle">"One-way vision, banners, satin, and reflective printing"</p></div>
             <div class="flex gap-3">
-                <button class="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 text-sm font-medium hover:bg-gray-50 transition-all"
-                    on:click=move |_| { set_mat_name.set(String::new()); set_mat_width.set(String::new()); set_mat_rolls.set("1".into()); set_mat_mpr.set("50".into()); set_show_add_mat.set(true); }>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    "Add Material"</button>
+                {move || if can_manage_materials { view! {
+                    <button class="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 text-sm font-medium hover:bg-gray-50 transition-all"
+                        on:click=move |_| { set_mat_name.set(String::new()); set_mat_width.set(String::new()); set_mat_rolls.set("1".into()); set_mat_mpr.set("50".into()); set_show_add_mat.set(true); }>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        "Add Material"</button>
+                }.into_any() } else { ().into_any() }}
                 <button class="flex items-center gap-2 bg-brand-500 text-white px-4 py-2 text-sm font-medium hover:bg-brand-600 transition-all"
                     on:click=move |_| { set_mat_id.set(None); set_metres_printed.set("1".into()); set_total_price.set(String::new()); set_payment.set("cash".into()); set_customer.set("Walk-in".into()); set_show_record.set(true); }>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -297,11 +299,13 @@ pub fn PrintingPage() -> impl IntoView {
         </div>
 
         // Stats
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div class=move || format!("grid grid-cols-1 gap-4 mb-6 {}", if show_revenue_stats { "md:grid-cols-4" } else { "md:grid-cols-3" })>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Today's Earnings"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", today_earnings())}</p></div>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Jobs"</p><p class="text-xl font-bold text-gray-900">{move || total_jobs_count()}</p></div>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Material Used"</p><p class="text-xl font-bold text-gray-900">{move || format!("{}m", material_used() as u64)}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Revenue"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", total_revenue())}</p></div>
+            {move || if show_revenue_stats { view! {
+                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Revenue"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", total_revenue())}</p></div>
+            }.into_any() } else { ().into_any() }}
         </div>
 
         // Materials Inventory
@@ -443,7 +447,7 @@ pub fn PrintingPage() -> impl IntoView {
         </div></div></div></div>}.into_any() } else { ().into_any() }}
 
         // Add Material Modal
-        {move || if show_add_mat.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add Printing Material"</h3><button class="modal-close-btn" on:click=move |_| set_show_add_mat.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
+        {move || if can_manage_materials && show_add_mat.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add Printing Material"</h3><button class="modal-close-btn" on:click=move |_| set_show_add_mat.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Material Name *"</label><input type="text" class="w-full" placeholder="e.g., White Banner Vinyl, Blue Satin Fabric" prop:value=move || mat_name.get() on:input=move |e| set_mat_name.set(event_target_value(&e))/></div>
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Width (metres) *"</label><input type="number" step="0.1" min="0.1" class="w-full" placeholder="Enter width in metres" prop:value=move || mat_width.get() on:input=move |e| set_mat_width.set(event_target_value(&e))/></div>
             <div class="grid grid-cols-2 gap-4">

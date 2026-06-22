@@ -41,7 +41,7 @@ fn format_sale_timestamp(ts: &Option<String>) -> String {
 }
 
 #[component]
-pub fn SalesPage() -> impl IntoView {
+pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (sales, set_sales) = signal(Vec::<Sale>::new());
     let (products, set_products) = signal(Vec::<Product>::new());
     let (stock, set_stock) = signal(Vec::<StockItem>::new());
@@ -426,11 +426,13 @@ pub fn SalesPage() -> impl IntoView {
         </div>
 
         // Stats
-        <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class=move || format!("grid gap-4 mb-6 {}", if show_revenue_stats { "grid-cols-4" } else { "grid-cols-3" })>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", today_total.get())}</h3></div>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Transactions"</p><h3 class="text-xl font-semibold">{move || total_items()}</h3></div>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Product Sales"</p><h3 class="text-xl font-semibold">{move || product_count()}</h3></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue())}</h3></div>
+            {move || if show_revenue_stats { view! {
+                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue())}</h3></div>
+            }.into_any() } else { ().into_any() }}
         </div>
 
         // Table

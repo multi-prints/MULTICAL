@@ -3,7 +3,10 @@
 
 use leptos::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
+use gloo_timers::callback::Interval;
 use chrono::{Timelike, Datelike};
+use js_sys::{Array, Function, Object, Reflect};
+use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 use crate::api::{self, UserInfo, LoginResponse};
 #[path = "pages/products.rs"]
 mod products_page;
@@ -35,12 +38,50 @@ enum Page {
     Settings,
 }
 
+fn default_page_for_role(role: &str) -> Page {
+    if role == "admin" {
+        Page::Dashboard
+    } else {
+        Page::Sales
+    }
+}
+
+fn notification_permission() -> Option<String> {
+    let global = js_sys::global();
+    let notification = Reflect::get(&global, &JsValue::from_str("Notification")).ok()?;
+    Reflect::get(&notification, &JsValue::from_str("permission")).ok()?.as_string()
+}
+
+fn request_notification_permission() {
+    let global = js_sys::global();
+    if let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) {
+        if let Ok(func) = Reflect::get(&notification, &JsValue::from_str("requestPermission")).and_then(|v| v.dyn_into::<Function>().map_err(|e| e)) {
+            let _ = func.call0(&notification);
+        }
+    }
+}
+
+fn show_desktop_notification(title: &str, body: &str) {
+    let global = js_sys::global();
+    let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) else { return; };
+    let Ok(ctor) = notification.dyn_into::<Function>() else { return; };
+
+    let options = Object::new();
+    let _ = Reflect::set(&options, &JsValue::from_str("body"), &JsValue::from_str(body));
+    let _ = Reflect::set(&options, &JsValue::from_str("tag"), &JsValue::from_str("overdue-debts"));
+
+    let args = Array::new();
+    args.push(&JsValue::from_str(title));
+    args.push(&options);
+    let _ = Reflect::construct(&ctor, &args);
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let (user, set_user) = signal(None::<UserInfo>);
     let (token, set_token) = signal(None::<String>);
     let (loading, set_loading) = signal(true);
-    let (page, set_page) = signal(Page::Dashboard);
+    let (page, set_page) = signal(Page::Sales);
 
     leptos::task::spawn_local(async move {
         if let Ok(tok) = LocalStorage::get::<String>("sessionToken") {
@@ -49,6 +90,7 @@ pub fn App() -> impl IntoView {
                     set_token.set(Some(tok));
                     if let Ok(u) = LocalStorage::get::<String>("currentUser") {
                         if let Ok(info) = serde_json::from_str::<UserInfo>(&u) {
+                            set_page.set(default_page_for_role(&info.role));
                             set_user.set(Some(info));
                         }
                     }
@@ -63,6 +105,33 @@ pub fn App() -> impl IntoView {
     });
 
     let user_role = move || user.get().map(|u| u.role.clone()).unwrap_or_default();
+    let (overdue_debts, set_overdue_debts) = signal(Vec::<crate::api::Debt>::new());
+    let (overdue_polling_started, set_overdue_polling_started) = signal(false);
+
+    let load_overdue = {
+        let set_overdue_debts = set_overdue_debts;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(items) = api::get_overdue_debts().await {
+                    set_overdue_debts.set(items);
+                }
+            });
+        }
+    };
+
+    create_effect(move |_| {
+        let role = user_role();
+        if role == "admin" {
+            load_overdue();
+            if !overdue_polling_started.get() {
+                set_overdue_polling_started.set(true);
+                let load_overdue = load_overdue.clone();
+                Interval::new(60_000, move || load_overdue()).forget();
+            }
+        } else {
+            set_overdue_debts.set(Vec::new());
+        }
+    });
 
     view! {
         {move || {
@@ -90,14 +159,20 @@ pub fn App() -> impl IntoView {
                     <div class="flex h-screen" style="background:var(--color-bg-base);font-family:var(--font-sans)">
                         <Sidebar user_role=role.clone() current_page=p set_page=sp on_logout=logout />
                         <div class="flex-1 flex flex-col overflow-hidden">
-                            <Header />
+                            <Header overdue_debts=Signal::derive(move || overdue_debts.get()) show_notifications=role == "admin" />
                             <main class="flex-1 overflow-y-auto p-6">
                                 {move || match p.get() {
-                                    Page::Dashboard => view! { <DashboardPage set_page=sp /> }.into_any(),
+                                    Page::Dashboard => {
+                                        if role == "admin" {
+                                            view! { <DashboardPage set_page=sp /> }.into_any()
+                                        } else {
+                                            view! { <ElectronSalesPage show_revenue_stats=false /> }.into_any()
+                                        }
+                                    },
                                     Page::Products => view! { <ElectronProductsPage /> }.into_any(),
                                     Page::Stock => view! { <ElectronStockPage /> }.into_any(),
-                                    Page::Sales => view! { <ElectronSalesPage /> }.into_any(),
-                                    Page::Printing => view! { <ElectronPrintingPage /> }.into_any(),
+                                    Page::Sales => view! { <ElectronSalesPage show_revenue_stats=role == "admin" /> }.into_any(),
+                                    Page::Printing => view! { <ElectronPrintingPage show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
                                     Page::Debts => view! { <ElectronDebtsPage /> }.into_any(),
                                     Page::Settings => view! { <ElectronSettingsPage user=user set_user=set_user /> }.into_any(),
                                 }}
@@ -146,8 +221,8 @@ fn Sidebar(
             </div>
             <nav class="flex-1 flex flex-col px-2 py-3">
                 <div class="flex-1">
-                    {nav_item(Page::Dashboard, "Dashboard", "M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z")}
                     {if user_role == "admin" { view! {
+                        {nav_item(Page::Dashboard, "Dashboard", "M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z")}
                         {nav_item(Page::Products, "Products", "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4")}
                         {nav_item(Page::Stock, "Stock", "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10")}
                     }.into_any()} else { ().into_any() }}
@@ -170,16 +245,135 @@ fn Sidebar(
 }
 
 #[component]
-fn Header() -> impl IntoView {
+fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool) -> impl IntoView {
+    let (open, set_open) = signal(false);
+    let (initial_notified, set_initial_notified) = signal(false);
+
+    Effect::new(move |_| {
+        if let Some(window) = web_sys::window() {
+            let set_open = set_open;
+            let listener = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_| {
+                set_open.set(false);
+            }));
+            let _ = window.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+            listener.forget();
+        }
+    });
+
+    Effect::new(move |_| {
+        if !show_notifications {
+            return;
+        }
+
+        let overdue = overdue_debts.get();
+        if !initial_notified.get() && !overdue.is_empty() {
+            let total: f64 = overdue.iter().map(|d| d.remaining_amount).sum();
+            match notification_permission().as_deref() {
+                Some("granted") => {
+                    show_desktop_notification(
+                        "Overdue Debts Reminder",
+                        &format!(
+                            "You have {} overdue debt{} totaling KSh {:.0}",
+                            overdue.len(),
+                            if overdue.len() > 1 { "s" } else { "" },
+                            total
+                        ),
+                    );
+                    set_initial_notified.set(true);
+                }
+                Some("denied") => {}
+                _ => request_notification_permission(),
+            }
+        }
+    });
+
     view! {
         <header class="h-14 bg-white border-b border-[#E5E5E5] flex items-center justify-between px-5 shrink-0">
             <div class="flex items-center gap-2"></div>
             <div class="flex items-center gap-2">
-                <button class="relative p-2 rounded hover:bg-[#F5F5F5] text-[#525252] hover:text-[#0A0A0A] transition-all duration-100">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                    </svg>
-                </button>
+                {move || if show_notifications { view! {
+                    <div class="relative" on:click=move |e| e.stop_propagation()>
+                        <button class="relative p-2 rounded hover:bg-[#F5F5F5] text-[#525252] hover:text-[#0A0A0A] transition-all duration-100" on:click=move |_| set_open.update(|v| *v = !*v)>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                            </svg>
+                            {move || if !overdue_debts.get().is_empty() { view! {
+                                <span class="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-medium">
+                                    {move || {
+                                        let count = overdue_debts.get().len();
+                                        if count > 99 { "99+".to_string() } else { count.to_string() }
+                                    }}
+                                </span>
+                            }.into_any() } else { ().into_any() }}
+                        </button>
+                        {move || if open.get() { view! {
+                            <div class="absolute right-0 mt-2 w-[360px] bg-white border border-[#E5E5E5] shadow-lg z-50 overflow-hidden">
+                                <div class="px-4 py-3 border-b border-[#F0F0F0] flex items-center justify-between">
+                                    <h3 class="text-sm font-semibold text-[#0A0A0A]">"Notifications"</h3>
+                                    <span class="text-xs text-[#737373]">
+                                        {move || {
+                                            let count = overdue_debts.get().len();
+                                            if count == 0 { "No overdue debts".to_string() }
+                                            else if count == 1 { "1 overdue debt".to_string() }
+                                            else { format!("{} overdue debts", count) }
+                                        }}
+                                    </span>
+                                </div>
+                                <div class="max-h-[320px] overflow-y-auto">
+                                    {move || {
+                                        let items = overdue_debts.get();
+                                        if items.is_empty() {
+                                            view! {
+                                                <div class="p-6 text-center">
+                                                    <div class="w-12 h-12 mx-auto mb-3 bg-green-100 flex items-center justify-center rounded-full">
+                                                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                                    </div>
+                                                    <p class="text-sm text-gray-500">"All debts are up to date!"</p>
+                                                </div>
+                                            }.into_any()
+                                        } else {
+                                            items.into_iter().map(|debt| {
+                                                let due = debt.due_date.clone().unwrap_or_default();
+                                                let days_overdue = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
+                                                    .ok()
+                                                    .map(|d| (chrono::Local::now().date_naive() - d).num_days().max(0))
+                                                    .unwrap_or(0);
+                                                let urgency_cls = if days_overdue > 7 {
+                                                    "bg-red-50 border-l-4 border-red-500"
+                                                } else if days_overdue > 3 {
+                                                    "bg-amber-50 border-l-4 border-amber-500"
+                                                } else {
+                                                    "bg-yellow-50 border-l-4 border-yellow-500"
+                                                };
+                                                let badge_cls = if days_overdue > 7 {
+                                                    "bg-red-100 text-red-800"
+                                                } else {
+                                                    "bg-amber-100 text-amber-800"
+                                                };
+                                                view! {
+                                                    <div class=move || format!("p-3 {}", urgency_cls)>
+                                                        <div class="flex items-start justify-between gap-3">
+                                                            <div class="min-w-0 flex-1">
+                                                                <p class="text-sm font-medium text-gray-900 truncate">{debt.customer_name}</p>
+                                                                <p class="text-xs text-gray-600 mt-0.5">{format!("KSh {:.0}", debt.remaining_amount)}</p>
+                                                                {debt.description.clone().map(|desc| view! {
+                                                                    <p class="text-xs text-gray-500 mt-1 truncate">{desc}</p>
+                                                                })}
+                                                            </div>
+                                                            <span class=move || format!("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {}", badge_cls)>
+                                                                {format!("{}d overdue", days_overdue)}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }).collect::<Vec<_>>().into_any()
+                                        }
+                                    }}
+                                </div>
+                            </div>
+                        }.into_any() } else { ().into_any() }}
+                    </div>
+                }.into_any() } else { ().into_any() }}
             </div>
         </header>
     }
