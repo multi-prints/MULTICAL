@@ -1,54 +1,73 @@
 # MULTIPRINTS
 
-A modern offline desktop inventory and sales management application built with **Tauri + Rust + Leptos**. MULTIPRINTS provides a comprehensive solution for printing businesses to manage products, sticker stock, printing services, sales, and customer debts.
+MULTIPRINTS is an offline desktop inventory and sales management application for printing businesses. It is built with Tauri, Rust, and Leptos, and helps manage products, sticker stock, printing services, sales, and customer debts from a local SQLite database.
+
+## Overview
+
+The application is designed for small to medium printing shops that need a fast local-first desktop system for day-to-day operations. It supports role-based access for admins and employees, tracks inventory movement, records sales and service jobs, and manages debt balances and overdue reminders.
 
 ## Features
 
-### 📊 Dashboard
-- **Analytics**: Real-time overview of total revenue, sales count, material usage, and outstanding debts.
-- **Charts**: Interactive charts (Week/Month/Year) filtering real-time revenue vs. sales data.
-- **Activity Feed**: Live feed of recent sales and debt recordings.
+### Dashboard
+- Real-time overview of revenue, sales, material usage, and outstanding debts
+- Charts for week, month, and year reporting
+- Recent activity feed for sales and debt updates
 
-### 📦 Product Management
-- **Inventory**: Track "Life Saver", "Chevron", and "Stripes" products.
-- **Variants**: Support for different colors (e.g., White & Red, Yellow & Red) and sizes (1x1, 1x2).
-- **Stock Tracking**: Monitor individual product stock levels.
+### Product Management
+- Manage products such as Life Saver, Chevron, and Stripes
+- Support product variants by color and size
+- Track available product stock
 
-### 🧵 Stock & Material Management
-- **Sticker Rolls**: Manage inventory of sticker rolls (Colored, Reflective, Clear) with length tracking.
-- **Printing Materials**: Track printing media (Banner Vinyl, Satin, One-Way Vision, etc.) by width, rolls, and remaining metres.
-- **Usage Tracking**: Automatically deduct metres used from stock when sales or printing jobs are recorded.
+### Stock and Material Management
+- Manage sticker rolls such as colored, reflective, and clear stock
+- Track printing materials by width, rolls, and remaining metres
+- Automatically deduct material usage from stock during sales and printing jobs
 
-### 🖨️ Printing Services
-- **Job Recording**: Record printing jobs with custom dimensions and material usage.
-- **Material Deductions**: Automatically calculates and updates remaining roll length.
-- **Cost Calculation**: Track service earnings separately from product sales.
+### Printing Services
+- Record printing jobs with dimensions, pricing, and material usage
+- Track service income separately from product sales
+- Update material balances automatically after each job
 
-### 💰 Sales & Finance
-- **Point of Sale**: Unified interface for selling pre-made products, sticker metres, or recording printing jobs.
-- **Payment Methods**: Support for Cash, M-Pesa, and Till Number payments.
-- **Debt Management**: Convert unpaid sales/jobs to debts, track partial payments, and manage due dates.
-- **Desktop Notifications**: Admin reminders for overdue debts.
+### Sales and Finance
+- Record product sales, sticker sales, and printing jobs
+- Support cash, M-Pesa, and till payments
+- Convert unpaid transactions into debts
+- Track partial payments, outstanding balances, and due dates
+- Show overdue debt notifications for admins
 
-### 🔒 Security & Architecture
-- **Offline First**: All data stored locally in a secure SQLite database.
-- **Role-Based Access**: Separate views and permissions for Admin and Employee roles.
-- **Rust Backend Commands**: Frontend communicates with the Tauri backend through typed Rust commands.
+### Security and Access Control
+- Offline-first local storage using SQLite
+- Role-based access for admin and employee users
+- Typed Rust commands between the frontend and Tauri backend
 
 ## Technology Stack
 
-- **Desktop Framework**: Tauri 2
-- **Frontend**: Leptos (Rust/WASM)
-- **Backend**: Rust
-- **Database**: SQLite via `rusqlite`
-- **Bundling**: Tauri Bundler
+- Desktop framework: Tauri 2
+- Frontend: Leptos with Rust/WASM
+- Backend: Rust
+- Database: SQLite via `rusqlite`
+- Frontend build tool: Trunk
+- Desktop bundling: Tauri Bundler
 
 ## Development
 
 ### Prerequisites
 - Rust toolchain
 - `trunk`
-- Tauri system dependencies for your OS
+- Tauri CLI
+- Tauri system dependencies for your operating system
+
+### Install tooling
+```bash
+cargo install trunk
+cargo install tauri-cli --version '^2'
+```
+
+### Clone the repository
+```bash
+git clone git@github.com:codegoddy/MULTICAL.git
+cd MULTICAL
+```
 
 ### Run in development
 ```bash
@@ -64,21 +83,22 @@ cargo tauri build
 
 ```text
 MULTICAL/
-├── frontend/        # Leptos frontend (WASM)
-├── src-tauri/       # Tauri desktop shell + Rust backend
+├── frontend/        # Leptos frontend source
+├── src-tauri/       # Tauri app shell and Rust backend
 ├── src/             # Generated Trunk build output
-└── docs/            # Notes and plans
+├── docs/            # Project notes and plans
+└── Cargo.toml       # Workspace manifest
 ```
 
 ## Database Schema Highlights
 
-- **`products`**: pre-made items.
-- **`stock`**: sticker rolls data.
-- **`printing_materials`**: banner/vinyl rolls data.
-- **`sales`**: record of product/stock sales.
-- **`service_transactions`**: record of printing jobs.
-- **`debts`**: customer outstanding balances.
+- `products`: Pre-made product records
+- `stock`: Sticker stock and roll data
+- `printing_materials`: Banner, vinyl, satin, and related materials
+- `sales`: Product and stock sales records
+- `service_transactions`: Printing service transactions
+- `debts`: Customer debt balances and status
 
 ## License
 
-MIT License - Copyright © 2026 Godwin Mayodi (codegoddy@gmail.com)
+MIT License. Copyright © 2026 Godwin Mayodi (codegoddy@gmail.com)
