@@ -1,3 +1,6 @@
+#![allow(deprecated)]
+#![allow(dead_code)]
+
 use leptos::prelude::*;
 use gloo_storage::{LocalStorage, Storage};
 use chrono::{Timelike, Datelike};
@@ -11,6 +14,9 @@ use sales_page::SalesPage as ElectronSalesPage;
 #[path = "pages/printing.rs"]
 mod printing_page;
 use printing_page::PrintingPage as ElectronPrintingPage;
+#[path = "pages/services.rs"]
+mod services_page;
+use services_page::ServicesPage as ElectronServicesPage;
 #[path = "pages/debts.rs"]
 mod debts_page;
 use debts_page::DebtsPage as ElectronDebtsPage;
@@ -24,6 +30,7 @@ enum Page {
     Products,
     Stock,
     Sales,
+    Services,
     Printing,
     Debts,
     Settings,
@@ -91,6 +98,7 @@ pub fn App() -> impl IntoView {
                                     Page::Products => view! { <ProductsPage /> }.into_any(),
                                     Page::Stock => view! { <ElectronStockPage /> }.into_any(),
                                     Page::Sales => view! { <ElectronSalesPage /> }.into_any(),
+                                    Page::Services => view! { <ElectronServicesPage /> }.into_any(),
                                     Page::Printing => view! { <ElectronPrintingPage /> }.into_any(),
                                     Page::Debts => view! { <ElectronDebtsPage /> }.into_any(),
                                     Page::Settings => view! { <ElectronSettingsPage user=user set_user=set_user /> }.into_any(),
@@ -146,6 +154,7 @@ fn Sidebar(
                         {nav_item(Page::Stock, "Stock", "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10")}
                     }.into_any()} else { ().into_any() }}
                     {nav_item(Page::Sales, "Sales", "M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z")}
+                    {nav_item(Page::Services, "Services", "M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z")}
                     {nav_item(Page::Printing, "Printing", "M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z")}
                     {nav_item(Page::Debts, "Debts", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z")}
                 </div>
@@ -189,9 +198,9 @@ fn LoginPage(
     let (error, set_error) = signal(String::new());
     let (loading, set_loading) = signal(false);
     let (show_pw, set_show_pw) = signal(false);
-    let (pw_focused, set_pw_focused) = signal(false);
-    let (user_focused, set_user_focused) = signal(false);
-    let (pw_has_val, set_pw_has_val) = signal(false);
+    let (_pw_focused, set_pw_focused) = signal(false);
+    let (_user_focused, set_user_focused) = signal(false);
+    let (_pw_has_val, set_pw_has_val) = signal(false);
 
     let do_login = move |_| {
         let u = username.get();
@@ -327,7 +336,6 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
         set_loading.set(false);
     });
 
-    let fmt_k = |a: f64| if a >= 1_000_000.0 { format!("KSh {:.1}M", a / 1_000_000.0) } else if a >= 1000.0 { format!("KSh {}k", (a / 1000.0) as i64) } else { format!("KSh {:.0}", a) };
     let fmt_f = |a: f64| format!("KSh {:.0}", a);
 
     // ---- derived stats ----
@@ -604,7 +612,7 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                 }}
                                 // Bars
                                 {move || {
-                                    let (labels, data) = chart_data();
+                                    let (_labels, data) = chart_data();
                                     if data.is_empty() { return view! { <text x=chart_w/2.0 y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="13">"No data"</text> }.into_any(); }
                                     let max_val = data.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
                                     let plot_h = chart_h - pad_t - pad_b;
@@ -785,7 +793,7 @@ fn ProductsPage() -> impl IntoView {
     let (stock_pstock, set_stock_pstock) = signal(0i64);
     let (stock_qty, set_stock_qty) = signal(0i64);
     let (add_qty, set_add_qty) = signal(0i64);
-    let (add_error, set_add_error) = signal(None::<String>);
+    let (_add_error, set_add_error) = signal(None::<String>);
     let (sel_type, set_sel_type) = signal("life_saver".to_string());
     let (sel_color, set_sel_color) = signal("white_red".to_string());
     let (sel_size, set_sel_size) = signal("1x1".to_string());
@@ -849,9 +857,6 @@ fn ProductsPage() -> impl IntoView {
     create_effect(move |_| {
         if add_trigger.get() {
             let (pt, col, sz, qty) = add_payload.get_value();
-            let pname = if pt == "life_saver" { "Life Saver".into() }
-                else if pt == "stripes" { format!("{} Stripes", if col == "white" {"White"} else {"Yellow"}) }
-                else { let cn = if col == "white_red" {"White / Red"} else {"Yellow / Red"}; format!("{} Chevron ({})", cn, sz) };
             let color_opt = if pt == "life_saver" { None } else { Some(col.clone()) };
             let size_opt = if pt == "chevron" { Some(sz.clone()) } else { None };
             add_action.dispatch((pt, color_opt, size_opt, qty));
@@ -1137,7 +1142,7 @@ class="px-4 py-2 text-sm font-medium bg-[#2563EB] text-white border-none cursor-
                             <input type="number" min="1" class="w-full border border-[#E5E5E5] rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]" placeholder="Enter units to add" autofocus on:input=move |e| set_stock_qty.set(event_target_value(&e).parse().unwrap_or(0)) />
                         </div>
                         <div class="bg-blue-50 border border-blue-200 p-3 mt-4">
-                            <p class="text-sm text-gray-700"><span class="font-medium">"New Total Stock: "</span><span>{move || (stock_pstock.get() + stock_qty.get())}</span> " units"</p>
+                            <p class="text-sm text-gray-700"><span class="font-medium">"New Total Stock: "</span><span>{move || stock_pstock.get() + stock_qty.get()}</span> " units"</p>
                         </div>
                     </div>
                     <div class="flex justify-end gap-2.5 px-6 py-4 bg-[#F5F5F5] border-t border-[#F0F0F0]">
@@ -1373,13 +1378,13 @@ fn DebtsPage() -> impl IntoView {
 #[component]
 fn SettingsPage(
     user: ReadSignal<Option<UserInfo>>,
-    su: WriteSignal<Option<UserInfo>>,
+    _su: WriteSignal<Option<UserInfo>>,
 ) -> impl IntoView {
     let (old_pw, set_old_pw) = signal(String::new());
     let (new_pw, set_new_pw) = signal(String::new());
     let (msg, set_msg) = signal(String::new());
     let cur = move || user.get().map(|u| u.username).unwrap_or_default();
-    let is_admin = move || user.get().map(|u| u.role.as_str() == "admin").unwrap_or(false);
+    let _is_admin = move || user.get().map(|u| u.role.as_str() == "admin").unwrap_or(false);
 
     let change_pw = move |_| {
         let o = old_pw.get(); let n = new_pw.get(); let u = cur();

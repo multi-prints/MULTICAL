@@ -87,7 +87,7 @@ pub fn PrintingPage() -> impl IntoView {
     let remaining = |m: &PrintingMaterial| m.total_metres - if m.metres_used.is_nan() { 0.0 } else { m.metres_used };
     let rolls_remaining = move |m: &PrintingMaterial| {
         let rem = remaining(m);
-        if m.metres_per_roll > 0.0 { (rem / m.metres_per_roll) } else { rem / 50.0 }
+        if m.metres_per_roll > 0.0 { rem / m.metres_per_roll } else { rem / 50.0 }
     };
 
     // Submit record job
@@ -180,6 +180,7 @@ pub fn PrintingPage() -> impl IntoView {
                         description: Some(format!("Printing Job: {}", t.service_name)),
                         sale_id: None, service_transaction_id: Some(t_id),
                     }).await;
+                    let _ = api::update_service_transaction(t_id, &serde_json::json!({"is_debt": 1})).await;
                     l();
                 });
             }

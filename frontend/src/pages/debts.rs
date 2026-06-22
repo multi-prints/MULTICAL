@@ -22,7 +22,7 @@ pub fn DebtsPage() -> impl IntoView {
     let (phone, set_phone) = signal(String::new());
     let (amt, set_amt) = signal(String::new());
     let (due, set_due) = signal(String::new());
-    let (due_label, set_due_label) = signal(String::new());
+    let (_due_label, set_due_label) = signal(String::new());
     let (desc, set_desc) = signal(String::new());
     // Payment form
     let (pay_amt, set_pay_amt) = signal(String::new());

@@ -31,7 +31,7 @@ pub fn SalesPage() -> impl IntoView {
     let (convert_phone, set_convert_phone) = signal(String::new());
     let (convert_paid, set_convert_paid) = signal(String::new());
     let (convert_due_date, set_convert_due_date) = signal(String::new());
-    let (convert_due_label, set_convert_due_label) = signal(String::new());
+    let (_convert_due_label, set_convert_due_label) = signal(String::new());
 
     // Receipt / Print state
     let (show_receipt, set_show_receipt) = signal(false);
@@ -241,6 +241,7 @@ pub fn SalesPage() -> impl IntoView {
                         sale_id: Some(s_id),
                         service_transaction_id: None,
                     }).await;
+                    let _ = api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
                     l();
                 });
             }
@@ -268,7 +269,6 @@ pub fn SalesPage() -> impl IntoView {
 
     let all_revenue = move || sales.get().iter().map(|s| s.amount).sum::<f64>();
     let product_count = move || sales.get().iter().filter(|s| s.r#type == "product").count();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     view! { <div id="page-sales" class="page-content">
         // Header

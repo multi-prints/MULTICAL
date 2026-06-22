@@ -4,5 +4,6 @@ pub mod products;
 pub mod stock;
 pub mod sales;
 pub mod printing;
+pub mod services;
 pub mod debts;
 pub mod settings;

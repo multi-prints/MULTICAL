@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -335,6 +337,12 @@ pub struct SuccessResponse {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub success: bool,
+    pub session: Option<UserInfo>,
+}
+
 // ==================== API Functions ====================
 
 macro_rules! api_fn {
@@ -351,35 +359,48 @@ macro_rules! api_fn {
 }
 
 api_fn!(get_all_products, "get_all_products", Vec<Product>);
+api_fn!(get_product, "get_product", id: i64, Option<Product>);
 api_fn!(add_product, "add_product", product: &NewProduct, Product);
 api_fn!(delete_product, "delete_product", id: i64, SuccessResponse);
 api_fn!(get_all_stock, "get_all_stock", Vec<StockItem>);
+api_fn!(get_stock, "get_stock", id: i64, Option<StockItem>);
 api_fn!(add_stock, "add_stock", item: &NewStockItem, StockItem);
 api_fn!(delete_stock, "delete_stock", id: i64, SuccessResponse);
 api_fn!(get_all_sales, "get_all_sales", Vec<Sale>);
+api_fn!(get_today_sales, "get_today_sales", Vec<Sale>);
 api_fn!(add_sale, "add_sale", sale: &NewSale, Sale);
 api_fn!(get_today_total_sales, "get_today_total_sales", f64);
 api_fn!(delete_sale, "delete_sale", id: i64, SuccessResponse);
 api_fn!(get_all_debts, "get_all_debts", Vec<Debt>);
+api_fn!(get_pending_debts, "get_pending_debts", Vec<Debt>);
 api_fn!(add_debt, "add_debt", debt: &NewDebt, Debt);
 api_fn!(mark_debt_paid, "mark_debt_paid", id: i64, SuccessResponse);
 api_fn!(delete_debt, "delete_debt", id: i64, SuccessResponse);
 api_fn!(get_total_outstanding, "get_total_outstanding", f64);
+api_fn!(get_paid_this_month, "get_paid_this_month", f64);
 api_fn!(get_overdue_debts, "get_overdue_debts", Vec<Debt>);
 api_fn!(add_debt_payment, "add_debt_payment", payment: &NewDebtPayment, DebtPayment);
 api_fn!(get_debt_payments, "get_debt_payments", debt_id: i64, Vec<DebtPayment>);
+api_fn!(delete_debt_payment, "delete_debt_payment", id: i64, SuccessResponse);
 api_fn!(get_all_services, "get_all_services", Vec<Service>);
+api_fn!(get_active_services, "get_active_services", Vec<Service>);
 api_fn!(add_service, "add_service", service: &NewService, Service);
 api_fn!(delete_service, "delete_service", id: i64, SuccessResponse);
 api_fn!(get_all_service_transactions, "get_all_service_transactions", Vec<ServiceTransaction>);
+api_fn!(get_today_service_transactions, "get_today_service_transactions", Vec<ServiceTransaction>);
 api_fn!(add_service_transaction, "add_service_transaction", transaction: &NewServiceTransaction, ServiceTransaction);
+api_fn!(get_today_total_service_earnings, "get_today_total_service_earnings", f64);
+api_fn!(get_total_service_earnings, "get_total_service_earnings", f64);
 api_fn!(delete_service_transaction, "delete_service_transaction", id: i64, SuccessResponse);
 api_fn!(get_all_printing_materials, "get_all_printing_materials", Vec<PrintingMaterial>);
+api_fn!(get_printing_material, "get_printing_material", id: i64, Option<PrintingMaterial>);
 api_fn!(add_printing_material, "add_printing_material", material: &NewPrintingMaterial, PrintingMaterial);
 api_fn!(delete_printing_material, "delete_printing_material", id: i64, SuccessResponse);
 api_fn!(get_all_users, "get_all_users", Vec<User>);
 api_fn!(delete_user, "delete_user", username: String, SuccessResponse);
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
+api_fn!(get_app_version, "get_app_version", String);
+api_fn!(get_platform, "get_platform", String);
 
 pub async fn login(username: &str, password: &str) -> Result<LoginResponse, String> {
     tauri_invoke_inner("login", &serde_json::json!({ "username": username, "password": password })).await
@@ -393,6 +414,10 @@ pub async fn logout(token: &str) -> Result<SuccessResponse, String> {
     tauri_invoke_inner("logout", &serde_json::json!({ "token": token })).await
 }
 
+pub async fn get_session(token: &str) -> Result<SessionResponse, String> {
+    tauri_invoke_inner("get_session", &serde_json::json!({ "token": token })).await
+}
+
 pub async fn add_user(username: &str, password: &str, role: &str) -> Result<SuccessResponse, String> {
     tauri_invoke_inner("add_user", &serde_json::json!({ "username": username, "password": password, "role": role })).await
 }
@@ -401,12 +426,40 @@ pub async fn update_product(id: i64, updates: &ProductUpdate) -> Result<SuccessR
     tauri_invoke_inner("update_product", &serde_json::json!({ "id": id, "updates": updates })).await
 }
 
+pub async fn get_stock_by_color_size_type(color: &str, size: &str, sticker_type: &str) -> Result<Option<StockItem>, String> {
+    tauri_invoke_inner("get_stock_by_color_size_type", &serde_json::json!({ "color": color, "size": size, "stickerType": sticker_type })).await
+}
+
 pub async fn update_stock(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
     tauri_invoke_inner("update_stock", &serde_json::json!({ "id": id, "updates": updates })).await
 }
 
+pub async fn update_sale(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner("update_sale", &serde_json::json!({ "id": id, "updates": updates })).await
+}
+
+pub async fn update_debt(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner("update_debt", &serde_json::json!({ "id": id, "updates": updates })).await
+}
+
+pub async fn get_debt_by_sale_id(sale_id: i64) -> Result<Option<Debt>, String> {
+    tauri_invoke_inner("get_debt_by_sale_id", &serde_json::json!({ "saleId": sale_id })).await
+}
+
+pub async fn get_debt_by_transaction_id(transaction_id: i64) -> Result<Option<Debt>, String> {
+    tauri_invoke_inner("get_debt_by_transaction_id", &serde_json::json!({ "transactionId": transaction_id })).await
+}
+
 pub async fn update_service(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
     tauri_invoke_inner("update_service", &serde_json::json!({ "id": id, "updates": updates })).await
+}
+
+pub async fn get_service(id: i64) -> Result<Option<Service>, String> {
+    tauri_invoke_inner("get_service", &serde_json::json!({ "id": id })).await
+}
+
+pub async fn update_service_transaction(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner("update_service_transaction", &serde_json::json!({ "id": id, "updates": updates })).await
 }
 
 pub async fn update_printing_material(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
@@ -415,4 +468,12 @@ pub async fn update_printing_material(id: i64, updates: &serde_json::Value) -> R
 
 pub async fn update_password(username: &str, old_password: &str, new_password: &str) -> Result<SuccessResponse, String> {
     tauri_invoke_inner("update_password", &serde_json::json!({ "username": username, "oldPassword": old_password, "newPassword": new_password })).await
+}
+
+pub async fn update_username(old_username: &str, new_username: &str) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner("update_username", &serde_json::json!({ "oldUsername": old_username, "newUsername": new_username })).await
+}
+
+pub async fn migrate_from_localstorage(data: &serde_json::Value) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner("migrate_from_localstorage", &serde_json::json!({ "data": data })).await
 }

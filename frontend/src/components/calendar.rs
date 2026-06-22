@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use leptos::prelude::*;
 use crate::api::Debt;
 use chrono::Datelike;
@@ -76,7 +78,6 @@ pub fn CalendarModal(
                             let is_s = sel.map_or(false, |(sm,sd)| sm==m && sd==d);
                             let day_debts = bd.get(&d).cloned().unwrap_or_default();
                             let all_p = !day_debts.is_empty() && day_debts.iter().all(|dd| dd.status=="paid");
-                            let has_p = day_debts.iter().any(|dd| dd.status!="paid");
                             let days_u = (dd - today).num_days();
                             let sc = if day_debts.is_empty() { "" }
                                 else if all_p { "paid" } else if days_u < 0 { "overdue" }

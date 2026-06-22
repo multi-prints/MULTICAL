@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use leptos::prelude::*;
 
 /// A single dropdown item.
@@ -51,8 +53,6 @@ pub fn CustomDropdown(
     let (sel_color, set_sel_color) = signal(None::<String>);
 
     let toggle = move |e: leptos::ev::MouseEvent| { e.prevent_default(); e.stop_propagation(); set_open.update(|o| *o = !*o); };
-    let close = move || set_open.set(false);
-
     let select_item = move |value: String, label: String, hex: Option<String>| {
         set_sel_label.set(label);
         set_sel_color.set(hex);

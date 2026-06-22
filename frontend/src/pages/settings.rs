@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use gloo_storage::{LocalStorage, Storage};
 use crate::api::{self, User, UserInfo};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -7,13 +8,16 @@ enum SettingsTab { Account, Backup, About }
 #[component]
 pub fn SettingsPage(
     user: ReadSignal<Option<UserInfo>>,
-    #[allow(unused)] set_user: WriteSignal<Option<UserInfo>>,
+    set_user: WriteSignal<Option<UserInfo>>,
 ) -> impl IntoView {
     let (active_tab, set_active_tab) = signal(SettingsTab::Account);
     let (msg, set_msg) = signal(None::<(bool, String)>);
     let (users, set_users) = signal(Vec::<User>::new());
-    let (app_version, _set_app_version) = signal("1.1.0".to_string());
+    let (app_version, set_app_version) = signal("1.1.0".to_string());
+    let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
 
+    // Username change
+    let (new_username, set_new_username) = signal(String::new());
     // Password change
     let (old_pw, set_old_pw) = signal(String::new());
     let (new_pw, set_new_pw) = signal(String::new());
@@ -31,6 +35,37 @@ pub fn SettingsPage(
         });
     };
     load_users();
+
+    leptos::task::spawn_local(async move {
+        if let Ok(v) = api::get_app_version().await {
+            set_app_version.set(v);
+        }
+        if let Ok(p) = api::get_platform().await {
+            set_platform.set(format!("Tauri ({})", p));
+        }
+    });
+
+    let change_username = move |_| {
+        let old = cur_user();
+        let new_name = new_username.get().trim().to_string();
+        if old.is_empty() || new_name.is_empty() || old == new_name { return; }
+        leptos::task::spawn_local(async move {
+            match api::update_username(&old, &new_name).await {
+                Ok(r) if r.success => {
+                    set_user.update(|u| {
+                        if let Some(info) = u {
+                            info.username = new_name.clone();
+                            LocalStorage::set("currentUser", &serde_json::to_string(info).unwrap_or_default()).ok();
+                        }
+                    });
+                    set_new_username.set(String::new());
+                    set_msg.set(Some((true, "Username updated successfully".into())));
+                }
+                Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_else(|| "Failed".into())))),
+                Err(e) => set_msg.set(Some((false, e))),
+            }
+        });
+    };
 
     let change_pw = move |_| {
         let o = old_pw.get(); let n = new_pw.get();
@@ -96,8 +131,11 @@ pub fn SettingsPage(
                 <div class="space-y-4">
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Current Username"</label>
                         <input type="text" class="w-full bg-gray-50" readonly prop:value=cur_user/></div>
+                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"New Username"</label>
+                        <input type="text" class="w-full" placeholder="Enter new username"
+                            prop:value=move || new_username.get() on:input=move |e| set_new_username.set(event_target_value(&e))/></div>
                     <div class="flex justify-end pt-4 border-t border-gray-100">
-                        <span class="text-xs text-gray-400">"Username change not yet implemented"</span>
+                        <button type="button" class="btn-primary px-6 py-2" on:click=change_username>"Update Username"</button>
                     </div>
                 </div>
             </div>
@@ -168,7 +206,7 @@ pub fn SettingsPage(
             <div class="dashboard-panel p-6 mb-6">
                 <h3 class="text-base font-semibold text-gray-900 mb-4">"System Information"</h3>
                 <div class="space-y-3">
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Platform"</span><span class="text-sm font-medium text-gray-900">"Tauri (Desktop)"</span></div>
+                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Platform"</span><span class="text-sm font-medium text-gray-900">{platform.get()}</span></div>
                     <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Database"</span><span class="text-sm font-medium text-gray-900">"SQLite"</span></div>
                     <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Framework"</span><span class="text-sm font-medium text-gray-900">"Rust + Leptos"</span></div>
                 </div>
