@@ -1,0 +1,4 @@
+{
+  "database_url": "libsql://your-database-name.region.turso.io",
+  "auth_token": "your-turso-auth-token"
+}

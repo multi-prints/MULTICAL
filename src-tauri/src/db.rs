@@ -1,11 +1,26 @@
-use rusqlite::{Connection, params};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use libsql::Builder;
+use rusqlite::{params, Connection};
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::models::*;
 
+const TURSO_CONFIG_FILE: &str = "turso.json";
+const SYNC_DB_FILE: &str = "multiprints-sync.db";
+const SYNC_INTERVAL_SECS: u64 = 15;
+
+#[derive(Debug, Clone, Deserialize)]
+struct TursoConfig {
+    database_url: String,
+    auth_token: String,
+}
+
 pub struct Database {
     pub conn: Mutex<Connection>,
+    sync_db: Option<Arc<libsql::Database>>,
+    db_path: PathBuf,
 }
 
 fn infer_debt_payment_method(
@@ -39,27 +54,239 @@ fn infer_debt_payment_method(
 impl Database {
     /// Open (or create) the database at the given path
     pub fn new(db_path: PathBuf) -> Result<Self, String> {
-        std::fs::create_dir_all(db_path.parent().unwrap()).map_err(|e| e.to_string())?;
+        let data_dir = db_path
+            .parent()
+            .ok_or_else(|| "Invalid database path".to_string())?;
+        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
 
-        let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        let turso_config = Self::load_turso_config(data_dir);
+        let active_db_path = if turso_config.is_some() {
+            data_dir.join(SYNC_DB_FILE)
+        } else {
+            db_path.clone()
+        };
+
+        let sync_db = if let Some(config) = turso_config.clone() {
+            let sync_path = active_db_path.clone();
+            let db = tauri::async_runtime::block_on(async move {
+                let db = Builder::new_synced_database(
+                    &sync_path,
+                    config.database_url,
+                    config.auth_token,
+                )
+                .read_your_writes(true)
+                .remote_writes(false)
+                .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
+                .build()
+                .await
+                .map_err(|e| e.to_string())?;
+
+                db.sync().await.map_err(|e| e.to_string())?;
+                Ok::<libsql::Database, String>(db)
+            })?;
+            Some(Arc::new(db))
+        } else {
+            None
+        };
+
+        let conn = Connection::open(&active_db_path).map_err(|e| e.to_string())?;
         conn.execute_batch("PRAGMA foreign_keys = ON")
             .map_err(|e| e.to_string())?;
 
         let db = Database {
             conn: Mutex::new(conn),
+            sync_db,
+            db_path: active_db_path.clone(),
         };
 
         db.create_tables()?;
         db.run_migrations()?;
 
-        println!("Database initialized at: {:?}", db_path);
+        if turso_config.is_some() && db.is_business_data_empty()? && db_path.exists() && db_path != active_db_path {
+            db.import_legacy_sqlite(&db_path)?;
+            let _ = db.sync_now_blocking();
+        }
+
+        if turso_config.is_some() {
+            let _ = db.sync_now_blocking();
+            println!("Database initialized in Turso sync mode at: {:?}", active_db_path);
+        } else {
+            println!("Database initialized in local mode at: {:?}", active_db_path);
+        }
         Ok(db)
+    }
+
+    fn load_turso_config(data_dir: &Path) -> Option<TursoConfig> {
+        let env_url = std::env::var("TURSO_DATABASE_URL").ok();
+        let env_token = std::env::var("TURSO_AUTH_TOKEN").ok();
+        if let (Some(database_url), Some(auth_token)) = (env_url, env_token) {
+            if !database_url.trim().is_empty() && !auth_token.trim().is_empty() {
+                return Some(TursoConfig {
+                    database_url,
+                    auth_token,
+                });
+            }
+        }
+
+        let config_path = data_dir.join(TURSO_CONFIG_FILE);
+        let raw = std::fs::read_to_string(config_path).ok()?;
+        let parsed: TursoConfig = serde_json::from_str(&raw).ok()?;
+        if parsed.database_url.trim().is_empty() || parsed.auth_token.trim().is_empty() {
+            return None;
+        }
+        Some(parsed)
+    }
+
+    fn sync_now_blocking(&self) -> Result<(), String> {
+        if let Some(sync_db) = self.sync_db.clone() {
+            tauri::async_runtime::block_on(async move {
+                sync_db.sync().await.map(|_| ()).map_err(|e| e.to_string())
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.sync_now_blocking()?;
+        self.conn.lock().map_err(|e| e.to_string())
+    }
+
+    fn finish_write<T>(&self, value: T) -> Result<T, String> {
+        self.sync_now_blocking()?;
+        Ok(value)
+    }
+
+    fn is_business_data_empty(&self) -> Result<bool, String> {
+        let conn = self.synced_conn()?;
+        let total: i64 = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM products) +
+                    (SELECT COUNT(*) FROM stock) +
+                    (SELECT COUNT(*) FROM sales) +
+                    (SELECT COUNT(*) FROM debts) +
+                    (SELECT COUNT(*) FROM debt_payments) +
+                    (SELECT COUNT(*) FROM services) +
+                    (SELECT COUNT(*) FROM service_transactions) +
+                    (SELECT COUNT(*) FROM printing_materials) +
+                    (SELECT COUNT(*) FROM users)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(total == 0)
+    }
+
+    fn legacy_table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM legacy.sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(exists > 0)
+    }
+
+    fn import_legacy_sqlite(&self, legacy_path: &Path) -> Result<(), String> {
+        if !legacy_path.exists() {
+            return Ok(());
+        }
+
+        let conn = self.synced_conn()?;
+        let legacy_path = legacy_path.to_string_lossy().to_string();
+
+        conn.execute("ATTACH DATABASE ?1 AS legacy", params![legacy_path])
+            .map_err(|e| e.to_string())?;
+
+        let import_result = (|| -> Result<(), String> {
+            conn.execute_batch("BEGIN IMMEDIATE;")
+                .map_err(|e| e.to_string())?;
+
+            if Self::legacy_table_exists(&conn, "products")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO products (id, name, product_type, color, size, selling_price, stock, created_at, updated_at)
+                     SELECT id, name, product_type, color, size, selling_price, stock, created_at, updated_at FROM legacy.products;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "stock")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO stock (id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at)
+                     SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM legacy.stock;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "services")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO services (id, name, description, price, unit, uses_stock, is_active, created_at, updated_at)
+                     SELECT id, name, description, price, unit, uses_stock, is_active, created_at, updated_at FROM legacy.services;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "printing_materials")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO printing_materials (id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at)
+                     SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at FROM legacy.printing_materials;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "sales")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO sales (id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp)
+                     SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp FROM legacy.sales;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "service_transactions")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO service_transactions (id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp)
+                     SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp FROM legacy.service_transactions;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "debts")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO debts (id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at)
+                     SELECT id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at FROM legacy.debts;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "debt_payments")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO debt_payments (id, debt_id, amount, payment_method, notes, payment_date)
+                     SELECT id, debt_id, amount, payment_method, notes, payment_date FROM legacy.debt_payments;",
+                ).map_err(|e| e.to_string())?;
+            }
+            if Self::legacy_table_exists(&conn, "users")? {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO users (id, username, password_hash, role, permissions, created_at, updated_at)
+                     SELECT id, username, password_hash, role, permissions, created_at, updated_at FROM legacy.users;",
+                ).map_err(|e| e.to_string())?;
+            }
+
+            conn.execute_batch(
+                "DELETE FROM sqlite_sequence WHERE name IN ('products', 'stock', 'sales', 'debts', 'debt_payments', 'services', 'service_transactions', 'printing_materials', 'users');
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('products', COALESCE((SELECT MAX(id) FROM products), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('stock', COALESCE((SELECT MAX(id) FROM stock), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('sales', COALESCE((SELECT MAX(id) FROM sales), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('debts', COALESCE((SELECT MAX(id) FROM debts), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('debt_payments', COALESCE((SELECT MAX(id) FROM debt_payments), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('services', COALESCE((SELECT MAX(id) FROM services), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('service_transactions', COALESCE((SELECT MAX(id) FROM service_transactions), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('printing_materials', COALESCE((SELECT MAX(id) FROM printing_materials), 0));
+                 INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('users', COALESCE((SELECT MAX(id) FROM users), 0));
+                 COMMIT;",
+            ).map_err(|e| e.to_string())?;
+
+            Ok(())
+        })();
+
+        let _ = conn.execute_batch("DETACH DATABASE legacy");
+        import_result?;
+
+        println!("Imported legacy local database into synced database at {:?}", self.db_path);
+        self.finish_write(())
     }
 
     // ==================== Table Creation ====================
 
     fn create_tables(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         conn.execute_batch(
             "
@@ -193,11 +420,11 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         println!("Database tables created");
-        Ok(())
+        self.finish_write(())
     }
 
     fn run_migrations(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         // Check and add missing columns (same migration logic as JS version)
         let migrations = [
@@ -265,7 +492,7 @@ impl Database {
                 ))
             })
             .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
 
         for (id, amount, paid_at, sale_id, service_transaction_id, recorded_total) in paid_debts_missing_settlement {
@@ -305,7 +532,7 @@ impl Database {
                 ))
             })
             .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
 
         for (id, amount, paid_amount, _remaining_amount, status, sale_id, service_transaction_id, paid_at, created_at) in debts_to_backfill {
@@ -344,13 +571,13 @@ impl Database {
         }
 
         println!("Database migrations completed");
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Products CRUD ====================
 
     pub fn get_all_products(&self) -> Result<Vec<Product>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, product_type, color, size, selling_price, stock, created_at, updated_at FROM products ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -375,7 +602,7 @@ impl Database {
     }
 
     pub fn get_product(&self, id: i64) -> Result<Option<Product>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, product_type, color, size, selling_price, stock, created_at, updated_at FROM products WHERE id = ?1")
             .map_err(|e| e.to_string())?;
@@ -400,7 +627,7 @@ impl Database {
     }
 
     pub fn add_product(&self, product: NewProduct) -> Result<Product, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         // Preserve legacy behavior: find existing variant by type/color/size, update stock instead of insert
         let existing_id: Option<i64> = {
@@ -459,7 +686,7 @@ impl Database {
     }
 
     pub fn update_product(&self, id: i64, updates: ProductUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         let mut sql = String::from("UPDATE products SET ");
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -478,20 +705,20 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_product(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM products WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Stock CRUD ====================
 
     pub fn get_all_stock(&self) -> Result<Vec<StockItem>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM stock ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -509,7 +736,7 @@ impl Database {
     }
 
     pub fn get_stock(&self, id: i64) -> Result<Option<StockItem>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM stock WHERE id = ?1")
             .map_err(|e| e.to_string())?;
@@ -527,7 +754,7 @@ impl Database {
     }
 
     pub fn get_stock_by_color_size_type(&self, color: &str, size: &str, sticker_type: &str) -> Result<Option<StockItem>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM stock WHERE LOWER(color) = LOWER(?1) AND size = ?2 AND sticker_type = ?3")
             .map_err(|e| e.to_string())?;
@@ -545,7 +772,7 @@ impl Database {
     }
 
     pub fn add_stock(&self, item: NewStockItem) -> Result<StockItem, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         let base_metres_per_roll = 50.0_f64;
         let (metres_per_roll, total_metres) = if item.sticker_type == "reflective" {
@@ -581,7 +808,7 @@ impl Database {
     }
 
     pub fn update_stock(&self, id: i64, updates: StockUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -602,19 +829,19 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_stock(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM stock WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Sales CRUD ====================
 
     pub fn get_all_sales(&self) -> Result<Vec<Sale>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp FROM sales ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
@@ -633,7 +860,7 @@ impl Database {
     }
 
     pub fn get_today_sales(&self) -> Result<Vec<Sale>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
@@ -652,7 +879,7 @@ impl Database {
     }
 
     pub fn add_sale(&self, sale: NewSale) -> Result<Sale, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let timestamp = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
 
         conn.execute(
@@ -679,7 +906,7 @@ impl Database {
     }
 
     pub fn get_today_total_sales(&self) -> Result<f64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let total: f64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(amount), 0) FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime')",
@@ -691,7 +918,7 @@ impl Database {
     }
 
     pub fn update_sale(&self, id: i64, updates: SaleUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -708,19 +935,19 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_sale(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM sales WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Debts CRUD ====================
 
     pub fn get_all_debts(&self) -> Result<Vec<Debt>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -739,7 +966,7 @@ impl Database {
     }
 
     pub fn get_pending_debts(&self) -> Result<Vec<Debt>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -758,7 +985,7 @@ impl Database {
     }
 
     pub fn add_debt(&self, debt: NewDebt) -> Result<Debt, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let paid_amount = debt.paid_amount.unwrap_or(0.0);
         let remaining_amount = debt.remaining_amount.unwrap_or(debt.amount - paid_amount);
         let created_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
@@ -795,7 +1022,7 @@ impl Database {
     }
 
     pub fn update_debt(&self, id: i64, updates: DebtUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -815,11 +1042,11 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn mark_debt_paid(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         let (sale_id, transaction_id, amount, paid_amount, remaining_amount): (Option<i64>, Option<i64>, f64, f64, f64) = conn
             .query_row(
@@ -856,11 +1083,11 @@ impl Database {
                 .map_err(|e| e.to_string())?;
         }
 
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn get_debt_by_sale_id(&self, sale_id: i64) -> Result<Option<Debt>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.sale_id = ?1")
             .map_err(|e| e.to_string())?;
@@ -879,7 +1106,7 @@ impl Database {
     }
 
     pub fn get_debt_by_transaction_id(&self, transaction_id: i64) -> Result<Option<Debt>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.service_transaction_id = ?1")
             .map_err(|e| e.to_string())?;
@@ -898,13 +1125,13 @@ impl Database {
     }
 
     pub fn delete_debt(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM debts WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn get_total_outstanding(&self) -> Result<f64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.query_row(
             "SELECT COALESCE(SUM(remaining_amount), 0) FROM debts WHERE status = 'pending'",
             [],
@@ -913,7 +1140,7 @@ impl Database {
     }
 
     pub fn get_paid_this_month(&self) -> Result<f64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.query_row(
             "SELECT COALESCE(SUM(amount), 0) FROM debt_payments WHERE strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now')",
             [],
@@ -922,7 +1149,7 @@ impl Database {
     }
 
     pub fn get_overdue_debts(&self) -> Result<Vec<Debt>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' AND d.due_date IS NOT NULL AND DATE(d.due_date) < DATE('now')")
             .map_err(|e| e.to_string())?;
@@ -943,7 +1170,7 @@ impl Database {
     // ==================== Debt Payments CRUD ====================
 
     pub fn get_debt_payments(&self, debt_id: i64) -> Result<Vec<DebtPayment>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, debt_id, amount, payment_method, notes, payment_date FROM debt_payments WHERE debt_id = ?1 ORDER BY payment_date DESC")
             .map_err(|e| e.to_string())?;
@@ -959,7 +1186,7 @@ impl Database {
     }
 
     pub fn add_debt_payment(&self, payment: NewDebtPayment) -> Result<DebtPayment, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let payment_date = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
 
         conn.execute(
@@ -994,7 +1221,7 @@ impl Database {
     }
 
     pub fn delete_debt_payment(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         let payment: (i64, f64) = conn.query_row(
             "SELECT debt_id, amount FROM debt_payments WHERE id = ?1",
@@ -1020,13 +1247,13 @@ impl Database {
         conn.execute("DELETE FROM debt_payments WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
 
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Services CRUD ====================
 
     pub fn get_all_services(&self) -> Result<Vec<Service>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, description, price, unit, uses_stock, is_active, created_at, updated_at FROM services ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -1043,7 +1270,7 @@ impl Database {
     }
 
     pub fn get_active_services(&self) -> Result<Vec<Service>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, description, price, unit, uses_stock, is_active, created_at, updated_at FROM services WHERE is_active = 1 ORDER BY name")
             .map_err(|e| e.to_string())?;
@@ -1060,7 +1287,7 @@ impl Database {
     }
 
     pub fn get_service(&self, id: i64) -> Result<Option<Service>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, description, price, unit, uses_stock, is_active, created_at, updated_at FROM services WHERE id = ?1")
             .map_err(|e| e.to_string())?;
@@ -1077,7 +1304,7 @@ impl Database {
     }
 
     pub fn add_service(&self, service: NewService) -> Result<Service, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let created_at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
 
         conn.execute(
@@ -1102,7 +1329,7 @@ impl Database {
     }
 
     pub fn update_service(&self, id: i64, updates: ServiceUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1120,19 +1347,19 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_service(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM services WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Service Transactions CRUD ====================
 
     pub fn get_all_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp FROM service_transactions ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
@@ -1153,7 +1380,7 @@ impl Database {
     }
 
     pub fn get_today_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp FROM service_transactions WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
@@ -1174,7 +1401,7 @@ impl Database {
     }
 
     pub fn add_service_transaction(&self, tx: NewServiceTransaction) -> Result<ServiceTransaction, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let timestamp = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
         let amount = tx.amount.unwrap_or(tx.quantity * tx.price.unwrap_or(0.0));
 
@@ -1218,7 +1445,7 @@ impl Database {
     }
 
     pub fn get_today_total_service_earnings(&self) -> Result<f64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.query_row(
             "SELECT COALESCE(SUM(amount), 0) FROM service_transactions WHERE DATE(timestamp) = DATE('now', 'localtime')",
             [],
@@ -1227,7 +1454,7 @@ impl Database {
     }
 
     pub fn get_total_service_earnings(&self) -> Result<f64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.query_row(
             "SELECT COALESCE(SUM(amount), 0) FROM service_transactions",
             [],
@@ -1236,7 +1463,7 @@ impl Database {
     }
 
     pub fn update_service_transaction(&self, id: i64, updates: ServiceTransactionUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1260,20 +1487,20 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_service_transaction(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM service_transactions WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Printing Materials CRUD ====================
 
     pub fn get_all_printing_materials(&self) -> Result<Vec<PrintingMaterial>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at FROM printing_materials ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -1291,7 +1518,7 @@ impl Database {
     }
 
     pub fn get_printing_material(&self, id: i64) -> Result<Option<PrintingMaterial>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at FROM printing_materials WHERE id = ?1")
             .map_err(|e| e.to_string())?;
@@ -1309,7 +1536,7 @@ impl Database {
     }
 
     pub fn add_printing_material(&self, material: NewPrintingMaterial) -> Result<PrintingMaterial, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let total_metres = material.total_metres.unwrap_or(material.rolls as f64 * material.metres_per_roll);
 
         conn.execute(
@@ -1336,7 +1563,7 @@ impl Database {
     }
 
     pub fn update_printing_material(&self, id: i64, updates: PrintingMaterialUpdate) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1357,20 +1584,20 @@ impl Database {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn delete_printing_material(&self, id: i64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM printing_materials WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Users (for auth) ====================
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, username, password_hash, role, permissions, created_at, updated_at FROM users WHERE username = ?1")
             .map_err(|e| e.to_string())?;
@@ -1387,34 +1614,34 @@ impl Database {
     }
 
     pub fn add_user(&self, username: &str, password_hash: &str, role: &str, permissions: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute(
             "INSERT INTO users (username, password_hash, role, permissions) VALUES (?1, ?2, ?3, ?4)",
             params![username, password_hash, role, permissions],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn update_user_password(&self, username: &str, new_hash: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute(
             "UPDATE users SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = ?2",
             params![new_hash, username],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn update_username(&self, old_username: &str, new_username: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute(
             "UPDATE users SET username = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = ?2",
             params![new_username, old_username],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     pub fn get_all_users(&self) -> Result<Vec<User>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
@@ -1430,16 +1657,16 @@ impl Database {
     }
 
     pub fn delete_user(&self, username: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
         conn.execute("DELETE FROM users WHERE username = ?1", params![username])
             .map_err(|e| e.to_string())?;
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Clear All Data ====================
 
     pub fn clear_all_data(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         conn.execute_batch(
             "
@@ -1456,13 +1683,13 @@ impl Database {
         ).map_err(|e| e.to_string())?;
 
         println!("All business data cleared");
-        Ok(())
+        self.finish_write(())
     }
 
     // ==================== Migration from localStorage ====================
 
     pub fn migrate_from_localstorage(&self, data: LocalStorageData) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let conn = self.synced_conn()?;
 
         println!("Migrating data from localStorage...");
 
@@ -1543,6 +1770,6 @@ impl Database {
         }
 
         println!("Migration completed!");
-        Ok(())
+        self.finish_write(())
     }
 }

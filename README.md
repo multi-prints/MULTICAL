@@ -69,6 +69,22 @@ git clone git@github.com:multi-prints/MULTICAL.git
 cd MULTICAL
 ```
 
+### Turso configuration
+The desktop app can run in shared online mode using Turso. Configure it in one of these ways:
+
+1. Environment variables
+```bash
+export TURSO_DATABASE_URL="libsql://your-database-name.region.turso.io"
+export TURSO_AUTH_TOKEN="your-turso-auth-token"
+```
+
+2. Local config file
+- Copy `src-tauri/turso.example.json`
+- Save it as `turso.json` inside the app data directory used by MULTIPRINTS on the target machine
+- Fill in your Turso database URL and auth token
+
+When Turso is configured, the app uses a synced local replica per PC and syncs with the shared Turso database.
+
 ### Run in development
 ```bash
 cargo tauri dev
