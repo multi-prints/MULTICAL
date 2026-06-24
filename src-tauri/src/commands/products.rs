@@ -9,6 +9,14 @@ pub fn get_all_products(db: State<'_, Database>) -> Result<Vec<Product>, String>
 }
 
 #[tauri::command]
+pub fn get_products_page(
+    db: State<'_, Database>,
+    query: ProductsPageQuery,
+) -> Result<ProductsPageData, String> {
+    db.get_products_page(query)
+}
+
+#[tauri::command]
 pub fn get_product(db: State<'_, Database>, id: i64) -> Result<Option<Product>, String> {
     db.get_product(id)
 }

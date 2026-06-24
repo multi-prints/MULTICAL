@@ -9,6 +9,14 @@ pub fn get_all_stock(db: State<'_, Database>) -> Result<Vec<StockItem>, String> 
 }
 
 #[tauri::command]
+pub fn get_stock_page(
+    db: State<'_, Database>,
+    query: StockPageQuery,
+) -> Result<StockPageData, String> {
+    db.get_stock_page(query)
+}
+
+#[tauri::command]
 pub fn get_stock(db: State<'_, Database>, id: i64) -> Result<Option<StockItem>, String> {
     db.get_stock(id)
 }

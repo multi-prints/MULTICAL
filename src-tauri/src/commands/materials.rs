@@ -4,12 +4,17 @@ use crate::db::Database;
 use crate::models::*;
 
 #[tauri::command]
-pub fn get_all_printing_materials(db: State<'_, Database>) -> Result<Vec<PrintingMaterial>, String> {
+pub fn get_all_printing_materials(
+    db: State<'_, Database>,
+) -> Result<Vec<PrintingMaterial>, String> {
     db.get_all_printing_materials()
 }
 
 #[tauri::command]
-pub fn get_printing_material(db: State<'_, Database>, id: i64) -> Result<Option<PrintingMaterial>, String> {
+pub fn get_printing_material(
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<Option<PrintingMaterial>, String> {
     db.get_printing_material(id)
 }
 
@@ -36,7 +41,10 @@ pub fn update_printing_material(
 }
 
 #[tauri::command]
-pub fn delete_printing_material(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
+pub fn delete_printing_material(
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<SuccessResponse, String> {
     db.delete_printing_material(id)?;
     Ok(SuccessResponse {
         success: true,

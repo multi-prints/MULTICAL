@@ -1,9 +1,15 @@
+use crate::api::{self, ProductsPageQuery, SuccessResponse};
 use leptos::prelude::*;
-use crate::api::{self, SuccessResponse};
 
 #[component]
 pub fn ProductsPage() -> impl IntoView {
     let (products, set_products) = signal(Vec::<crate::api::Product>::new());
+    let (total_count, set_total_count) = signal(0u32);
+    let (total_stock_units, set_total_stock_units) = signal(0i64);
+    let (life_saver_stock, set_life_saver_stock) = signal(0i64);
+    let (chevron_stock, set_chevron_stock) = signal(0i64);
+    let (stripes_stock, set_stripes_stock) = signal(0i64);
+    let (stock_value, set_stock_value) = signal(0.0f64);
     let (page, set_page) = signal(1u32);
     let (show_add, set_show_add) = signal(false);
     let (show_stock, set_show_stock) = signal(false);
@@ -21,18 +27,40 @@ pub fn ProductsPage() -> impl IntoView {
 
     let refetch = {
         let sp = set_products;
+        let stc = set_total_count;
+        let stsu = set_total_stock_units;
+        let slss = set_life_saver_stock;
+        let scs = set_chevron_stock;
+        let sss = set_stripes_stock;
+        let ssv = set_stock_value;
         move || {
             leptos::task::spawn_local(async move {
-                if let Ok(p) = api::get_all_products().await {
-                    sp.set(p);
+                if let Ok(p) = api::get_products_page(&ProductsPageQuery {
+                    page: Some(page.get()),
+                    per_page: Some(per_page),
+                })
+                .await
+                {
+                    stc.set(p.total_count as u32);
+                    stsu.set(p.total_stock_units);
+                    slss.set(p.life_saver_stock);
+                    scs.set(p.chevron_stock);
+                    sss.set(p.stripes_stock);
+                    ssv.set(p.stock_value);
+                    sp.set(p.items);
                 }
             });
         }
     };
     refetch();
 
-    let add_action: Action<(String, Option<String>, Option<String>, i64), Result<api::Product, String>, SyncStorage> =
-        Action::new_unsync(move |input: &(String, Option<String>, Option<String>, i64)| {
+    #[allow(clippy::type_complexity)]
+    let add_action: Action<
+        (String, Option<String>, Option<String>, i64),
+        Result<api::Product, String>,
+        SyncStorage,
+    > = Action::new_unsync(
+        move |input: &(String, Option<String>, Option<String>, i64)| {
             let (pt, color_opt, size_opt, qty) = input.clone();
             let pname = if pt == "life_saver" {
                 "Life Saver".into()
@@ -64,7 +92,8 @@ pub fn ProductsPage() -> impl IntoView {
                 })
                 .await
             }
-        });
+        },
+    );
     let delete_action: Action<i64, Result<SuccessResponse, String>, SyncStorage> =
         Action::new_unsync(move |id: &i64| {
             let id = *id;
@@ -129,8 +158,16 @@ pub fn ProductsPage() -> impl IntoView {
     create_effect(move |_| {
         if add_trigger.get() {
             let (pt, col, sz, qty) = add_payload.get_value();
-            let color_opt = if pt == "life_saver" { None } else { Some(col.clone()) };
-            let size_opt = if pt == "chevron" { Some(sz.clone()) } else { None };
+            let color_opt = if pt == "life_saver" {
+                None
+            } else {
+                Some(col.clone())
+            };
+            let size_opt = if pt == "chevron" {
+                Some(sz.clone())
+            } else {
+                None
+            };
             add_action.dispatch((pt, color_opt, size_opt, qty));
             set_add_trigger.set(false);
         }
@@ -153,44 +190,25 @@ pub fn ProductsPage() -> impl IntoView {
         }
     });
 
-    let total = move || products.get().len();
-    let ls_s = move || {
-        products
-            .get()
-            .iter()
-            .filter(|p| p.product_type == "life_saver")
-            .map(|p| p.stock)
-            .sum::<i64>()
-    };
-    let ch_s = move || {
-        products
-            .get()
-            .iter()
-            .filter(|p| p.product_type == "chevron")
-            .map(|p| p.stock)
-            .sum::<i64>()
-    };
-    let st_s = move || {
-        products
-            .get()
-            .iter()
-            .filter(|p| p.product_type == "stripes")
-            .map(|p| p.stock)
-            .sum::<i64>()
-    };
-    let sv = move || {
-        products
-            .get()
-            .iter()
-            .map(|p| p.stock as f64 * p.selling_price)
-            .sum::<f64>()
-    };
+    create_effect(move |_| {
+        let _ = page.get();
+        refetch();
+    });
+
+    let total = move || total_stock_units.get();
+    let ls_s = move || life_saver_stock.get();
+    let ch_s = move || chevron_stock.get();
+    let st_s = move || stripes_stock.get();
+    let sv = move || stock_value.get();
 
     let cls = move |base: &str, active: bool| {
         if active {
             format!("{} border-2 border-gray-900 bg-gray-50 rounded", base)
         } else {
-            format!("{} border border-gray-200 bg-white hover:border-gray-300 rounded", base)
+            format!(
+                "{} border border-gray-200 bg-white hover:border-gray-300 rounded",
+                base
+            )
         }
     };
     let tx = move |active: bool| {
@@ -252,12 +270,7 @@ pub fn ProductsPage() -> impl IntoView {
                                 </div>
                             </td></tr> }.into_any();
                         }
-                        let total = all.len();
-                        let tp = ((total as f64) / (per_page as f64)).ceil() as u32;
-                        let cur = page.get().min(tp.max(1));
-                        let start = ((cur - 1) * per_page) as usize;
-                        let end = (start + per_page as usize).min(total);
-                        all.into_iter().skip(start).take(end - start).map(|p| {
+                        all.into_iter().map(|p| {
                             let is_ls = p.product_type == "life_saver";
                             let is_ch = p.product_type == "chevron";
                             let badged = if is_ls { "bg-green-100 text-green-800" } else if is_ch { "bg-orange-100 text-orange-800" } else { "bg-blue-100 text-blue-800" };
@@ -322,8 +335,8 @@ pub fn ProductsPage() -> impl IntoView {
                     if all.is_empty() {
                         return ().into_any();
                     }
-                    let total = all.len();
-                    let tp = ((total as f64) / (per_page as f64)).ceil() as u32;
+                    let total = total_count.get() as usize;
+                    let tp = (total as u32).div_ceil(per_page).max(1);
                     let cur = page.get().min(tp.max(1));
                     let start = ((cur - 1) * per_page) as usize;
                     let end = (start + per_page as usize).min(total);

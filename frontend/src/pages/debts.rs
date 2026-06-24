@@ -1,6 +1,5 @@
+use crate::api::{self, Debt, DebtPayment, DebtsPageQuery, NewDebt, NewDebtPayment};
 use leptos::prelude::*;
-use std::cmp::Ordering;
-use crate::api::{self, Debt, NewDebt, NewDebtPayment, DebtPayment};
 
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
@@ -36,6 +35,11 @@ fn format_debt_datetime(ts: &Option<String>) -> String {
 #[component]
 pub fn DebtsPage() -> impl IntoView {
     let (debts, set_debts) = signal(Vec::<Debt>::new());
+    let (all_debts, set_all_debts) = signal(Vec::<Debt>::new());
+    let (total_outstanding, set_total_outstanding) = signal(0.0f64);
+    let (paid_month, set_paid_month) = signal(0.0f64);
+    let (overdue_count, set_overdue_count) = signal(0u32);
+    let (total_count, set_total_count) = signal(0u32);
     let (show_add, set_show_add) = signal(false);
     let (show_calendar, set_show_calendar) = signal(false);
     let (show_pay, set_show_pay) = signal(None::<Debt>);
@@ -60,34 +64,58 @@ pub fn DebtsPage() -> impl IntoView {
 
     let reload = {
         let sd = set_debts;
-        move || leptos::task::spawn_local({ let sd = sd; async move {
-            if let Ok(d) = api::get_all_debts().await { sd.set(d); }
-        }})
+        let sad = set_all_debts;
+        let sto = set_total_outstanding;
+        let spm = set_paid_month;
+        let soc = set_overdue_count;
+        let stc = set_total_count;
+        let search_r = search;
+        let sort_r = sort_by;
+        let page_r = current_page;
+        move || {
+            leptos::task::spawn_local({
+                let sd = sd;
+                let sad = sad;
+                let sto = sto;
+                let spm = spm;
+                let soc = soc;
+                let stc = stc;
+                let query = DebtsPageQuery {
+                    search: Some(search_r.get()),
+                    sort_by: Some(sort_r.get()),
+                    page: Some(page_r.get()),
+                    per_page: Some(items_per_page),
+                };
+                async move {
+                    if let Ok(page) = api::get_debts_page(&query).await {
+                        sd.set(page.items);
+                        sad.set(page.all_debts);
+                        sto.set(page.total_outstanding);
+                        spm.set(page.paid_this_month);
+                        soc.set(page.overdue_count as u32);
+                        stc.set(page.total_count as u32);
+                    }
+                }
+            })
+        }
     };
     reload();
 
-    let payment_items = Signal::derive(move || vec![
-        DropdownItem::new("cash", "Cash"),
-        DropdownItem::new("mpesa", "M-Pesa"),
-        DropdownItem::new("till", "Till Number"),
-    ]);
-    let sort_items = Signal::derive(move || vec![
-        DropdownItem::new("newest", "Newest First"),
-        DropdownItem::new("oldest", "Oldest First"),
-        DropdownItem::new("amount_desc", "Highest Remaining"),
-        DropdownItem::new("amount_asc", "Lowest Remaining"),
-    ]);
-
-    let total_outstanding = move || debts.get().iter().filter(|d| d.status == "pending").map(|d| d.remaining_amount).sum::<f64>();
-    let paid_month = move || {
-        let now = chrono::Local::now();
-        let month_key = now.format("%Y-%m").to_string();
-        debts.get().iter().filter(|d| d.paid_at.as_ref().map_or(false, |p| p.starts_with(&month_key))).map(|d| d.paid_amount).sum::<f64>()
-    };
-    let overdue_count = move || {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        debts.get().iter().filter(|d| d.status == "pending" && d.due_date.as_ref().map_or(false, |dd| dd < &today)).count()
-    };
+    let payment_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("cash", "Cash"),
+            DropdownItem::new("mpesa", "M-Pesa"),
+            DropdownItem::new("till", "Till Number"),
+        ]
+    });
+    let sort_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("newest", "Newest First"),
+            DropdownItem::new("oldest", "Oldest First"),
+            DropdownItem::new("amount_desc", "Highest Remaining"),
+            DropdownItem::new("amount_asc", "Lowest Remaining"),
+        ]
+    });
 
     create_effect(move |_| {
         let _ = search.get();
@@ -95,72 +123,78 @@ pub fn DebtsPage() -> impl IntoView {
         set_current_page.set(1);
     });
 
-    let filtered_debts = move || {
-        let query = search.get().trim().to_lowercase();
-        let sort = sort_by.get();
-        let mut items = debts.get().into_iter().filter(|debt| {
-            if query.is_empty() {
-                true
-            } else {
-                debt.customer_name.to_lowercase().contains(&query)
-                    || debt.phone.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || debt.description.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || debt.status.to_lowercase().contains(&query)
-                    || debt.due_date.as_deref().unwrap_or("").to_lowercase().contains(&query)
-            }
-        }).collect::<Vec<_>>();
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        reload();
+    });
 
-        items.sort_by(|a, b| match sort.as_str() {
-            "oldest" => a.created_at.cmp(&b.created_at),
-            "amount_desc" => b.remaining_amount.partial_cmp(&a.remaining_amount).unwrap_or(Ordering::Equal),
-            "amount_asc" => a.remaining_amount.partial_cmp(&b.remaining_amount).unwrap_or(Ordering::Equal),
-            _ => b.created_at.cmp(&a.created_at),
-        });
-
-        items
+    let total_items = move || total_count.get();
+    let total_pages = move || {
+        let n = total_items();
+        if n == 0 {
+            1
+        } else {
+            n.div_ceil(items_per_page)
+        }
     };
-
-    let total_items = move || filtered_debts().len() as u32;
-    let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
-    let paginated = move || {
-        let items = filtered_debts();
-        let start = ((current_page.get() - 1) * items_per_page) as usize;
-        items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
-    };
+    let paginated = move || debts.get();
 
     let add_debt = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
-            let n = cust.get(); let a: f64 = amt.get().parse().unwrap_or(0.0);
-            if n.is_empty() || a <= 0.0 { return; }
+            let n = cust.get();
+            let a: f64 = amt.get().parse().unwrap_or(0.0);
+            if n.is_empty() || a <= 0.0 {
+                return;
+            }
             set_show_add.set(false);
             leptos::task::spawn_local(async move {
                 let _ = api::add_debt(&NewDebt {
-                    customer_name: n, phone: Some(phone.get()).filter(|p| !p.is_empty()),
-                    amount: a, paid_amount: Some(0.0), remaining_amount: Some(a),
+                    customer_name: n,
+                    phone: Some(phone.get()).filter(|p| !p.is_empty()),
+                    amount: a,
+                    paid_amount: Some(0.0),
+                    remaining_amount: Some(a),
                     due_date: Some(due.get()).filter(|d| !d.is_empty()),
                     description: Some(desc.get()).filter(|d| !d.is_empty()),
-                    sale_id: None, service_transaction_id: None,
-                }).await;
-                set_cust.set(String::new()); set_phone.set(String::new()); set_amt.set(String::new());
-                set_due.set(String::new()); set_due_label.set(String::new()); set_desc.set(String::new()); l();
+                    sale_id: None,
+                    service_transaction_id: None,
+                })
+                .await;
+                set_cust.set(String::new());
+                set_phone.set(String::new());
+                set_amt.set(String::new());
+                set_due.set(String::new());
+                set_due_label.set(String::new());
+                set_desc.set(String::new());
+                l();
             });
         }
     };
 
     let submit_payment = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let debt = show_pay.get();
             if let Some(d) = debt {
                 let a: f64 = pay_amt.get().parse().unwrap_or(0.0);
-                if a <= 0.0 || a > d.remaining_amount { return; }
+                if a <= 0.0 || a > d.remaining_amount {
+                    return;
+                }
                 set_show_pay.set(None);
                 leptos::task::spawn_local(async move {
                     let _ = api::add_debt_payment(&NewDebtPayment {
-                        debt_id: d.id, amount: a, payment_method: pay_method.get(), notes: Some(pay_notes.get()).filter(|n| !n.is_empty()),
-                    }).await;
-                    set_pay_amt.set(String::new()); set_pay_notes.set(String::new()); l();
+                        debt_id: d.id,
+                        amount: a,
+                        payment_method: pay_method.get(),
+                        notes: Some(pay_notes.get()).filter(|n| !n.is_empty()),
+                    })
+                    .await;
+                    set_pay_amt.set(String::new());
+                    set_pay_notes.set(String::new());
+                    l();
                 });
             }
         }
@@ -170,7 +204,9 @@ pub fn DebtsPage() -> impl IntoView {
         let did = debt.id;
         set_show_history.set(Some(debt.clone()));
         leptos::task::spawn_local(async move {
-            if let Ok(ps) = api::get_debt_payments(did).await { set_payments.set(ps); }
+            if let Ok(ps) = api::get_debt_payments(did).await {
+                set_payments.set(ps);
+            }
         });
     };
 
@@ -191,9 +227,9 @@ pub fn DebtsPage() -> impl IntoView {
 
         // Stats
         <div class="grid grid-cols-3 gap-4 mb-6">
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Outstanding"</p><p class="text-xl font-bold text-red-600">{move || format!("KSh {:.2}", total_outstanding())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Paid This Month"</p><p class="text-xl font-bold text-green-600">{move || format!("KSh {:.2}", paid_month())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Overdue Debts"</p><p class="text-xl font-bold text-gray-900">{move || overdue_count()}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Outstanding"</p><p class="text-xl font-bold text-red-600">{move || format!("KSh {:.2}", total_outstanding.get())}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Paid This Month"</p><p class="text-xl font-bold text-green-600">{move || format!("KSh {:.2}", paid_month.get())}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Overdue Debts"</p><p class="text-xl font-bold text-gray-900">{move || overdue_count.get()}</p></div>
         </div>
 
         // Table
@@ -243,12 +279,12 @@ pub fn DebtsPage() -> impl IntoView {
                                         <td class="px-5 py-4"><div class="flex items-center gap-2">
                                             {if is_pending { view!{<>
                                                 <button on:click=move |_| { set_pay_amt.set(String::new()); set_pay_notes.set(String::new()); set_pay_method.set("cash".into()); set_show_pay.set(Some(debt_clone.clone())); } class="px-3 py-1 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors">"Pay"</button>
-                                                <button on:click={let did=id;let l=reload.clone();move|_|{leptos::task::spawn_local(async move{let _=api::mark_debt_paid(did).await;l();});}} class="btn-primary px-3 py-1 text-xs font-medium rounded-md">"Mark Paid"</button>
+                                                <button on:click={let did=id;let l=reload;move|_|{leptos::task::spawn_local(async move{let _=api::mark_debt_paid(did).await;l();});}} class="btn-primary px-3 py-1 text-xs font-medium rounded-md">"Mark Paid"</button>
                                             </>}.into_any() } else { ().into_any() }}
                                             <button on:click=move |_| open_history(&debt_clone2) class="text-gray-400 hover:text-gray-600 transition-colors" title="Payment history">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                                             </button>
-                                            <button on:click={let did=id;let l=reload.clone();move|_|{leptos::task::spawn_local(async move{let _=api::delete_debt(did).await;l();});}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
+                                            <button on:click={let did=id;let l=reload;move|_|{leptos::task::spawn_local(async move{let _=api::delete_debt(did).await;l();});}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                             </button>
                                         </div></td>
@@ -330,6 +366,6 @@ pub fn DebtsPage() -> impl IntoView {
         }).unwrap_or_else(|| ().into_any())}
 
         // Calendar Modal
-        <CalendarModal show=Signal::derive(move || show_calendar.get()) set_show=set_show_calendar debts=Signal::derive(move || debts.get())/>
+        <CalendarModal show=Signal::derive(move || show_calendar.get()) set_show=set_show_calendar debts=Signal::derive(move || all_debts.get())/>
     </div> }
 }

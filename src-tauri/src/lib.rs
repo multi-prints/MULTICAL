@@ -27,8 +27,7 @@ pub fn run() {
             let db_path = app_data_dir.join("multiprints.db");
 
             // Initialize database
-            let database = Database::new(db_path)
-                .expect("Failed to initialize database");
+            let database = Database::new(db_path).expect("Failed to initialize database");
 
             // Initialize default users
             auth_manager.init_default_users(&database);
@@ -51,14 +50,19 @@ pub fn run() {
             commands::auth_cmds::update_username,
             commands::auth_cmds::get_all_users,
             commands::auth_cmds::delete_user,
+            // Dashboard commands
+            commands::dashboard::get_dashboard_summary,
+            commands::dashboard::get_dashboard_chart,
             // Product commands
             commands::products::get_all_products,
+            commands::products::get_products_page,
             commands::products::get_product,
             commands::products::add_product,
             commands::products::update_product,
             commands::products::delete_product,
             // Stock commands
             commands::stock::get_all_stock,
+            commands::stock::get_stock_page,
             commands::stock::get_stock,
             commands::stock::get_stock_by_color_size_type,
             commands::stock::add_stock,
@@ -66,6 +70,7 @@ pub fn run() {
             commands::stock::delete_stock,
             // Sales commands
             commands::sales::get_all_sales,
+            commands::sales::get_sales_page,
             commands::sales::get_today_sales,
             commands::sales::add_sale,
             commands::sales::get_today_total_sales,
@@ -73,6 +78,7 @@ pub fn run() {
             commands::sales::delete_sale,
             // Debt commands
             commands::debts::get_all_debts,
+            commands::debts::get_debts_page,
             commands::debts::get_pending_debts,
             commands::debts::add_debt,
             commands::debts::update_debt,
@@ -95,6 +101,7 @@ pub fn run() {
             commands::services::delete_service,
             // Transaction commands
             commands::transactions::get_all_service_transactions,
+            commands::transactions::get_printing_page,
             commands::transactions::get_today_service_transactions,
             commands::transactions::add_service_transaction,
             commands::transactions::get_today_total_service_earnings,

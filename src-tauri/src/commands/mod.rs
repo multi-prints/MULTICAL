@@ -1,8 +1,9 @@
 pub mod auth_cmds;
-pub mod products;
-pub mod stock;
-pub mod sales;
+pub mod dashboard;
 pub mod debts;
-pub mod services;
-pub mod transactions;
 pub mod materials;
+pub mod products;
+pub mod sales;
+pub mod services;
+pub mod stock;
+pub mod transactions;

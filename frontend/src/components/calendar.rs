@@ -1,17 +1,36 @@
 #![allow(dead_code)]
 
-use leptos::prelude::*;
 use crate::api::Debt;
 use chrono::Datelike;
+use leptos::prelude::*;
 
 const MONTHS: [&str; 12] = [
-    "January","February","March","April","May","June",
-    "July","August","September","October","November","December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 fn dim(month: i32, year: i32) -> u32 {
-    if month == 1 { if (year%4==0&&year%100!=0)||year%400==0 {29}else{28} }
-    else if [3,5,8,10].contains(&month) { 30 } else { 31 }
+    if month == 1 {
+        if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+            29
+        } else {
+            28
+        }
+    } else if [3, 5, 8, 10].contains(&month) {
+        30
+    } else {
+        31
+    }
 }
 
 #[component]
@@ -24,8 +43,22 @@ pub fn CalendarModal(
     let (year, set_year) = signal(chrono::Local::now().year());
     let (sel_date, set_sel_date) = signal(None::<(i32, u32)>);
 
-    let prev = move |_| { if month.get()==0 { set_month.set(11); set_year.update(|y|*y-=1); } else { set_month.update(|m|*m-=1); } };
-    let next = move |_| { if month.get()==11 { set_month.set(0); set_year.update(|y|*y+=1); } else { set_month.update(|m|*m+=1); } };
+    let prev = move |_| {
+        if month.get() == 0 {
+            set_month.set(11);
+            set_year.update(|y| *y -= 1);
+        } else {
+            set_month.update(|m| *m -= 1);
+        }
+    };
+    let next = move |_| {
+        if month.get() == 11 {
+            set_month.set(0);
+            set_year.update(|y| *y += 1);
+        } else {
+            set_month.update(|m| *m += 1);
+        }
+    };
     let label = move || format!("{} {}", MONTHS[month.get() as usize], year.get());
 
     // Debts grouped by day
@@ -45,7 +78,11 @@ pub fn CalendarModal(
 
     let sel_debts = move || {
         let (sm, sd) = sel_date.get()?;
-        if sm == month.get() { by_day().get(&sd).cloned() } else { None }
+        if sm == month.get() {
+            by_day().get(&sd).cloned()
+        } else {
+            None
+        }
     };
 
     view! {
@@ -75,7 +112,7 @@ pub fn CalendarModal(
                         for d in 1..=dim(m, y) {
                             let dd = chrono::NaiveDate::from_ymd_opt(y, (m+1) as u32, d).unwrap();
                             let is_t = dd == today;
-                            let is_s = sel.map_or(false, |(sm,sd)| sm==m && sd==d);
+                            let is_s = sel.is_some_and(|(sm,sd)| sm==m && sd==d);
                             let day_debts = bd.get(&d).cloned().unwrap_or_default();
                             let all_p = !day_debts.is_empty() && day_debts.iter().all(|dd| dd.status=="paid");
                             let days_u = (dd - today).num_days();
@@ -160,12 +197,20 @@ pub fn MiniCalendar(
     let (year, set_year) = signal(chrono::Local::now().year());
 
     let prev = move |_| {
-        if month.get() == 0 { set_month.set(11); set_year.update(|y| *y -= 1); }
-        else { set_month.update(|m| *m -= 1); }
+        if month.get() == 0 {
+            set_month.set(11);
+            set_year.update(|y| *y -= 1);
+        } else {
+            set_month.update(|m| *m -= 1);
+        }
     };
     let next = move |_| {
-        if month.get() == 11 { set_month.set(0); set_year.update(|y| *y += 1); }
-        else { set_month.update(|m| *m += 1); }
+        if month.get() == 11 {
+            set_month.set(0);
+            set_year.update(|y| *y += 1);
+        } else {
+            set_month.update(|m| *m += 1);
+        }
     };
     let month_label = move || format!("{} {}", MONTHS[month.get() as usize], year.get());
 
@@ -249,7 +294,12 @@ pub fn MiniCalendar(
 
 fn format_date_display(date_str: &str) -> String {
     if let Ok(d) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-        format!("{} {} {}", d.day(), MONTHS[(d.month() - 1) as usize], d.year())
+        format!(
+            "{} {} {}",
+            d.day(),
+            MONTHS[(d.month() - 1) as usize],
+            d.year()
+        )
     } else {
         date_str.to_string()
     }

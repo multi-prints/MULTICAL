@@ -9,6 +9,14 @@ pub fn get_all_debts(db: State<'_, Database>) -> Result<Vec<Debt>, String> {
 }
 
 #[tauri::command]
+pub fn get_debts_page(
+    db: State<'_, Database>,
+    query: DebtsPageQuery,
+) -> Result<DebtsPageData, String> {
+    db.get_debts_page(query)
+}
+
+#[tauri::command]
 pub fn get_pending_debts(db: State<'_, Database>) -> Result<Vec<Debt>, String> {
     db.get_pending_debts()
 }
@@ -38,7 +46,10 @@ pub fn get_debt_by_sale_id(db: State<'_, Database>, sale_id: i64) -> Result<Opti
 }
 
 #[tauri::command]
-pub fn get_debt_by_transaction_id(db: State<'_, Database>, transaction_id: i64) -> Result<Option<Debt>, String> {
+pub fn get_debt_by_transaction_id(
+    db: State<'_, Database>,
+    transaction_id: i64,
+) -> Result<Option<Debt>, String> {
     db.get_debt_by_transaction_id(transaction_id)
 }
 
@@ -80,12 +91,18 @@ pub fn get_overdue_debts(db: State<'_, Database>) -> Result<Vec<Debt>, String> {
 // Debt Payments
 
 #[tauri::command]
-pub fn add_debt_payment(db: State<'_, Database>, payment: NewDebtPayment) -> Result<DebtPayment, String> {
+pub fn add_debt_payment(
+    db: State<'_, Database>,
+    payment: NewDebtPayment,
+) -> Result<DebtPayment, String> {
     db.add_debt_payment(payment)
 }
 
 #[tauri::command]
-pub fn get_debt_payments(db: State<'_, Database>, debt_id: i64) -> Result<Vec<DebtPayment>, String> {
+pub fn get_debt_payments(
+    db: State<'_, Database>,
+    debt_id: i64,
+) -> Result<Vec<DebtPayment>, String> {
     db.get_debt_payments(debt_id)
 }
 

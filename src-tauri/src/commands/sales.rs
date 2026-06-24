@@ -9,6 +9,14 @@ pub fn get_all_sales(db: State<'_, Database>) -> Result<Vec<Sale>, String> {
 }
 
 #[tauri::command]
+pub fn get_sales_page(
+    db: State<'_, Database>,
+    query: SalesPageQuery,
+) -> Result<SalesPageData, String> {
+    db.get_sales_page(query)
+}
+
+#[tauri::command]
 pub fn get_today_sales(db: State<'_, Database>) -> Result<Vec<Sale>, String> {
     db.get_today_sales()
 }

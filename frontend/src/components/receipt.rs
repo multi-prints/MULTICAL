@@ -1,5 +1,5 @@
-use leptos::prelude::*;
 use crate::api::Sale;
+use leptos::prelude::*;
 
 const BUSINESS_NAME: &str = "MULTIPRINTS";
 const BUSINESS_PHONE: &str = "";
@@ -51,7 +51,6 @@ fn escape_html(input: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-        .replace('"', "&quot;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
@@ -169,7 +168,13 @@ fn build_single_sale_receipt(sale: &Sale) -> String {
         amount = amount,
     );
 
-    build_receipt_shell("Sales Receipt", meta_html, items_html, summary_html, total_html)
+    build_receipt_shell(
+        "Sales Receipt",
+        meta_html,
+        items_html,
+        summary_html,
+        total_html,
+    )
 }
 
 fn build_multi_sale_receipt(sales: &[Sale]) -> String {
@@ -180,7 +185,13 @@ fn build_multi_sale_receipt(sales: &[Sale]) -> String {
     let date = format_multi_receipt_date(sales);
     let customers: Vec<&str> = sales
         .iter()
-        .map(|s| if s.customer_name.trim().is_empty() { "Walk-in" } else { s.customer_name.as_str() })
+        .map(|s| {
+            if s.customer_name.trim().is_empty() {
+                "Walk-in"
+            } else {
+                s.customer_name.as_str()
+            }
+        })
         .collect();
     let cust_display = if customers.is_empty() {
         "Walk-in".to_string()
@@ -245,7 +256,13 @@ fn build_multi_sale_receipt(sales: &[Sale]) -> String {
         amount = total_display,
     );
 
-    build_receipt_shell("Sales Summary Receipt", meta_html, items_html, summary_html, total_html)
+    build_receipt_shell(
+        "Sales Summary Receipt",
+        meta_html,
+        items_html,
+        summary_html,
+        total_html,
+    )
 }
 
 #[component]

@@ -1,13 +1,17 @@
-use leptos::prelude::*;
-use gloo_storage::{LocalStorage, Storage};
 use crate::api::{self, User, UserInfo};
+use gloo_storage::{LocalStorage, Storage};
+use leptos::prelude::*;
 
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
 
 #[derive(Clone, Copy, PartialEq)]
-enum SettingsTab { Account, Backup, About }
+enum SettingsTab {
+    Account,
+    Backup,
+    About,
+}
 
 #[component]
 pub fn SettingsPage(
@@ -31,15 +35,23 @@ pub fn SettingsPage(
     let (new_role, set_new_role) = signal("employee".to_string());
 
     let cur_user = move || user.get().map(|u| u.username).unwrap_or_default();
-    let is_admin = move || user.get().map(|u| u.role.as_str() == "admin").unwrap_or(false);
-    let role_items = Signal::derive(move || vec![
-        DropdownItem::new("employee", "Employee"),
-        DropdownItem::new("admin", "Admin"),
-    ]);
+    let is_admin = move || {
+        user.get()
+            .map(|u| u.role.as_str() == "admin")
+            .unwrap_or(false)
+    };
+    let role_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("employee", "Employee"),
+            DropdownItem::new("admin", "Admin"),
+        ]
+    });
 
     let load_users = move || {
         leptos::task::spawn_local(async move {
-            if let Ok(u) = api::get_all_users().await { set_users.set(u); }
+            if let Ok(u) = api::get_all_users().await {
+                set_users.set(u);
+            }
         });
     };
     load_users();
@@ -56,14 +68,20 @@ pub fn SettingsPage(
     let change_username = move |_| {
         let old = cur_user();
         let new_name = new_username.get().trim().to_string();
-        if old.is_empty() || new_name.is_empty() || old == new_name { return; }
+        if old.is_empty() || new_name.is_empty() || old == new_name {
+            return;
+        }
         leptos::task::spawn_local(async move {
             match api::update_username(&old, &new_name).await {
                 Ok(r) if r.success => {
                     set_user.update(|u| {
                         if let Some(info) = u {
                             info.username = new_name.clone();
-                            LocalStorage::set("currentUser", &serde_json::to_string(info).unwrap_or_default()).ok();
+                            LocalStorage::set(
+                                "currentUser",
+                                serde_json::to_string(info).unwrap_or_default(),
+                            )
+                            .ok();
                         }
                     });
                     set_new_username.set(String::new());
@@ -76,14 +94,18 @@ pub fn SettingsPage(
     };
 
     let change_pw = move |_| {
-        let o = old_pw.get(); let n = new_pw.get();
-        if o.is_empty() || n.is_empty() { return; }
+        let o = old_pw.get();
+        let n = new_pw.get();
+        if o.is_empty() || n.is_empty() {
+            return;
+        }
         let un = cur_user();
         leptos::task::spawn_local(async move {
             match api::update_password(&un, &o, &n).await {
                 Ok(r) if r.success => {
                     set_msg.set(Some((true, "Password updated successfully".into())));
-                    set_old_pw.set(String::new()); set_new_pw.set(String::new());
+                    set_old_pw.set(String::new());
+                    set_new_pw.set(String::new());
                 }
                 Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_else(|| "Failed".into())))),
                 Err(e) => set_msg.set(Some((false, e))),
@@ -92,14 +114,21 @@ pub fn SettingsPage(
     };
 
     let add_user = move |_| {
-        let n = new_user.get(); let p = new_upass.get(); let r = new_role.get();
-        if n.is_empty() || p.is_empty() { return; }
+        let n = new_user.get();
+        let p = new_upass.get();
+        let r = new_role.get();
+        if n.is_empty() || p.is_empty() {
+            return;
+        }
         leptos::task::spawn_local(async move {
             match api::add_user(&n, &p, &r).await {
                 Ok(r) if r.success => {
                     set_msg.set(Some((true, "User added".into())));
-                    set_new_user.set(String::new()); set_new_upass.set(String::new());
-                    if let Ok(u) = api::get_all_users().await { set_users.set(u); }
+                    set_new_user.set(String::new());
+                    set_new_upass.set(String::new());
+                    if let Ok(u) = api::get_all_users().await {
+                        set_users.set(u);
+                    }
                 }
                 Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_default()))),
                 Err(e) => set_msg.set(Some((false, e))),
@@ -110,11 +139,13 @@ pub fn SettingsPage(
     let delete_user = move |username: String| {
         leptos::task::spawn_local(async move {
             let _ = api::delete_user(username).await;
-            if let Ok(u) = api::get_all_users().await { set_users.set(u); }
+            if let Ok(u) = api::get_all_users().await {
+                set_users.set(u);
+            }
         });
     };
 
-    view!{<div id="page-settings" class="page-content">
+    view! {<div id="page-settings" class="page-content">
         <div class="flex items-center justify-between mb-6">
             <div><h1 class="page-title">"Settings"</h1><p class="page-subtitle">"Manage your application preferences and account"</p></div>
         </div>
@@ -255,7 +286,7 @@ pub fn SettingsPage(
                                 <td class="px-4 py-2 text-right">
                                     {if u.username != "admin" && !is_self {
                                         let un = uname.clone();
-                                        let del = delete_user.clone();
+                                        let del = delete_user;
                                         view!{<button on:click=move |_| del(un.clone()) class="text-red-600 hover:underline text-xs">"Remove"</button>}.into_any()
                                     } else { ().into_any() }}
                                 </td>

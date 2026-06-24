@@ -167,7 +167,13 @@ impl AuthManager {
     }
 
     /// Add a new user (admin only)
-    pub fn add_user(&self, db: &Database, username: &str, password: &str, role: &str) -> SuccessResponse {
+    pub fn add_user(
+        &self,
+        db: &Database,
+        username: &str,
+        password: &str,
+        role: &str,
+    ) -> SuccessResponse {
         if db.get_user_by_username(username).ok().flatten().is_some() {
             return SuccessResponse {
                 success: false,
@@ -199,7 +205,13 @@ impl AuthManager {
     }
 
     /// Update user password
-    pub fn update_password(&self, db: &Database, username: &str, old_password: &str, new_password: &str) -> SuccessResponse {
+    pub fn update_password(
+        &self,
+        db: &Database,
+        username: &str,
+        old_password: &str,
+        new_password: &str,
+    ) -> SuccessResponse {
         match db.get_user_by_username(username) {
             Ok(Some(user)) => {
                 if !Self::verify_password(old_password, &user.password_hash) {
@@ -238,15 +250,24 @@ impl AuthManager {
     }
 
     /// Update username
-    pub fn update_username(&self, db: &Database, old_username: &str, new_username: &str) -> SuccessResponse {
-        if old_username != new_username {
-            if db.get_user_by_username(new_username).ok().flatten().is_some() {
-                return SuccessResponse {
-                    success: false,
-                    error: Some("Username already taken".to_string()),
-                    message: None,
-                };
-            }
+    pub fn update_username(
+        &self,
+        db: &Database,
+        old_username: &str,
+        new_username: &str,
+    ) -> SuccessResponse {
+        if old_username != new_username
+            && db
+                .get_user_by_username(new_username)
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            return SuccessResponse {
+                success: false,
+                error: Some("Username already taken".to_string()),
+                message: None,
+            };
         }
 
         match db.update_username(old_username, new_username) {

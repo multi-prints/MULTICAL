@@ -1,8 +1,8 @@
+use super::stock_page::get_hex as stock_color_hex;
+use crate::api::{self, NewDebt, NewSale, Product, Sale, SalesPageQuery, StockItem};
 use leptos::prelude::*;
 use log::error;
-use std::cmp::Ordering;
-use crate::api::{self, Sale, NewSale, Product, StockItem, NewDebt};
-use super::stock_page::get_hex as stock_color_hex;
+
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
@@ -11,10 +11,14 @@ mod calendar_comp;
 use calendar_comp::MiniCalendar;
 #[path = "../components/receipt.rs"]
 mod receipt_comp;
-use receipt_comp::{ReceiptModal, open_multi_sale_receipt, open_sale_receipt};
+use receipt_comp::{open_multi_sale_receipt, open_sale_receipt, ReceiptModal};
 
 #[derive(Clone, Copy, PartialEq)]
-enum SaleTab { Stock, Product, Service }
+enum SaleTab {
+    Stock,
+    Product,
+    Service,
+}
 
 fn format_sale_timestamp(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -46,6 +50,9 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (products, set_products) = signal(Vec::<Product>::new());
     let (stock, set_stock) = signal(Vec::<StockItem>::new());
     let (today_total, set_today_total) = signal(0.0f64);
+    let (all_revenue, set_all_revenue) = signal(0.0f64);
+    let (product_sales_count, set_product_sales_count) = signal(0i64);
+    let (total_count, set_total_count) = signal(0u32);
     let (show_modal, set_show_modal) = signal(false);
     let (active_tab, set_active_tab) = signal(SaleTab::Stock);
     let (current_page, set_current_page) = signal(1u32);
@@ -93,68 +100,160 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let items_per_page = 10u32;
 
     let reload = {
-        let ss = set_sales; let sp = set_products; let sk = set_stock; let tt = set_today_total;
-        move || leptos::task::spawn_local({
-            let ss=ss; let sp=sp; let sk=sk; let tt=tt;
-            async move {
-                if let Ok(s) = api::get_all_sales().await { ss.set(s); }
-                if let Ok(p) = api::get_all_products().await { sp.set(p); }
-                if let Ok(sk_) = api::get_all_stock().await { sk.set(sk_); }
-                if let Ok(t) = api::get_today_total_sales().await { tt.set(t); }
-            }
-        })
+        let ss = set_sales;
+        let sp = set_products;
+        let sk = set_stock;
+        let tt = set_today_total;
+        let ar = set_all_revenue;
+        let psc = set_product_sales_count;
+        let tc = set_total_count;
+        let search_r = search;
+        let sort_r = sort_by;
+        let page_r = current_page;
+        move || {
+            leptos::task::spawn_local({
+                let ss = ss;
+                let sp = sp;
+                let sk = sk;
+                let tt = tt;
+                let ar = ar;
+                let psc = psc;
+                let tc = tc;
+                let query = SalesPageQuery {
+                    search: Some(search_r.get()),
+                    sort_by: Some(sort_r.get()),
+                    page: Some(page_r.get()),
+                    per_page: Some(items_per_page),
+                };
+                async move {
+                    if let Ok(page) = api::get_sales_page(&query).await {
+                        tt.set(page.today_total);
+                        ar.set(page.all_revenue);
+                        psc.set(page.product_sales_count);
+                        tc.set(page.total_count as u32);
+                        ss.set(page.items);
+                    }
+                    if let Ok(p) = api::get_all_products().await {
+                        sp.set(p);
+                    }
+                    if let Ok(sk_) = api::get_all_stock().await {
+                        sk.set(sk_);
+                    }
+                }
+            })
+        }
     };
     reload();
 
     // Dropdown item signals
-    let stock_dropdown_items = Signal::derive(move || stock.get().into_iter().map(|s| {
-        let remaining = s.total_metres - if s.metres_used.is_nan() { 0.0 } else { s.metres_used };
-        let color_hex = stock_color_hex(&s.color);
-        DropdownItem::new(&s.id.to_string(), &format!("{} - {}in ({}) - {}m", s.color, s.size, if s.sticker_type=="reflective" {"Reflective"} else {"Colored"}, remaining as u64))
-            .with_color(&s.color, Some(color_hex)).with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
-    }).collect::<Vec<_>>());
+    let stock_dropdown_items = Signal::derive(move || {
+        stock
+            .get()
+            .into_iter()
+            .map(|s| {
+                let remaining = s.total_metres
+                    - if s.metres_used.is_nan() {
+                        0.0
+                    } else {
+                        s.metres_used
+                    };
+                let color_hex = stock_color_hex(&s.color);
+                DropdownItem::new(
+                    &s.id.to_string(),
+                    &format!(
+                        "{} - {}in ({}) - {}m",
+                        s.color,
+                        s.size,
+                        if s.sticker_type == "reflective" {
+                            "Reflective"
+                        } else {
+                            "Colored"
+                        },
+                        remaining as u64
+                    ),
+                )
+                .with_color(&s.color, Some(color_hex))
+                .with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
+            })
+            .collect::<Vec<_>>()
+    });
 
-    let sale_type_items = Signal::derive(move || vec![
-        DropdownItem::new("metres", "Metres").with_badge("per metre"),
-        DropdownItem::new("rolls", "Whole Rolls").with_badge("50m each"),
-    ]);
-    let payment_method_items = Signal::derive(move || vec![
-        DropdownItem::new("cash", "Cash"),
-        DropdownItem::new("mpesa", "M-Pesa"),
-        DropdownItem::new("till", "Till Number"),
-    ]);
-    let sort_items = Signal::derive(move || vec![
-        DropdownItem::new("newest", "Newest First"),
-        DropdownItem::new("oldest", "Oldest First"),
-        DropdownItem::new("amount_desc", "Highest Amount"),
-        DropdownItem::new("amount_asc", "Lowest Amount"),
-    ]);
-    let product_dropdown_items = Signal::derive(move || products.get().into_iter().filter(|p| p.stock > 0).map(|p| {
-        let color = p.color.clone().unwrap_or_default();
-        DropdownItem::new(&p.id.to_string(), &p.name)
-            .with_badge(&format!("{} in stock", p.stock))
-            .with_product_preview(&p.product_type, if color.trim().is_empty() { None } else { Some(color.as_str()) })
-    }).collect::<Vec<_>>());
+    let sale_type_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("metres", "Metres").with_badge("per metre"),
+            DropdownItem::new("rolls", "Whole Rolls").with_badge("50m each"),
+        ]
+    });
+    let payment_method_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("cash", "Cash"),
+            DropdownItem::new("mpesa", "M-Pesa"),
+            DropdownItem::new("till", "Till Number"),
+        ]
+    });
+    let sort_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("newest", "Newest First"),
+            DropdownItem::new("oldest", "Oldest First"),
+            DropdownItem::new("amount_desc", "Highest Amount"),
+            DropdownItem::new("amount_asc", "Lowest Amount"),
+        ]
+    });
+    let product_dropdown_items = Signal::derive(move || {
+        products
+            .get()
+            .into_iter()
+            .filter(|p| p.stock > 0)
+            .map(|p| {
+                let color = p.color.clone().unwrap_or_default();
+                DropdownItem::new(&p.id.to_string(), &p.name)
+                    .with_badge(&format!("{} in stock", p.stock))
+                    .with_product_preview(
+                        &p.product_type,
+                        if color.trim().is_empty() {
+                            None
+                        } else {
+                            Some(color.as_str())
+                        },
+                    )
+            })
+            .collect::<Vec<_>>()
+    });
 
     let reset_stock_tab = move || {
-        set_stock_id.set(None); set_sale_unit.set("metres".into()); set_stock_qty.set(String::new());
-        set_stock_price.set(String::new()); set_stock_payment.set("cash".into()); set_stock_cust.set("Walk-in".into());
-        set_stock_submit_error.set(None); set_stock_submitting.set(false);
+        set_stock_id.set(None);
+        set_sale_unit.set("metres".into());
+        set_stock_qty.set(String::new());
+        set_stock_price.set(String::new());
+        set_stock_payment.set("cash".into());
+        set_stock_cust.set("Walk-in".into());
+        set_stock_submit_error.set(None);
+        set_stock_submitting.set(false);
     };
     let reset_product_tab = move || {
-        set_product_id.set(None); set_product_qty.set("1".into()); set_product_price.set(0.0);
-        set_product_payment.set("cash".into()); set_product_cust.set("Walk-in".into());
+        set_product_id.set(None);
+        set_product_qty.set("1".into());
+        set_product_price.set(0.0);
+        set_product_payment.set("cash".into());
+        set_product_cust.set("Walk-in".into());
     };
     let reset_service_tab = move || {
-        set_svc_name.set(String::new()); set_svc_price.set(String::new());
-        set_svc_payment.set("cash".into()); set_svc_cust.set("Walk-in".into());
+        set_svc_name.set(String::new());
+        set_svc_price.set(String::new());
+        set_svc_payment.set("cash".into());
+        set_svc_cust.set("Walk-in".into());
     };
 
-    let close_modal = move || { set_show_modal.set(false); reset_stock_tab(); reset_product_tab(); reset_service_tab(); };
+    let close_modal = move || {
+        set_show_modal.set(false);
+        reset_stock_tab();
+        reset_product_tab();
+        reset_service_tab();
+    };
 
     // Stock sale submit
     let submit_stock = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             if stock_submitting.get() {
                 return;
@@ -179,17 +278,29 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             let selected_stock = match stock.get().iter().find(|s| s.id == sid.unwrap()).cloned() {
                 Some(item) => item,
                 None => {
-                    set_stock_submit_error.set(Some("The selected stock item could not be found.".into()));
+                    set_stock_submit_error
+                        .set(Some("The selected stock item could not be found.".into()));
                     return;
                 }
             };
 
             let unit = sale_unit.get();
-            let metres = if unit == "rolls" { qty_val * selected_stock.metres_per_roll } else { qty_val };
-            let used = if selected_stock.metres_used.is_nan() { 0.0 } else { selected_stock.metres_used };
+            let metres = if unit == "rolls" {
+                qty_val * selected_stock.metres_per_roll
+            } else {
+                qty_val
+            };
+            let used = if selected_stock.metres_used.is_nan() {
+                0.0
+            } else {
+                selected_stock.metres_used
+            };
             let remaining = (selected_stock.total_metres - used).max(0.0);
             if metres > remaining {
-                set_stock_submit_error.set(Some(format!("Only {:.1}m remains for this stock item.", remaining)));
+                set_stock_submit_error.set(Some(format!(
+                    "Only {:.1}m remains for this stock item.",
+                    remaining
+                )));
                 return;
             }
 
@@ -199,7 +310,11 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             let label = format!(
                 "{} {}",
                 selected_stock.color,
-                if selected_stock.sticker_type == "reflective" { "Reflective" } else { "Colored" }
+                if selected_stock.sticker_type == "reflective" {
+                    "Reflective"
+                } else {
+                    "Colored"
+                }
             );
             let quantity_label = if unit == "rolls" {
                 format!("{} rolls ({}m)", qty_val, metres)
@@ -211,16 +326,25 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             set_stock_submitting.set(true);
             leptos::task::spawn_local(async move {
                 match api::add_sale(&NewSale {
-                    r#type: "stock".into(), product_id: None, stock_id: Some(sid),
-                    product_name: Some(format!("{} Sticker", label)), product_type: None,
+                    r#type: "stock".into(),
+                    product_id: None,
+                    stock_id: Some(sid),
+                    product_name: Some(format!("{} Sticker", label)),
+                    product_type: None,
                     sticker_type: Some(selected_stock.sticker_type.clone()),
-                    quantity: Some(quantity_label), amount: price_val,
-                    payment_method, customer_name, is_debt: 0,
-                }).await {
+                    quantity: Some(quantity_label),
+                    amount: price_val,
+                    payment_method,
+                    customer_name,
+                    is_debt: 0,
+                })
+                .await
+                {
                     Ok(_) => {}
                     Err(e) => {
                         error!("add_sale failed: {}", e);
-                        set_stock_submit_error.set(Some(format!("Could not record the sale: {}", e)));
+                        set_stock_submit_error
+                            .set(Some(format!("Could not record the sale: {}", e)));
                         set_stock_submitting.set(false);
                         return;
                     }
@@ -229,9 +353,14 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                 if let Err(e) = api::update_stock(
                     selected_stock.id,
                     &serde_json::json!({"metres_used": used + metres}),
-                ).await {
+                )
+                .await
+                {
                     error!("update_stock failed after sale insert: {}", e);
-                    set_stock_submit_error.set(Some(format!("Sale was saved, but stock could not be updated: {}", e)));
+                    set_stock_submit_error.set(Some(format!(
+                        "Sale was saved, but stock could not be updated: {}",
+                        e
+                    )));
                     set_stock_submitting.set(false);
                     return;
                 }
@@ -252,26 +381,49 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
 
     // Product sale submit
     let submit_product = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let pid = product_id.get();
             let pqty: i64 = product_qty.get().parse().unwrap_or(0);
             let price = product_price.get();
-            if pid.is_none() || pqty <= 0 || price <= 0.0 { return; }
-            let p = products.get().iter().find(|p| p.id == pid.unwrap()).cloned();
+            if pid.is_none() || pqty <= 0 || price <= 0.0 {
+                return;
+            }
+            let p = products
+                .get()
+                .iter()
+                .find(|p| p.id == pid.unwrap())
+                .cloned();
             let name = p.as_ref().map(|p| p.name.clone()).unwrap_or_default();
             close_modal();
             leptos::task::spawn_local(async move {
                 let _ = api::add_sale(&NewSale {
-                    r#type: "product".into(), product_id: pid, stock_id: None,
-                    product_name: Some(name), product_type: p.as_ref().map(|p| p.product_type.clone()),
-                    sticker_type: None, quantity: Some(pqty.to_string()), amount: price,
-                    payment_method: product_payment.get(), customer_name: product_cust.get(), is_debt: 0,
-                }).await;
+                    r#type: "product".into(),
+                    product_id: pid,
+                    stock_id: None,
+                    product_name: Some(name),
+                    product_type: p.as_ref().map(|p| p.product_type.clone()),
+                    sticker_type: None,
+                    quantity: Some(pqty.to_string()),
+                    amount: price,
+                    payment_method: product_payment.get(),
+                    customer_name: product_cust.get(),
+                    is_debt: 0,
+                })
+                .await;
                 if let Some(pr) = &p {
-                    let _ = api::update_product(pr.id, &api::ProductUpdate {
-                        stock: Some(pr.stock - pqty), name: None, product_type: None, color: None, size: None, selling_price: None,
-                    }).await;
+                    let _ = api::update_product(
+                        pr.id,
+                        &api::ProductUpdate {
+                            stock: Some(pr.stock - pqty),
+                            name: None,
+                            product_type: None,
+                            color: None,
+                            size: None,
+                            selling_price: None,
+                        },
+                    )
+                    .await;
                 }
                 l();
             });
@@ -280,19 +432,29 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
 
     // Service sale submit
     let submit_service = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let name = svc_name.get();
             let price: f64 = svc_price.get().parse().unwrap_or(0.0);
-            if name.is_empty() || price <= 0.0 { return; }
+            if name.is_empty() || price <= 0.0 {
+                return;
+            }
             close_modal();
             leptos::task::spawn_local(async move {
                 let _ = api::add_sale(&NewSale {
-                    r#type: "service".into(), product_id: None, stock_id: None,
-                    product_name: Some(name), product_type: None, sticker_type: None,
-                    quantity: Some("-".into()), amount: price,
-                    payment_method: svc_payment.get(), customer_name: svc_cust.get(), is_debt: 0,
-                }).await;
+                    r#type: "service".into(),
+                    product_id: None,
+                    stock_id: None,
+                    product_name: Some(name),
+                    product_type: None,
+                    sticker_type: None,
+                    quantity: Some("-".into()),
+                    amount: price,
+                    payment_method: svc_payment.get(),
+                    customer_name: svc_cust.get(),
+                    is_debt: 0,
+                })
+                .await;
                 l();
             });
         }
@@ -300,9 +462,16 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
 
     let toggle_select = move |id: i64| {
         set_selected_sales.update(|v| {
-            if let Some(p) = v.iter().position(|x| *x == id) { v.remove(p); } else { v.push(id); }
+            if let Some(p) = v.iter().position(|x| *x == id) {
+                v.remove(p);
+            } else {
+                v.push(id);
+            }
         });
-        set_selected.update(|c| { let s = selected_sales.get(); *c = s.len() as u32; });
+        set_selected.update(|c| {
+            let s = selected_sales.get();
+            *c = s.len() as u32;
+        });
     };
     let select_all = move |checked: bool| {
         if checked {
@@ -317,42 +486,58 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
 
     // Print selected sales receipt
     let print_selected = {
-        let sales = sales;
-        let selected_sales = selected_sales;
         let set_show = set_show_receipt;
         let set_html = set_receipt_html;
         let set_title = set_receipt_title;
         move |_| {
             let sel_ids = selected_sales.get();
-            if sel_ids.is_empty() { return; }
+            if sel_ids.is_empty() {
+                return;
+            }
             let all = sales.get();
-            let selected: Vec<Sale> = all.into_iter().filter(|s| sel_ids.contains(&s.id)).collect();
+            let selected: Vec<Sale> = all
+                .into_iter()
+                .filter(|s| sel_ids.contains(&s.id))
+                .collect();
             open_multi_sale_receipt(&selected, set_show, set_html, set_title);
         }
     };
 
     // Convert-to-debt submit
     let submit_convert = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let sale = show_convert.get();
             if let Some(s) = sale {
                 let name = convert_customer.get();
-                if name.is_empty() { return; }
+                if name.is_empty() {
+                    return;
+                }
                 let paid: f64 = convert_paid.get().parse().unwrap_or(0.0);
                 let remaining = s.amount - paid;
-                if remaining <= 0.0 { set_show_convert.set(None); return; }
+                if remaining <= 0.0 {
+                    set_show_convert.set(None);
+                    return;
+                }
                 let s_id = s.id;
                 set_show_convert.set(None);
                 leptos::task::spawn_local(async move {
                     let _ = api::add_debt(&NewDebt {
-                        customer_name: name, phone: Some(convert_phone.get()).filter(|p| !p.is_empty()),
-                        amount: s.amount, paid_amount: Some(paid), remaining_amount: Some(remaining),
+                        customer_name: name,
+                        phone: Some(convert_phone.get()).filter(|p| !p.is_empty()),
+                        amount: s.amount,
+                        paid_amount: Some(paid),
+                        remaining_amount: Some(remaining),
                         due_date: Some(convert_due_date.get()).filter(|d| !d.is_empty()),
-                        description: Some(format!("Sale: {} ({})", s.product_name.as_deref().unwrap_or(""), s.quantity.as_deref().unwrap_or("-"))),
+                        description: Some(format!(
+                            "Sale: {} ({})",
+                            s.product_name.as_deref().unwrap_or(""),
+                            s.quantity.as_deref().unwrap_or("-")
+                        )),
                         sale_id: Some(s_id),
                         service_transaction_id: None,
-                    }).await;
+                    })
+                    .await;
                     let _ = api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
                     l();
                 });
@@ -376,43 +561,24 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         set_current_page.set(1);
     });
 
-    let filtered_sales = move || {
-        let query = search.get().trim().to_lowercase();
-        let sort = sort_by.get();
-        let mut items = sales.get().into_iter().filter(|sale| {
-            if query.is_empty() {
-                true
-            } else {
-                sale.product_name.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || sale.customer_name.to_lowercase().contains(&query)
-                    || sale.payment_method.to_lowercase().contains(&query)
-                    || sale.quantity.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || sale.r#type.to_lowercase().contains(&query)
-                    || sale.timestamp.as_deref().unwrap_or("").to_lowercase().contains(&query)
-            }
-        }).collect::<Vec<_>>();
-
-        items.sort_by(|a, b| match sort.as_str() {
-            "oldest" => a.timestamp.cmp(&b.timestamp),
-            "amount_desc" => b.amount.partial_cmp(&a.amount).unwrap_or(Ordering::Equal),
-            "amount_asc" => a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal),
-            _ => b.timestamp.cmp(&a.timestamp),
-        });
-
-        items
-    };
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        reload();
+    });
 
     // Pagination
-    let total_items = move || filtered_sales().len() as u32;
-    let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
-    let paginated = move || {
-        let items = filtered_sales();
-        let start = ((current_page.get() - 1) * items_per_page) as usize;
-        items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
+    let total_items = move || total_count.get();
+    let total_pages = move || {
+        let n = total_items();
+        if n == 0 {
+            1
+        } else {
+            n.div_ceil(items_per_page)
+        }
     };
-
-    let all_revenue = move || sales.get().iter().map(|s| s.amount).sum::<f64>();
-    let product_count = move || sales.get().iter().filter(|s| s.r#type == "product").count();
+    let paginated = move || sales.get();
 
     view! { <div id="page-sales" class="page-content">
         // Header
@@ -429,9 +595,9 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         <div class=move || format!("grid gap-4 mb-6 {}", if show_revenue_stats { "grid-cols-4" } else { "grid-cols-3" })>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", today_total.get())}</h3></div>
             <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Transactions"</p><h3 class="text-xl font-semibold">{move || total_items()}</h3></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Product Sales"</p><h3 class="text-xl font-semibold">{move || product_count()}</h3></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Product Sales"</p><h3 class="text-xl font-semibold">{move || product_sales_count.get()}</h3></div>
             {move || if show_revenue_stats { view! {
-                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue())}</h3></div>
+                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue.get())}</h3></div>
             }.into_any() } else { ().into_any() }}
         </div>
 
@@ -496,7 +662,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                             <button on:click=move |_| { let s=sale_clone.clone(); open_convert(Some(&s)); } class="text-gray-400 hover:text-blue-600 transition-colors" title="Convert to debt">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
                                             </button>
-                                            <button on:click={ let l=reload.clone(); move |_| { let i=id; leptos::task::spawn_local(async move { let _=api::delete_sale(i).await; l(); });}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
+                                            <button on:click={ let l=reload; move |_| { let i=id; leptos::task::spawn_local(async move { let _=api::delete_sale(i).await; l(); });}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                                             </button>
                                         </div></td>

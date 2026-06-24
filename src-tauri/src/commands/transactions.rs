@@ -4,12 +4,24 @@ use crate::db::Database;
 use crate::models::*;
 
 #[tauri::command]
-pub fn get_all_service_transactions(db: State<'_, Database>) -> Result<Vec<ServiceTransaction>, String> {
+pub fn get_all_service_transactions(
+    db: State<'_, Database>,
+) -> Result<Vec<ServiceTransaction>, String> {
     db.get_all_service_transactions()
 }
 
 #[tauri::command]
-pub fn get_today_service_transactions(db: State<'_, Database>) -> Result<Vec<ServiceTransaction>, String> {
+pub fn get_printing_page(
+    db: State<'_, Database>,
+    query: PrintingPageQuery,
+) -> Result<PrintingPageData, String> {
+    db.get_printing_page(query)
+}
+
+#[tauri::command]
+pub fn get_today_service_transactions(
+    db: State<'_, Database>,
+) -> Result<Vec<ServiceTransaction>, String> {
     db.get_today_service_transactions()
 }
 
@@ -46,7 +58,10 @@ pub fn update_service_transaction(
 }
 
 #[tauri::command]
-pub fn delete_service_transaction(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
+pub fn delete_service_transaction(
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<SuccessResponse, String> {
     db.delete_service_transaction(id)?;
     Ok(SuccessResponse {
         success: true,

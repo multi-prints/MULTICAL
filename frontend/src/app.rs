@@ -1,13 +1,14 @@
 #![allow(deprecated)]
 #![allow(dead_code)]
+#![allow(clippy::duplicate_mod)]
 
-use leptos::prelude::*;
+use crate::api::{self, LoginResponse, UserInfo};
+use chrono::Timelike;
 use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Interval;
-use chrono::{Timelike, Datelike};
 use js_sys::{Array, Function, Object, Reflect};
+use leptos::prelude::*;
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
-use crate::api::{self, UserInfo, LoginResponse};
 #[path = "pages/products.rs"]
 mod products_page;
 use products_page::ProductsPage as ProductsPageView;
@@ -49,13 +50,17 @@ fn default_page_for_role(role: &str) -> Page {
 fn notification_permission() -> Option<String> {
     let global = js_sys::global();
     let notification = Reflect::get(&global, &JsValue::from_str("Notification")).ok()?;
-    Reflect::get(&notification, &JsValue::from_str("permission")).ok()?.as_string()
+    Reflect::get(&notification, &JsValue::from_str("permission"))
+        .ok()?
+        .as_string()
 }
 
 fn request_notification_permission() {
     let global = js_sys::global();
     if let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) {
-        if let Ok(func) = Reflect::get(&notification, &JsValue::from_str("requestPermission")).and_then(|v| v.dyn_into::<Function>().map_err(|e| e)) {
+        if let Ok(func) = Reflect::get(&notification, &JsValue::from_str("requestPermission"))
+            .and_then(|v| v.dyn_into::<Function>())
+        {
             let _ = func.call0(&notification);
         }
     }
@@ -63,12 +68,24 @@ fn request_notification_permission() {
 
 fn show_desktop_notification(title: &str, body: &str) {
     let global = js_sys::global();
-    let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) else { return; };
-    let Ok(ctor) = notification.dyn_into::<Function>() else { return; };
+    let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) else {
+        return;
+    };
+    let Ok(ctor) = notification.dyn_into::<Function>() else {
+        return;
+    };
 
     let options = Object::new();
-    let _ = Reflect::set(&options, &JsValue::from_str("body"), &JsValue::from_str(body));
-    let _ = Reflect::set(&options, &JsValue::from_str("tag"), &JsValue::from_str("overdue-debts"));
+    let _ = Reflect::set(
+        &options,
+        &JsValue::from_str("body"),
+        &JsValue::from_str(body),
+    );
+    let _ = Reflect::set(
+        &options,
+        &JsValue::from_str("tag"),
+        &JsValue::from_str("overdue-debts"),
+    );
 
     let args = Array::new();
     args.push(&JsValue::from_str(title));
@@ -109,7 +126,6 @@ pub fn App() -> impl IntoView {
     let (overdue_polling_started, set_overdue_polling_started) = signal(false);
 
     let load_overdue = {
-        let set_overdue_debts = set_overdue_debts;
         move || {
             leptos::task::spawn_local(async move {
                 if let Ok(items) = api::get_overdue_debts().await {
@@ -125,8 +141,8 @@ pub fn App() -> impl IntoView {
             load_overdue();
             if !overdue_polling_started.get() {
                 set_overdue_polling_started.set(true);
-                let load_overdue = load_overdue.clone();
-                Interval::new(60_000, move || load_overdue()).forget();
+                let load_overdue = load_overdue;
+                Interval::new(60_000, load_overdue).forget();
             }
         } else {
             set_overdue_debts.set(Vec::new());
@@ -195,12 +211,15 @@ fn Sidebar(
     on_logout: impl Fn(leptos::ev::MouseEvent) + 'static,
 ) -> impl IntoView {
     let nav_class = move |p: Page| -> &'static str {
-        if current_page.get() == p { "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium bg-[#2563EB] text-white cursor-pointer transition-all duration-100" }
-        else { "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium text-[#737373] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#E5E5E5] cursor-pointer transition-all duration-100" }
+        if current_page.get() == p {
+            "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium bg-[#2563EB] text-white cursor-pointer transition-all duration-100"
+        } else {
+            "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium text-[#737373] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#E5E5E5] cursor-pointer transition-all duration-100"
+        }
     };
     let nav_item = |p: Page, label: &'static str, icon: &'static str| {
         view! {
-            <span class=move || nav_class(p.clone()) on:click=move |_| set_page.set(p.clone())>
+            <span class=move || nav_class(p) on:click=move |_| set_page.set(p)>
                 <svg class="w-[18px] h-[18px] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d=icon/>
                 </svg>
@@ -255,7 +274,8 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
             let listener = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_| {
                 set_open.set(false);
             }));
-            let _ = window.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+            let _ =
+                window.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
             listener.forget();
         }
     });
@@ -404,9 +424,18 @@ fn LoginPage(
         set_loading.set(true);
         leptos::task::spawn_local(async move {
             match api::login(&u, &p).await {
-                Ok(LoginResponse { success: true, token: Some(tok), user: Some(info), .. }) => {
+                Ok(LoginResponse {
+                    success: true,
+                    token: Some(tok),
+                    user: Some(info),
+                    ..
+                }) => {
                     LocalStorage::set("sessionToken", &tok).ok();
-                    LocalStorage::set("currentUser", &serde_json::to_string(&info).unwrap_or_default()).ok();
+                    LocalStorage::set(
+                        "currentUser",
+                        serde_json::to_string(&info).unwrap_or_default(),
+                    )
+                    .ok();
                     set_token.set(Some(tok));
                     set_user.set(Some(info));
                 }
@@ -418,205 +447,157 @@ fn LoginPage(
     };
 
     view! {
-        <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#FAFAFA;font-family:var(--font-sans);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale">
-            <div style="width:100%;max-width:400px;padding:24px">
-                <div style="background:white;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-xl,12px);padding:40px;box-shadow:var(--shadow-sm,0 1px 3px rgba(0,0,0,0.04),0 1px 2px rgba(0,0,0,0.03))">
-                    <div style="text-align:center;margin-bottom:32px">
-                        <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:8px">
-                            <svg style="width:32px;height:32px;color:#2563EB" viewBox="0 0 32 32" fill="none">
-                                <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2"/>
-                                <path d="M9 11h14M9 16h10M9 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            <h1 style="font-size:22px;font-weight:600;color:#0A0A0A;letter-spacing:-0.02em;margin:0">"MULTIPRINTS"</h1>
-                        </div>
-                        <p style="font-size:14px;color:#525252;margin:6px 0 0 0">"Sign in to your account"</p>
+    <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#FAFAFA;font-family:var(--font-sans);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale">
+        <div style="width:100%;max-width:400px;padding:24px">
+            <div style="background:white;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-xl,12px);padding:40px;box-shadow:var(--shadow-sm,0 1px 3px rgba(0,0,0,0.04),0 1px 2px rgba(0,0,0,0.03))">
+                <div style="text-align:center;margin-bottom:32px">
+                    <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:8px">
+                        <svg style="width:32px;height:32px;color:#2563EB" viewBox="0 0 32 32" fill="none">
+                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2"/>
+                            <path d="M9 11h14M9 16h10M9 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <h1 style="font-size:22px;font-weight:600;color:#0A0A0A;letter-spacing:-0.02em;margin:0">"MULTIPRINTS"</h1>
                     </div>
+                    <p style="font-size:14px;color:#525252;margin:6px 0 0 0">"Sign in to your account"</p>
+                </div>
 
-                    <div style="margin-bottom:20px">
-                        <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Username"</label>
-                        <input type="text" placeholder="Enter username"
-                            autocomplete="username" required
-                            style="width:100%;padding:10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
-                            on:focus=move |_| set_user_focused.set(true)
-                            on:blur=move |_| set_user_focused.set(false)
-                            on:input=move |e| set_username.set(event_target_value(&e)) />
+                <div style="margin-bottom:20px">
+                    <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Username"</label>
+                    <input type="text" placeholder="Enter username"
+                        autocomplete="username" required
+                        style="width:100%;padding:10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
+                        on:focus=move |_| set_user_focused.set(true)
+                        on:blur=move |_| set_user_focused.set(false)
+                        on:input=move |e| set_username.set(event_target_value(&e)) />
+                </div>
+
+                <div style="margin-bottom:20px">
+                    <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Password"</label>
+                    <div style="position:relative;display:flex;align-items:center">
+                        <input type={move || if show_pw.get() { "text" } else { "password" }}
+                            placeholder="Enter password" autocomplete="current-password" required
+                            style="width:100%;padding:10px 40px 10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
+                            on:focus=move |_| set_pw_focused.set(true)
+                            on:blur=move |_| set_pw_focused.set(false)
+                            on:input=move |e| { set_password.set(event_target_value(&e)); set_pw_has_val.set(!event_target_value(&e).is_empty()); } />
+                        <button type="button"
+                            style="position:absolute;right:10px;background:none;border:none;cursor:pointer;color:var(--color-text-muted,#A3A3A3);padding:4px;display:flex;align-items:center;justify-content:center;transition:color 150ms ease;border-radius:4px"
+                            on:click=move |_| set_show_pw.update(|v| *v = !*v)>
+                            {move || if show_pw.get() {
+                                view! {
+                                    <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                                    </svg>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                                    </svg>
+                                }.into_any()
+                            }}
+                        </button>
                     </div>
+                </div>
 
-                    <div style="margin-bottom:20px">
-                        <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Password"</label>
-                        <div style="position:relative;display:flex;align-items:center">
-                            <input type={move || if show_pw.get() { "text" } else { "password" }}
-                                placeholder="Enter password" autocomplete="current-password" required
-                                style="width:100%;padding:10px 40px 10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
-                                on:focus=move |_| set_pw_focused.set(true)
-                                on:blur=move |_| set_pw_focused.set(false)
-                                on:input=move |e| { set_password.set(event_target_value(&e)); set_pw_has_val.set(!event_target_value(&e).is_empty()); } />
-                            <button type="button"
-                                style="position:absolute;right:10px;background:none;border:none;cursor:pointer;color:var(--color-text-muted,#A3A3A3);padding:4px;display:flex;align-items:center;justify-content:center;transition:color 150ms ease;border-radius:4px"
-                                on:click=move |_| set_show_pw.update(|v| *v = !*v)>
-                                {move || if show_pw.get() {
-                                    view! {
-                                        <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                                d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
-                                        </svg>
-                                    }.into_any()
-                                } else {
-                                    view! {
-                                        <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
-                                        </svg>
-                                    }.into_any()
-                                }}
-                            </button>
-                        </div>
+                <Show when=move || !error.get().is_empty()>
+                    <div style="color:var(--color-error,#EF4444);font-size:13px;margin-bottom:16px;padding:8px 12px;background:var(--color-error-bg,#FEF2F2);border:1px solid var(--color-error-border,#FECACA);border-radius:var(--radius-md,6px)">
+                        {move || error.get()}
                     </div>
+                </Show>
 
-                    <Show when=move || !error.get().is_empty()>
-                        <div style="color:var(--color-error,#EF4444);font-size:13px;margin-bottom:16px;padding:8px 12px;background:var(--color-error-bg,#FEF2F2);border:1px solid var(--color-error-border,#FECACA);border-radius:var(--radius-md,6px)">
-                            {move || error.get()}
-                        </div>
-                    </Show>
+                <button
+                    style="width:100%;padding:10px 16px;background:#2563EB;color:white;border:none;border-radius:var(--radius-md,6px);font-size:14px;font-weight:500;cursor:pointer;transition:all 150ms ease;margin-top:8px;display:flex;align-items:center;justify-content:center"
+                    disabled=move || loading.get()
+                    on:click=do_login>
+                    {move || if loading.get() {
+                        view! {
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top:2px solid white;border-radius:50%" class="animate-spin"></div>
+                                <span>"Signing in..."</span>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <span>"Sign in"</span> }.into_any()
+                    }}
+                </button>
 
-                    <button
-                        style="width:100%;padding:10px 16px;background:#2563EB;color:white;border:none;border-radius:var(--radius-md,6px);font-size:14px;font-weight:500;cursor:pointer;transition:all 150ms ease;margin-top:8px;display:flex;align-items:center;justify-content:center"
-                        disabled=move || loading.get()
-                        on:click=do_login>
-                        {move || if loading.get() {
-                            view! {
-                                <div style="display:flex;align-items:center;gap:8px">
-                                    <div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top:2px solid white;border-radius:50%" class="animate-spin"></div>
-                                    <span>"Signing in..."</span>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <span>"Sign in"</span> }.into_any()
-                        }}
-                    </button>
-
-                    <div style="text-align:center;margin-top:24px;font-size:12px;color:var(--color-text-muted,#A3A3A3)">
-                        "© 2026 MULTIPRINTS"
-                    </div>
+                <div style="text-align:center;margin-top:24px;font-size:12px;color:var(--color-text-muted,#A3A3A3)">
+                    "© 2026 MULTIPRINTS"
                 </div>
             </div>
         </div>
-            }
+    </div>
+        }
 }
 
 #[component]
 fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
-    let (all_sales, set_all_sales) = signal(Vec::<crate::api::Sale>::new());
-    let (all_svc, set_all_svc) = signal(Vec::<crate::api::ServiceTransaction>::new());
-    let (all_debts, set_all_debts) = signal(Vec::<crate::api::Debt>::new());
-    let (all_products, set_all_products) = signal(Vec::<crate::api::Product>::new());
+    let (summary, set_summary) = signal(None::<crate::api::DashboardSummary>);
+    let (chart_data, set_chart_data) = signal(Vec::<crate::api::DashboardChartPoint>::new());
     let (chart_period, set_chart_period) = signal("week".to_string());
     let (hovered_bar, set_hovered_bar) = signal(None::<usize>);
     let (loading, set_loading) = signal(true);
 
     let hour = chrono::Local::now().hour();
-    let greeting = if hour < 12 { "Good morning" } else if hour < 18 { "Good afternoon" } else { "Good evening" };
+    let greeting = if hour < 12 {
+        "Good morning"
+    } else if hour < 18 {
+        "Good afternoon"
+    } else {
+        "Good evening"
+    };
 
-    leptos::task::spawn_local(async move {
-        if let Ok(s) = api::get_all_sales().await { set_all_sales.set(s); }
-        if let Ok(t) = api::get_all_service_transactions().await { set_all_svc.set(t); }
-        if let Ok(d) = api::get_all_debts().await { set_all_debts.set(d); }
-        if let Ok(p) = api::get_all_products().await { set_all_products.set(p); }
-        set_loading.set(false);
+    let load_summary = {
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(s) = api::get_dashboard_summary().await {
+                    set_summary.set(Some(s));
+                }
+                set_loading.set(false);
+            });
+        }
+    };
+
+    let load_chart = {
+        move || {
+            let period = chart_period.get();
+            leptos::task::spawn_local(async move {
+                if let Ok(points) = api::get_dashboard_chart(&period).await {
+                    set_chart_data.set(points);
+                }
+            });
+        }
+    };
+
+    load_summary();
+    load_chart();
+
+    create_effect(move |_| {
+        chart_period.get();
+        load_chart();
     });
 
     let fmt_f = |a: f64| format!("KSh {:.0}", a);
 
-    // ---- derived stats ----
-    let total_revenue = move || {
-        let sr: f64 = all_sales.get().iter().map(|s| s.amount).sum();
-        let sv: f64 = all_svc.get().iter().map(|t| t.amount).sum();
-        sr + sv
-    };
-
-    let today_stats = {
-        let sales = all_sales;
-        let svc = all_svc;
-        move || {
-            let today = chrono::Local::now().date_naive().to_string();
-            let s = sales.get(); let t = svc.get();
-            let sc = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).count();
-            let tc = t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).count();
-            let sr: f64 = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).map(|x| x.amount).sum();
-            let tr: f64 = t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&today)).map(|x| x.amount).sum();
-            ((sc + tc) as i64, sr + tr)
-        }
-    };
-
-    let debt_stats = {
-        let debts = all_debts;
-        move || {
-            let p: Vec<_> = debts.get().into_iter().filter(|d| d.status == "pending").collect();
-            (p.iter().map(|d| d.remaining_amount).sum::<f64>(), p.len() as i64)
-        }
-    };
-
-    // ---- chart data ----
-    let chart_data = {
-        let sales = all_sales;
-        let svc = all_svc;
-        let period = chart_period;
-        move || {
-            let p = period.get();
-            let s = sales.get();
-            let t = svc.get();
-            let today = chrono::Local::now().date_naive();
-            let mut labels: Vec<String> = Vec::new();
-            let mut data: Vec<f64> = Vec::new();
-
-            fn day_rev(sales: &[crate::api::Sale], svc: &[crate::api::ServiceTransaction], ds: &str) -> f64 {
-                let sr: f64 = sales.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(ds)).map(|x| x.amount).sum();
-                let tr: f64 = svc.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(ds)).map(|x| x.amount).sum();
-                sr + tr
-            }
-
-            if p == "week" {
-                for i in (0..7).rev() {
-                    let d = today - chrono::Duration::days(i);
-                    labels.push(d.format("%a").to_string());
-                    data.push(day_rev(&s, &t, &d.to_string()));
-                }
-            } else if p == "month" {
-                for w in 0..4 {
-                    let end = today - chrono::Duration::days((w * 7) as i64);
-                    let start = end - chrono::Duration::days(6);
-                    labels.push(format!("{}–{}", start.format("%d"), end.format("%d %b")));
-                    let mut total = 0.0;
-                    for d in 0..7 {
-                        let day = start + chrono::Duration::days(d);
-                        total += day_rev(&s, &t, &day.to_string());
-                    }
-                    data.push(total);
-                }
-                labels.reverse(); data.reverse();
-            } else {
-                for i in (0..12).rev() {
-                    let m = today - chrono::Duration::days(i * 30);
-                    let ms = format!("{}-{:02}", m.year(), m.month());
-                    labels.push(m.format("%b").to_string());
-                    let total: f64 = s.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&ms)).map(|x| x.amount).sum::<f64>()
-                        + t.iter().filter(|x| x.timestamp.as_deref().unwrap_or("").starts_with(&ms)).map(|x| x.amount).sum::<f64>();
-                    data.push(total);
-                }
-            }
-            (labels, data)
-        }
-    };
-
     // ---- chart summary ----
     let chart_stats = move || {
-        let (_, data) = chart_data();
-        if data.is_empty() { return ("KSh 0".to_string(), "KSh 0".to_string(), "KSh 0".to_string()); }
-        let max = data.iter().cloned().fold(0.0_f64, f64::max);
-        let sum: f64 = data.iter().sum();
-        let avg = sum / data.len() as f64;
+        let data = chart_data.get();
+        if data.is_empty() {
+            return (
+                "KSh 0".to_string(),
+                "KSh 0".to_string(),
+                "KSh 0".to_string(),
+            );
+        }
+        let amounts: Vec<f64> = data.iter().map(|p| p.amount).collect();
+        let max = amounts.iter().cloned().fold(0.0_f64, f64::max);
+        let sum: f64 = amounts.iter().sum();
+        let avg = sum / amounts.len() as f64;
         (fmt_f(max), fmt_f(avg as i64 as f64), fmt_f(sum))
     };
 
@@ -628,68 +609,17 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
 
     // ---- recent transactions (combined) ----
     let recent_txns = move || {
-        let mut items: Vec<(String, String, f64, bool, String)> = Vec::new(); // name, date, amount, is_debt, type_label
-        for s in all_sales.get().iter() {
-            items.push((
-                s.product_name.clone().unwrap_or(s.r#type.clone()),
-                s.timestamp.as_deref().unwrap_or("").split('T').next().unwrap_or("").to_string(),
-                s.amount, s.is_debt > 0,
-                "Sale".into(),
-            ));
-        }
-        for t in all_svc.get().iter() {
-            if t.stock_metres_used > 0.0 {
-                items.push((
-                    t.service_name.clone(),
-                    t.timestamp.as_deref().unwrap_or("").split('T').next().unwrap_or("").to_string(),
-                    t.amount, t.is_debt > 0,
-                    "Printing".into(),
-                ));
-            }
-        }
-        items.sort_by(|a, b| b.1.cmp(&a.1));
-        items.truncate(5);
-        items
+        summary
+            .get()
+            .map(|s| s.recent_transactions)
+            .unwrap_or_default()
     };
 
     // ---- activity feed ----
-    let activity_items = move || {
-        let mut items: Vec<(String, String, String)> = Vec::new(); // (type, text, time)
-        for s in all_sales.get().iter().take(20) {
-            let time = s.timestamp.as_deref().and_then(|t| t.get(11..16)).unwrap_or("").to_string();
-            let name = s.product_name.clone().unwrap_or(s.r#type.clone());
-            items.push(("sale".into(), format!("{} — KSh {:.0}", name, s.amount), time));
-        }
-        for d in all_debts.get().iter().take(20) {
-            let time = d.created_at.as_deref().and_then(|t| t.get(11..16)).unwrap_or("").to_string();
-            items.push(("debt".into(), format!("Debt: {} — KSh {:.0}", d.customer_name, d.amount), time));
-        }
-        items.sort_by(|a, b| b.2.cmp(&a.2));
-        items.truncate(8);
-        items
-    };
+    let activity_items = move || summary.get().map(|s| s.activity_items).unwrap_or_default();
 
     // ---- top products ----
-    let top_products = move || {
-        let products = all_products.get();
-        let sales = all_sales.get();
-        let mut counts: Vec<(i64, i64, String)> = Vec::new(); // (id, qty, name)
-        for s in sales.iter() {
-            if let Some(pid) = s.product_id {
-                if let Some(pos) = counts.iter().position(|(id, _, _)| *id == pid) {
-                    let qty: i64 = s.quantity.as_deref().and_then(|q| q.parse().ok()).unwrap_or(1);
-                    counts[pos].1 += qty;
-                } else {
-                    let qty: i64 = s.quantity.as_deref().and_then(|q| q.parse().ok()).unwrap_or(1);
-                    let name = products.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_else(|| format!("Product #{}", pid));
-                    counts.push((pid, qty, name));
-                }
-            }
-        }
-        counts.sort_by(|a, b| b.1.cmp(&a.1));
-        counts.truncate(4);
-        counts
-    };
+    let top_products = move || summary.get().map(|s| s.top_products).unwrap_or_default();
 
     // ---- chart SVG constants ----
     let chart_w = 640.0_f64;
@@ -712,7 +642,7 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Total Revenue"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || fmt_f(total_revenue())}</h3>
+                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || fmt_f(summary.get().map(|s| s.total_revenue).unwrap_or(0.0))}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-green-600">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
                                 <span>"All time"</span>
@@ -727,9 +657,9 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || { let (c, _) = today_stats(); c }}</h3>
+                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || summary.get().map(|s| s.today_sales_count).unwrap_or(0)}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-gray-500">
-                                <span>{move || { let (_, r) = today_stats(); format!("Today: KSh {:.0}", r) }}</span>
+                                <span>{move || format!("Today: KSh {:.0}", summary.get().map(|s| s.today_revenue).unwrap_or(0.0))}</span>
                             </div>
                         </div>
                         <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
@@ -741,9 +671,9 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                     <div class="flex items-start justify-between">
                         <div>
                             <p class="text-xs text-gray-500 font-medium mb-1">"Outstanding Debts"</p>
-                            <h3 class="text-xl font-semibold text-[#EF4444]">{move || { let (o, _) = debt_stats(); fmt_f(o) }}</h3>
+                            <h3 class="text-xl font-semibold text-[#EF4444]">{move || fmt_f(summary.get().map(|s| s.outstanding_debts).unwrap_or(0.0))}</h3>
                             <div class="flex items-center gap-1 mt-2 text-xs font-medium text-red-500">
-                                <span>{move || { let (_, c) = debt_stats(); format!("{} pending", c) }}</span>
+                                <span>{move || format!("{} pending", summary.get().map(|s| s.pending_debts_count).unwrap_or(0))}</span>
                             </div>
                         </div>
                         <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
@@ -781,8 +711,8 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                             <svg viewBox=move || format!("0 0 {} {}", chart_w, chart_h) class="w-full" style="min-height:260px;max-height:320px">
                                 // Y-axis gridlines + labels
                                 {move || {
-                                    let (_, data) = chart_data();
-                                    let max_val = data.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+                                    let data = chart_data.get();
+                                    let max_val = data.iter().map(|p| p.amount).fold(0.0_f64, f64::max).max(1.0);
                                     let step = if max_val <= 1000.0 { 200.0 } else if max_val <= 5000.0 { 1000.0 } else if max_val <= 20000.0 { 5000.0 } else if max_val <= 100_000.0 { 20000.0 } else { (max_val / 5.0).max(1000.0) };
                                     let n_ticks = ((max_val / step).ceil() as usize).max(1);
                                     let plot_h = chart_h - pad_t - pad_b;
@@ -803,15 +733,16 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                 }}
                                 // Bars
                                 {move || {
-                                    let (_labels, data) = chart_data();
+                                    let data = chart_data.get();
                                     if data.is_empty() { return view! { <text x=chart_w/2.0 y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="13">"No data"</text> }.into_any(); }
-                                    let max_val = data.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+                                    let max_val = data.iter().map(|p| p.amount).fold(0.0_f64, f64::max).max(1.0);
                                     let plot_h = chart_h - pad_t - pad_b;
                                     let plot_w = chart_w - pad_l - pad_r;
                                     let bar_gap = 4.0;
                                     let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
                                     let hovered = hovered_bar;
-                                    data.iter().enumerate().map(|(i, &val)| {
+                                    data.iter().enumerate().map(|(i, point)| {
+                                        let val = point.amount;
                                         let bar_h = (val / max_val * plot_h).max(if val > 0.0 { 3.0 } else { 0.0 });
                                         let x = pad_l + i as f64 * (bar_w + bar_gap);
                                         let y = pad_t + plot_h - bar_h;
@@ -841,15 +772,15 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                 }}
                                 // X-axis labels
                                 {move || {
-                                    let (labels, data) = chart_data();
+                                    let data = chart_data.get();
                                     if data.is_empty() { return ().into_any(); }
                                     let plot_w = chart_w - pad_l - pad_r;
                                     let bar_gap = 4.0;
                                     let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
-                                    labels.iter().enumerate().map(|(i, lbl)| {
+                                    data.iter().enumerate().map(|(i, point)| {
                                         let x = pad_l + i as f64 * (bar_w + bar_gap) + bar_w / 2.0;
                                         view! {
-                                            <text x=x y=chart_h-6.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{lbl.clone()}</text>
+                                            <text x=x y=chart_h-6.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{point.label.clone()}</text>
                                         }.into_any()
                                     }).collect::<Vec<_>>().into_any()
                                 }}
@@ -893,13 +824,13 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                     if items.is_empty() {
                                         return view! { <tr><td colspan="4" class="px-6 py-8 text-center text-gray-400 italic">"No transactions yet"</td></tr> }.into_any();
                                     }
-                                    items.into_iter().map(|(name, date, amount, is_debt, typ)| {
-                                        let status = if is_debt { ("Debt", "bg-[#FFFBEB] text-[#F59E0B]") } else { ("Completed", "bg-[#ECFDF5] text-[#10B981]") };
+                                    items.into_iter().map(|item| {
+                                        let status = if item.is_debt { ("Debt", "bg-[#FFFBEB] text-[#F59E0B]") } else { ("Completed", "bg-[#ECFDF5] text-[#10B981]") };
                                         view! {
                                             <tr class="border-b border-[#F0F0F0] hover:bg-[#F5F5F5] transition-all duration-100">
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{name} <span class="text-xs text-gray-400 ml-1">"(" {typ} ")"</span></td>
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{date}</td>
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">"KSh " {amount}</td>
+                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{item.name} <span class="text-xs text-gray-400 ml-1">"(" {item.type_label} ")"</span></td>
+                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{item.date}</td>
+                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">"KSh " {item.amount}</td>
                                                 <td class="px-4 py-[14px]"><span class={format!("inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded {}", status.1)}>{status.0}</span></td>
                                             </tr>
                                         }
@@ -922,15 +853,15 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                     return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No recent activity"</p> }.into_any();
                                 }
                                 let len = items.len();
-                                items.into_iter().enumerate().map(|(i, (typ, text, time))| {
+                                items.into_iter().enumerate().map(|(i, item)| {
                                     let is_last = i == len - 1;
-                                    let dot_color = if typ == "debt" { "bg-[#F59E0B]" } else { "bg-[#2563EB]" };
+                                    let dot_color = if item.item_type == "debt" { "bg-[#F59E0B]" } else { "bg-[#2563EB]" };
                                     view! {
                                         <div class="relative pl-5 pb-5">
                                             {if !is_last { view! { <div class="absolute top-1.5 left-[5px] bottom-[-4px] w-px bg-[#E5E5E5]"></div> }.into_any() } else { ().into_any() }}
                                             <div class={format!("absolute top-1 left-0 w-2.5 h-2.5 rounded-full {}", dot_color)}></div>
-                                            <p class="text-sm font-medium text-[#0A0A0A]">{text}</p>
-                                            <p class="text-xs text-[#525252] mt-0.5">{time}</p>
+                                            <p class="text-sm font-medium text-[#0A0A0A]">{item.text}</p>
+                                            <p class="text-xs text-[#525252] mt-0.5">{item.time}</p>
                                         </div>
                                     }
                                 }).collect::<Vec<_>>().into_any()
@@ -947,14 +878,14 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                 if items.is_empty() {
                                     return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No sales data available"</p> }.into_any();
                                 }
-                                let max_qty = items.first().map(|(_, q, _)| *q as f64).unwrap_or(1.0);
-                                items.into_iter().map(|(_, qty, name)| {
-                                    let pct = (qty as f64 / max_qty * 100.0).min(100.0);
+                                let max_qty = items.first().map(|item| item.quantity as f64).unwrap_or(1.0);
+                                items.into_iter().map(|item| {
+                                    let pct = (item.quantity as f64 / max_qty * 100.0).min(100.0);
                                     view! {
                                         <div>
                                             <div class="flex justify-between text-sm mb-1">
-                                                <span class="font-medium text-[#0A0A0A]">{name}</span>
-                                                <span class="text-gray-500">{qty} " sold"</span>
+                                                <span class="font-medium text-[#0A0A0A]">{item.name}</span>
+                                                <span class="text-gray-500">{item.quantity} " sold"</span>
                                             </div>
                                             <div class="w-full bg-gray-100 rounded-full h-1.5">
                                                 <div class="bg-[#111827] h-1.5 rounded-full" style=move || format!("width:{}%", pct)></div>
@@ -979,20 +910,39 @@ fn StockPage() -> impl IntoView {
     let (rolls, set_rolls) = signal(0_i64);
     let (stype, set_stype) = signal("colored".to_string());
 
-    let load = { let s = set_stock; move || { leptos::task::spawn_local(async move {
-        if let Ok(d) = api::get_all_stock().await { s.set(d); }
-    });}};
+    let load = {
+        let s = set_stock;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(d) = api::get_all_stock().await {
+                    s.set(d);
+                }
+            });
+        }
+    };
     load();
 
     let add = move |_| {
-        let c = color.get(); if c.is_empty() { return; }
-        let l = load.clone();
+        let c = color.get();
+        if c.is_empty() {
+            return;
+        }
+        let l = load;
         leptos::task::spawn_local(async move {
             let _ = api::add_stock(&crate::api::NewStockItem {
-                color: c, size: "1".into(), sticker_type: stype.get(), rolls: rolls.get(),
-                metres_per_roll: None, total_metres: None, metres_used: 0.0, custom_metres_per_roll: None,
-            }).await;
-            set_color.set(String::new()); set_rolls.set(0); l();
+                color: c,
+                size: "1".into(),
+                sticker_type: stype.get(),
+                rolls: rolls.get(),
+                metres_per_roll: None,
+                total_metres: None,
+                metres_used: 0.0,
+                custom_metres_per_roll: None,
+            })
+            .await;
+            set_color.set(String::new());
+            set_rolls.set(0);
+            l();
         });
     };
 
@@ -1010,7 +960,7 @@ fn StockPage() -> impl IntoView {
                     <thead class="bg-gray-50"><tr><th class="px-4 py-2 text-left">"Color"</th><th class="px-4 py-2">"Type"</th><th class="px-4 py-2 text-right">"Rolls"</th><th class="px-4 py-2 text-right">"Total m"</th><th class="px-4 py-2 text-right">"Used m"</th><th class="px-4 py-2 text-right">""</th></tr></thead>
                     <tbody>
                         {move || stock.get().into_iter().map(|s| {
-                            let l = load.clone();
+                            let l = load;
                             view! { <tr class="border-t hover:bg-gray-50">
                                 <td class="px-4 py-2 capitalize">{s.color}</td>
                                 <td class="px-4 py-2 capitalize">{s.sticker_type}</td>
@@ -1034,22 +984,40 @@ fn SalesPage() -> impl IntoView {
     let (cust, set_cust) = signal("Walk-in".to_string());
     let (pm, set_pm) = signal("cash".to_string());
 
-    let load = { let s = set_sales; move || { leptos::task::spawn_local(async move {
-        if let Ok(d) = api::get_all_sales().await { s.set(d); }
-    });}};
+    let load = {
+        let s = set_sales;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(d) = api::get_all_sales().await {
+                    s.set(d);
+                }
+            });
+        }
+    };
     load();
 
     let add = move |_| {
-        if amount.get() <= 0.0 { return; }
-        let l = load.clone();
+        if amount.get() <= 0.0 {
+            return;
+        }
+        let l = load;
         leptos::task::spawn_local(async move {
             let _ = api::add_sale(&crate::api::NewSale {
-                r#type: "product".into(), product_id: None, stock_id: None,
-                product_name: Some("Sale".into()), product_type: None, sticker_type: None,
-                quantity: None, amount: amount.get(), payment_method: pm.get(),
-                customer_name: cust.get(), is_debt: 0,
-            }).await;
-            set_amount.set(0.0); l();
+                r#type: "product".into(),
+                product_id: None,
+                stock_id: None,
+                product_name: Some("Sale".into()),
+                product_type: None,
+                sticker_type: None,
+                quantity: None,
+                amount: amount.get(),
+                payment_method: pm.get(),
+                customer_name: cust.get(),
+                is_debt: 0,
+            })
+            .await;
+            set_amount.set(0.0);
+            l();
         });
     };
 
@@ -1082,22 +1050,45 @@ fn PrintingPage() -> impl IntoView {
     let (name, set_name) = signal(String::new());
     let (amount, set_amount) = signal(0.0_f64);
 
-    let load = { let s = set_txns; move || { leptos::task::spawn_local(async move {
-        if let Ok(t) = api::get_all_service_transactions().await { s.set(t); }
-    });}};
+    let load = {
+        let s = set_txns;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(t) = api::get_all_service_transactions().await {
+                    s.set(t);
+                }
+            });
+        }
+    };
     load();
 
     let add = move |_| {
-        if amount.get() <= 0.0 { return; }
-        let n = name.get(); let l = load.clone();
+        if amount.get() <= 0.0 {
+            return;
+        }
+        let n = name.get();
+        let l = load;
         leptos::task::spawn_local(async move {
             let _ = api::add_service_transaction(&crate::api::NewServiceTransaction {
-                service_id: None, service_name: n, quantity: 1.0, price: None, amount: Some(amount.get()),
-                payment_method: "cash".into(), customer_name: "Walk-in".into(), notes: None,
-                stock_id: None, stock_metres_used: 0.0, material_size: None, material_type: None,
-                printing_material_id: None, is_debt: 0,
-            }).await;
-            set_amount.set(0.0); set_name.set(String::new()); l();
+                service_id: None,
+                service_name: n,
+                quantity: 1.0,
+                price: None,
+                amount: Some(amount.get()),
+                payment_method: "cash".into(),
+                customer_name: "Walk-in".into(),
+                notes: None,
+                stock_id: None,
+                stock_metres_used: 0.0,
+                material_size: None,
+                material_type: None,
+                printing_material_id: None,
+                is_debt: 0,
+            })
+            .await;
+            set_amount.set(0.0);
+            set_name.set(String::new());
+            l();
         });
     };
 
@@ -1123,21 +1114,41 @@ fn DebtsPage() -> impl IntoView {
     let (cust, set_cust) = signal(String::new());
     let (amt, set_amt) = signal(0.0_f64);
 
-    let load = { let s = set_debts; move || { leptos::task::spawn_local(async move {
-        if let Ok(d) = api::get_all_debts().await { s.set(d); }
-    });}};
+    let load = {
+        let s = set_debts;
+        move || {
+            leptos::task::spawn_local(async move {
+                if let Ok(d) = api::get_all_debts().await {
+                    s.set(d);
+                }
+            });
+        }
+    };
     load();
 
     let add = move |_| {
-        let c = cust.get(); let a = amt.get(); if c.is_empty() || a <= 0.0 { return; }
-        let l = load.clone();
+        let c = cust.get();
+        let a = amt.get();
+        if c.is_empty() || a <= 0.0 {
+            return;
+        }
+        let l = load;
         leptos::task::spawn_local(async move {
             let _ = api::add_debt(&crate::api::NewDebt {
-                customer_name: c, phone: None, amount: a,
-                paid_amount: Some(0.0), remaining_amount: Some(a),
-                due_date: None, description: None, sale_id: None, service_transaction_id: None,
-            }).await;
-            set_cust.set(String::new()); set_amt.set(0.0); l();
+                customer_name: c,
+                phone: None,
+                amount: a,
+                paid_amount: Some(0.0),
+                remaining_amount: Some(a),
+                due_date: None,
+                description: None,
+                sale_id: None,
+                service_transaction_id: None,
+            })
+            .await;
+            set_cust.set(String::new());
+            set_amt.set(0.0);
+            l();
         });
     };
 
@@ -1152,7 +1163,7 @@ fn DebtsPage() -> impl IntoView {
             <div class="bg-white rounded-xl shadow-sm border overflow-hidden">
                 <table class="w-full text-sm"><thead class="bg-gray-50"><tr><th class="px-4 py-2 text-left">"Customer"</th><th class="px-4 py-2 text-right">"Total"</th><th class="px-4 py-2 text-right">"Paid"</th><th class="px-4 py-2">"Status"</th><th class="px-4 py-2 text-right">""</th></tr></thead>
                 <tbody>{move || debts.get().into_iter().map(|d| {
-                    let l = load.clone();
+                    let l = load;
                     view! { <tr class="border-t hover:bg-gray-50">
                         <td class="px-4 py-2">{d.customer_name}</td><td class="px-4 py-2 text-right">{d.amount}</td>
                         <td class="px-4 py-2 text-right">{d.paid_amount}</td>
@@ -1179,10 +1190,16 @@ fn SettingsPage(
     let (new_pw, set_new_pw) = signal(String::new());
     let (msg, set_msg) = signal(String::new());
     let cur = move || user.get().map(|u| u.username).unwrap_or_default();
-    let _is_admin = move || user.get().map(|u| u.role.as_str() == "admin").unwrap_or(false);
+    let _is_admin = move || {
+        user.get()
+            .map(|u| u.role.as_str() == "admin")
+            .unwrap_or(false)
+    };
 
     let change_pw = move |_| {
-        let o = old_pw.get(); let n = new_pw.get(); let u = cur();
+        let o = old_pw.get();
+        let n = new_pw.get();
+        let u = cur();
         leptos::task::spawn_local(async move {
             match api::update_password(&u, &o, &n).await {
                 Ok(r) if r.success => set_msg.set("Password updated".into()),

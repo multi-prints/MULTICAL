@@ -1,6 +1,8 @@
+use crate::api::{
+    self, NewDebt, NewPrintingMaterial, NewServiceTransaction, PrintingMaterial, PrintingPageQuery,
+    ServiceTransaction,
+};
 use leptos::prelude::*;
-use std::cmp::Ordering;
-use crate::api::{self, ServiceTransaction, PrintingMaterial, NewPrintingMaterial, NewServiceTransaction, NewDebt};
 
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
@@ -34,6 +36,11 @@ fn format_printing_timestamp(ts: &Option<String>) -> String {
 pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> impl IntoView {
     let (jobs, set_jobs) = signal(Vec::<ServiceTransaction>::new());
     let (materials, set_materials) = signal(Vec::<PrintingMaterial>::new());
+    let (today_earnings, set_today_earnings) = signal(0.0f64);
+    let (total_jobs_count, set_total_jobs_count) = signal(0u32);
+    let (material_used, set_material_used) = signal(0.0f64);
+    let (total_revenue, set_total_revenue) = signal(0.0f64);
+    let (total_count, set_total_count) = signal(0u32);
     let (show_record, set_show_record) = signal(false);
     let (show_add_mat, set_show_add_mat) = signal(false);
     let (current_page, set_current_page) = signal(1u32);
@@ -66,47 +73,94 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (conv_due, set_conv_due) = signal(String::new());
 
     let reload = {
-        let sj = set_jobs; let sm = set_materials;
-        move || leptos::task::spawn_local({
-            let sj = sj; let sm = sm;
-            async move {
-                if let Ok(j) = api::get_all_service_transactions().await { sj.set(j); }
-                if let Ok(m) = api::get_all_printing_materials().await { sm.set(m); }
-            }
-        })
+        let sj = set_jobs;
+        let sm = set_materials;
+        let ste = set_today_earnings;
+        let stjc = set_total_jobs_count;
+        let smu = set_material_used;
+        let strv = set_total_revenue;
+        let stc = set_total_count;
+        let search_r = search;
+        let sort_r = sort_by;
+        let page_r = current_page;
+        move || {
+            leptos::task::spawn_local({
+                let sj = sj;
+                let sm = sm;
+                let ste = ste;
+                let stjc = stjc;
+                let smu = smu;
+                let strv = strv;
+                let stc = stc;
+                let query = PrintingPageQuery {
+                    search: Some(search_r.get()),
+                    sort_by: Some(sort_r.get()),
+                    page: Some(page_r.get()),
+                    per_page: Some(items_per_page),
+                };
+                async move {
+                    if let Ok(page) = api::get_printing_page(&query).await {
+                        ste.set(page.today_earnings);
+                        stjc.set(page.total_jobs_count as u32);
+                        smu.set(page.material_used);
+                        strv.set(page.total_revenue);
+                        stc.set(page.total_count as u32);
+                        sj.set(page.items);
+                    }
+                    if let Ok(m) = api::get_all_printing_materials().await {
+                        sm.set(m);
+                    }
+                }
+            })
+        }
     };
     reload();
 
-    // Derived signals
-    let printing_jobs = move || jobs.get().into_iter().filter(|t| t.stock_metres_used > 0.0).collect::<Vec<_>>();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let today_jobs = move || jobs.get().into_iter().filter(|t| t.stock_metres_used > 0.0 && t.timestamp.as_ref().map_or(false, |ts| ts.starts_with(&today))).collect::<Vec<_>>();
-    let today_earnings = move || today_jobs().iter().map(|t| t.amount).sum::<f64>();
-    let total_jobs_count = move || printing_jobs().len();
-    let material_used = move || printing_jobs().iter().map(|t| t.stock_metres_used).sum::<f64>();
-    let total_revenue = move || printing_jobs().iter().map(|t| t.amount).sum::<f64>();
-
     // Dropdowns
-    let material_items = Signal::derive(move || materials.get().into_iter().filter(|m| {
-        let rem = m.total_metres - if m.metres_used.is_nan() { 0.0 } else { m.metres_used };
-        rem > 0.0
-    }).map(|m| {
-        let rem = m.total_metres - if m.metres_used.is_nan() { 0.0 } else { m.metres_used };
-        DropdownItem::new(&m.id.to_string(), &format!("{} - {}m width", m.name, m.width))
-            .with_badge(&format!("{:.1}m", rem))
-    }).collect::<Vec<_>>());
+    let material_items = Signal::derive(move || {
+        materials
+            .get()
+            .into_iter()
+            .filter(|m| {
+                let rem = m.total_metres
+                    - if m.metres_used.is_nan() {
+                        0.0
+                    } else {
+                        m.metres_used
+                    };
+                rem > 0.0
+            })
+            .map(|m| {
+                let rem = m.total_metres
+                    - if m.metres_used.is_nan() {
+                        0.0
+                    } else {
+                        m.metres_used
+                    };
+                DropdownItem::new(
+                    &m.id.to_string(),
+                    &format!("{} - {}m width", m.name, m.width),
+                )
+                .with_badge(&format!("{:.1}m", rem))
+            })
+            .collect::<Vec<_>>()
+    });
 
-    let payment_items = Signal::derive(move || vec![
-        DropdownItem::new("cash", "Cash"),
-        DropdownItem::new("mpesa", "M-Pesa"),
-        DropdownItem::new("till", "Till Number"),
-    ]);
-    let sort_items = Signal::derive(move || vec![
-        DropdownItem::new("newest", "Newest First"),
-        DropdownItem::new("oldest", "Oldest First"),
-        DropdownItem::new("amount_desc", "Highest Amount"),
-        DropdownItem::new("amount_asc", "Lowest Amount"),
-    ]);
+    let payment_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("cash", "Cash"),
+            DropdownItem::new("mpesa", "M-Pesa"),
+            DropdownItem::new("till", "Till Number"),
+        ]
+    });
+    let sort_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("newest", "Newest First"),
+            DropdownItem::new("oldest", "Oldest First"),
+            DropdownItem::new("amount_desc", "Highest Amount"),
+            DropdownItem::new("amount_asc", "Lowest Amount"),
+        ]
+    });
 
     create_effect(move |_| {
         let _ = search.get();
@@ -114,71 +168,80 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         set_current_page.set(1);
     });
 
-    let filtered_jobs = move || {
-        let query = search.get().trim().to_lowercase();
-        let sort = sort_by.get();
-        let mut items = printing_jobs().into_iter().filter(|job| {
-            if query.is_empty() {
-                true
-            } else {
-                job.service_name.to_lowercase().contains(&query)
-                    || job.customer_name.to_lowercase().contains(&query)
-                    || job.payment_method.to_lowercase().contains(&query)
-                    || job.material_type.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || job.material_size.as_deref().unwrap_or("").to_lowercase().contains(&query)
-                    || job.timestamp.as_deref().unwrap_or("").to_lowercase().contains(&query)
-            }
-        }).collect::<Vec<_>>();
-
-        items.sort_by(|a, b| match sort.as_str() {
-            "oldest" => a.timestamp.cmp(&b.timestamp),
-            "amount_desc" => b.amount.partial_cmp(&a.amount).unwrap_or(Ordering::Equal),
-            "amount_asc" => a.amount.partial_cmp(&b.amount).unwrap_or(Ordering::Equal),
-            _ => b.timestamp.cmp(&a.timestamp),
-        });
-
-        items
-    };
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        reload();
+    });
 
     // Pagination
-    let total_items = move || filtered_jobs().len() as u32;
-    let total_pages = move || { let n = total_items(); if n == 0 { 1 } else { (n + items_per_page - 1) / items_per_page } };
-    let paginated = move || {
-        let items = filtered_jobs();
-        let start = ((current_page.get() - 1) * items_per_page) as usize;
-        items.into_iter().skip(start).take(items_per_page as usize).collect::<Vec<_>>()
+    let total_items = move || total_count.get();
+    let total_pages = move || {
+        let n = total_items();
+        if n == 0 {
+            1
+        } else {
+            n.div_ceil(items_per_page)
+        }
     };
+    let paginated = move || jobs.get();
 
-    let remaining = |m: &PrintingMaterial| m.total_metres - if m.metres_used.is_nan() { 0.0 } else { m.metres_used };
+    let remaining = |m: &PrintingMaterial| {
+        m.total_metres
+            - if m.metres_used.is_nan() {
+                0.0
+            } else {
+                m.metres_used
+            }
+    };
     let rolls_remaining = move |m: &PrintingMaterial| {
         let rem = remaining(m);
-        if m.metres_per_roll > 0.0 { rem / m.metres_per_roll } else { rem / 50.0 }
+        if m.metres_per_roll > 0.0 {
+            rem / m.metres_per_roll
+        } else {
+            rem / 50.0
+        }
     };
 
     // Submit record job
     let submit_job = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let metres: f64 = metres_printed.get().parse().unwrap_or(0.0);
             let price: f64 = total_price.get().parse().unwrap_or(0.0);
             let mid = mat_id.get();
-            if mid.is_none() || metres <= 0.0 || price <= 0.0 { return; }
-            let m = materials.get().iter().find(|x| x.id == mid.unwrap()).cloned();
-            let name = m.as_ref().map(|m| format!("{} - {}m", m.name, metres as u64)).unwrap_or_default();
+            if mid.is_none() || metres <= 0.0 || price <= 0.0 {
+                return;
+            }
+            let m = materials
+                .get()
+                .iter()
+                .find(|x| x.id == mid.unwrap())
+                .cloned();
+            let name = m
+                .as_ref()
+                .map(|m| format!("{} - {}m", m.name, metres as u64))
+                .unwrap_or_default();
             set_show_record.set(false);
             leptos::task::spawn_local(async move {
                 let _ = api::add_service_transaction(&NewServiceTransaction {
-                    service_id: None, service_name: name, quantity: 1.0, price: Some(price),
-                    amount: Some(price), payment_method: payment.get(),
-                    customer_name: customer.get(), notes: Some(format!("Printing - {}m", metres as u64)),
-                    stock_id: None, stock_metres_used: metres,
+                    service_id: None,
+                    service_name: name,
+                    quantity: 1.0,
+                    price: Some(price),
+                    amount: Some(price),
+                    payment_method: payment.get(),
+                    customer_name: customer.get(),
+                    notes: Some(format!("Printing - {}m", metres as u64)),
+                    stock_id: None,
+                    stock_metres_used: metres,
                     material_size: m.as_ref().map(|m| m.width.to_string()),
                     material_type: m.as_ref().map(|m| m.material_type.clone()),
-                    printing_material_id: mid, is_debt: 0,
-                }).await;
-                if let Some(mat) = &m {
-                    let _ = api::update_printing_material(mat.id, &serde_json::json!({"metres_used": mat.metres_used + metres})).await;
-                }
+                    printing_material_id: mid,
+                    is_debt: 0,
+                })
+                .await;
                 l();
             });
         }
@@ -186,20 +249,28 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
 
     // Submit add material
     let submit_add_mat = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let name = mat_name.get();
             let width: f64 = mat_width.get().parse().unwrap_or(0.0);
             let rolls: i64 = mat_rolls.get().parse().unwrap_or(0);
             let mpr: f64 = mat_mpr.get().parse().unwrap_or(50.0);
-            if name.is_empty() || width <= 0.0 || rolls <= 0 { return; }
+            if name.is_empty() || width <= 0.0 || rolls <= 0 {
+                return;
+            }
             set_show_add_mat.set(false);
             leptos::task::spawn_local(async move {
                 let _ = api::add_printing_material(&NewPrintingMaterial {
-                    name, material_type: "Custom".into(), width, rolls,
-                    metres_per_roll: mpr, total_metres: Some(rolls as f64 * mpr),
-                    metres_used: 0.0, color: None,
-                }).await;
+                    name,
+                    material_type: "Custom".into(),
+                    width,
+                    rolls,
+                    metres_per_roll: mpr,
+                    total_metres: Some(rolls as f64 * mpr),
+                    metres_used: 0.0,
+                    color: None,
+                })
+                .await;
                 l();
             });
         }
@@ -207,18 +278,24 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
 
     // Submit add rolls
     let submit_add_rolls = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let mat = show_add_rolls.get();
             let added: i64 = add_rolls_val.get().parse().unwrap_or(0);
-            if mat.is_none() || added <= 0 { return; }
+            if mat.is_none() || added <= 0 {
+                return;
+            }
             let m = mat.unwrap();
             set_show_add_rolls.set(None);
             leptos::task::spawn_local(async move {
-                let _ = api::update_printing_material(m.id, &serde_json::json!({
-                    "rolls": m.rolls + added,
-                    "total_metres": m.total_metres + added as f64 * m.metres_per_roll
-                })).await;
+                let _ = api::update_printing_material(
+                    m.id,
+                    &serde_json::json!({
+                        "rolls": m.rolls + added,
+                        "total_metres": m.total_metres + added as f64 * m.metres_per_roll
+                    }),
+                )
+                .await;
                 l();
             });
         }
@@ -226,26 +303,38 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
 
     // Submit convert to debt
     let submit_convert = {
-        let l = reload.clone();
+        let l = reload;
         move |_| {
             let txn = show_convert.get();
             if let Some(t) = txn {
                 let name = conv_cust.get();
-                if name.is_empty() { return; }
+                if name.is_empty() {
+                    return;
+                }
                 let paid: f64 = conv_paid.get().parse().unwrap_or(0.0);
                 let remaining = t.amount - paid;
-                if remaining <= 0.0 { set_show_convert.set(None); return; }
+                if remaining <= 0.0 {
+                    set_show_convert.set(None);
+                    return;
+                }
                 let t_id = t.id;
                 set_show_convert.set(None);
                 leptos::task::spawn_local(async move {
                     let _ = api::add_debt(&NewDebt {
-                        customer_name: name, phone: Some(conv_phone.get()).filter(|p| !p.is_empty()),
-                        amount: t.amount, paid_amount: Some(paid), remaining_amount: Some(remaining),
+                        customer_name: name,
+                        phone: Some(conv_phone.get()).filter(|p| !p.is_empty()),
+                        amount: t.amount,
+                        paid_amount: Some(paid),
+                        remaining_amount: Some(remaining),
                         due_date: Some(conv_due.get()).filter(|d| !d.is_empty()),
                         description: Some(format!("Printing Job: {}", t.service_name)),
-                        sale_id: None, service_transaction_id: Some(t_id),
-                    }).await;
-                    let _ = api::update_service_transaction(t_id, &serde_json::json!({"is_debt": 1})).await;
+                        sale_id: None,
+                        service_transaction_id: Some(t_id),
+                    })
+                    .await;
+                    let _ =
+                        api::update_service_transaction(t_id, &serde_json::json!({"is_debt": 1}))
+                            .await;
                     l();
                 });
             }
@@ -253,28 +342,15 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     };
 
     let delete_job = move |id: i64| {
-        let l = reload.clone();
+        let l = reload;
         leptos::task::spawn_local(async move {
-            // Return material first
-            if let Ok(all) = api::get_all_service_transactions().await {
-                if let Some(t) = all.iter().find(|t| t.id == id) {
-                    if let Some(pmid) = t.printing_material_id {
-                        if let Ok(mats) = api::get_all_printing_materials().await {
-                            if let Some(m) = mats.iter().find(|x| x.id == pmid) {
-                                let new_used = (m.metres_used - t.stock_metres_used).max(0.0);
-                                let _ = api::update_printing_material(pmid, &serde_json::json!({"metres_used": new_used})).await;
-                            }
-                        }
-                    }
-                }
-            }
             let _ = api::delete_service_transaction(id).await;
             l();
         });
     };
 
     let delete_material = move |id: i64| {
-        let l = reload.clone();
+        let l = reload;
         leptos::task::spawn_local(async move {
             let _ = api::delete_printing_material(id).await;
             l();
@@ -300,11 +376,11 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
 
         // Stats
         <div class=move || format!("grid grid-cols-1 gap-4 mb-6 {}", if show_revenue_stats { "md:grid-cols-4" } else { "md:grid-cols-3" })>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Today's Earnings"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", today_earnings())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Jobs"</p><p class="text-xl font-bold text-gray-900">{move || total_jobs_count()}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Material Used"</p><p class="text-xl font-bold text-gray-900">{move || format!("{}m", material_used() as u64)}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Today's Earnings"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", today_earnings.get())}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Jobs"</p><p class="text-xl font-bold text-gray-900">{move || total_jobs_count.get()}</p></div>
+            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Material Used"</p><p class="text-xl font-bold text-gray-900">{move || format!("{}m", material_used.get() as u64)}</p></div>
             {move || if show_revenue_stats { view! {
-                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Revenue"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", total_revenue())}</p></div>
+                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Revenue"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", total_revenue.get())}</p></div>
             }.into_any() } else { ().into_any() }}
         </div>
 

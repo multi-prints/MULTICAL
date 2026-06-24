@@ -35,6 +35,23 @@ pub struct ProductUpdate {
     pub stock: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProductsPageQuery {
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProductsPageData {
+    pub items: Vec<Product>,
+    pub total_count: i64,
+    pub total_stock_units: i64,
+    pub life_saver_stock: i64,
+    pub chevron_stock: i64,
+    pub stripes_stock: i64,
+    pub stock_value: f64,
+}
+
 // ==================== Stock ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +102,21 @@ pub struct StockUpdate {
     pub metres_used: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockPageQuery {
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockPageData {
+    pub items: Vec<StockItem>,
+    pub total_count: i64,
+    pub total_rolls: i64,
+    pub total_metres: f64,
+    pub remaining_metres: f64,
+}
+
 // ==================== Sale ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +163,23 @@ pub struct SaleUpdate {
     pub is_debt: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalesPageQuery {
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalesPageData {
+    pub items: Vec<Sale>,
+    pub total_count: i64,
+    pub today_total: f64,
+    pub all_revenue: f64,
+    pub product_sales_count: i64,
+}
+
 // ==================== Debt ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +211,24 @@ pub struct NewDebt {
     pub description: Option<String>,
     pub sale_id: Option<i64>,
     pub service_transaction_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebtsPageQuery {
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebtsPageData {
+    pub items: Vec<Debt>,
+    pub total_count: i64,
+    pub total_outstanding: f64,
+    pub paid_this_month: f64,
+    pub overdue_count: i64,
+    pub all_debts: Vec<Debt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +375,24 @@ pub struct ServiceTransactionUpdate {
     pub is_debt: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrintingPageQuery {
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrintingPageData {
+    pub items: Vec<ServiceTransaction>,
+    pub total_count: i64,
+    pub today_earnings: f64,
+    pub total_jobs_count: i64,
+    pub material_used: f64,
+    pub total_revenue: f64,
+}
+
 // ==================== Printing Material ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,6 +511,49 @@ pub struct SuccessResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionResponse {
     pub version: String,
+}
+
+// ==================== Dashboard ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardRecentTransaction {
+    pub name: String,
+    pub date: String,
+    pub amount: f64,
+    pub is_debt: bool,
+    pub type_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardActivityItem {
+    pub item_type: String,
+    pub text: String,
+    pub time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardTopProduct {
+    pub product_id: Option<i64>,
+    pub name: String,
+    pub quantity: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardChartPoint {
+    pub label: String,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardSummary {
+    pub total_revenue: f64,
+    pub today_sales_count: i64,
+    pub today_revenue: f64,
+    pub outstanding_debts: f64,
+    pub pending_debts_count: i64,
+    pub recent_transactions: Vec<DashboardRecentTransaction>,
+    pub activity_items: Vec<DashboardActivityItem>,
+    pub top_products: Vec<DashboardTopProduct>,
 }
 
 // ==================== Migration ====================
