@@ -197,7 +197,7 @@ pub fn App() -> impl IntoView {
                     </div>
                 }.into_any()
             } else {
-                view! { <LoginPage set_user=set_user set_token=set_token /> }.into_any()
+                view! { <LoginPage set_user=set_user set_token=set_token set_page=set_page /> }.into_any()
             }
         }}
     }
@@ -403,6 +403,7 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
 fn LoginPage(
     set_user: WriteSignal<Option<UserInfo>>,
     set_token: WriteSignal<Option<String>>,
+    set_page: WriteSignal<Page>,
 ) -> impl IntoView {
     let (username, set_username) = signal(String::new());
     let (password, set_password) = signal(String::new());
@@ -436,8 +437,10 @@ fn LoginPage(
                         serde_json::to_string(&info).unwrap_or_default(),
                     )
                     .ok();
+                    let landing_page = default_page_for_role(&info.role);
                     set_token.set(Some(tok));
                     set_user.set(Some(info));
+                    set_page.set(landing_page);
                 }
                 Ok(r) => set_error.set(r.error.unwrap_or("Invalid username or password".into())),
                 Err(e) => set_error.set(e),
@@ -584,27 +587,50 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
 
     let fmt_f = |a: f64| format!("KSh {:.0}", a);
 
-    // ---- chart summary ----
-    let chart_stats = move || {
-        let data = chart_data.get();
-        if data.is_empty() {
-            return (
-                "KSh 0".to_string(),
-                "KSh 0".to_string(),
-                "KSh 0".to_string(),
-            );
-        }
-        let amounts: Vec<f64> = data.iter().map(|p| p.amount).collect();
-        let max = amounts.iter().cloned().fold(0.0_f64, f64::max);
-        let sum: f64 = amounts.iter().sum();
-        let avg = sum / amounts.len() as f64;
-        (fmt_f(max), fmt_f(avg as i64 as f64), fmt_f(sum))
+    let chart_meta = move || match chart_period.get().as_str() {
+        "month" => (
+            "Last 4 weeks",
+            "Highest Week",
+            "Week",
+            "Weekly Revenue (KSh)",
+        ),
+        "year" => (
+            "Last 12 months",
+            "Highest Month",
+            "Month",
+            "Monthly Revenue (KSh)",
+        ),
+        _ => ("Last 7 days", "Highest Day", "Day", "Daily Revenue (KSh)"),
     };
 
-    let chart_period_label = move || match chart_period.get().as_str() {
-        "month" => "Last 4 weeks",
-        "year" => "Last 12 months",
-        _ => "Last 7 days",
+    let chart_y_ticks = move || {
+        let data = chart_data.get();
+        let max_val = data
+            .iter()
+            .map(|p| p.amount)
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        let rough_step = max_val / 4.0;
+        let magnitude = 10_f64.powf(rough_step.max(1.0).log10().floor());
+        let normalized = rough_step / magnitude;
+        let nice = if normalized <= 1.0 {
+            1.0
+        } else if normalized <= 2.0 {
+            2.0
+        } else if normalized <= 5.0 {
+            5.0
+        } else {
+            10.0
+        };
+        let step = (nice * magnitude).max(1.0);
+        let max_tick = (max_val / step).ceil() * step;
+        let mut ticks = Vec::new();
+        let mut val = 0.0;
+        while val <= max_tick + step * 0.5 {
+            ticks.push(val);
+            val += step;
+        }
+        ticks
     };
 
     // ---- recent transactions (combined) ----
@@ -690,7 +716,7 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                         <div class="flex items-center justify-between mb-5">
                             <div>
                                 <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em]">"Revenue"</h3>
-                                <p class="text-xs text-gray-500 mt-0.5">{move || chart_period_label()}</p>
+                                <p class="text-xs text-gray-500 mt-0.5">{move || chart_meta().0}</p>
                             </div>
                             <div class="flex border border-gray-200 rounded overflow-hidden">
                                 {let cp_rd = chart_period;
@@ -709,43 +735,48 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                         </div>
                         <div class="relative w-full" style="overflow-x:auto">
                             <svg viewBox=move || format!("0 0 {} {}", chart_w, chart_h) class="w-full" style="min-height:260px;max-height:320px">
+                                // Y-axis title
+                                <text x="6" y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif" transform=move || format!("rotate(-90 6 {})", chart_h/2.0)>{move || chart_meta().3}</text>
                                 // Y-axis gridlines + labels
                                 {move || {
-                                    let data = chart_data.get();
-                                    let max_val = data.iter().map(|p| p.amount).fold(0.0_f64, f64::max).max(1.0);
-                                    let step = if max_val <= 1000.0 { 200.0 } else if max_val <= 5000.0 { 1000.0 } else if max_val <= 20000.0 { 5000.0 } else if max_val <= 100_000.0 { 20000.0 } else { (max_val / 5.0).max(1000.0) };
-                                    let n_ticks = ((max_val / step).ceil() as usize).max(1);
+                                    let ticks = chart_y_ticks();
+                                    let max_tick = ticks.last().copied().unwrap_or(1.0).max(1.0);
                                     let plot_h = chart_h - pad_t - pad_b;
-                                    let mut lines = Vec::new();
-                                    for i in 0..=n_ticks {
-                                        let val = i as f64 * step;
-                                        if val > max_val + step * 0.5 { continue; }
-                                        let y = pad_t + plot_h - (val / max_val.max(step)) * plot_h;
-                                        let label = if val >= 1_000_000.0 { format!("{:.1}M", val/1_000_000.0) } else if val >= 1000.0 { format!("{}k", (val/1000.0) as i64) } else { format!("{:.0}", val) };
-                                        lines.push(view! {
+                                    ticks.into_iter().map(|val| {
+                                        let y = pad_t + plot_h - (val / max_tick) * plot_h;
+                                        let label = if val >= 1_000_000.0 {
+                                            format!("{:.1}M", val / 1_000_000.0)
+                                        } else if val >= 1000.0 {
+                                            format!("{}k", (val / 1000.0) as i64)
+                                        } else {
+                                            format!("{:.0}", val)
+                                        };
+                                        view! {
                                             <g>
                                                 <line x1=pad_l y1=y x2=chart_w-pad_r y2=y stroke="#f3f4f6" stroke-width="1"/>
                                                 <text x=pad_l-8.0 y=y+4.0 text-anchor="end" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">"KSh " {label}</text>
                                             </g>
-                                        }.into_any());
-                                    }
-                                    lines.into_any()
+                                        }.into_any()
+                                    }).collect::<Vec<_>>().into_any()
                                 }}
                                 // Bars
                                 {move || {
                                     let data = chart_data.get();
                                     if data.is_empty() { return view! { <text x=chart_w/2.0 y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="13">"No data"</text> }.into_any(); }
-                                    let max_val = data.iter().map(|p| p.amount).fold(0.0_f64, f64::max).max(1.0);
+                                    let max_tick = chart_y_ticks().last().copied().unwrap_or(1.0).max(1.0);
                                     let plot_h = chart_h - pad_t - pad_b;
                                     let plot_w = chart_w - pad_l - pad_r;
-                                    let bar_gap = 4.0;
-                                    let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
+                                    let bar_gap = 8.0;
+                                    let bar_w = ((plot_w - bar_gap * (data.len().saturating_sub(1)) as f64) / data.len() as f64).max(18.0);
                                     let hovered = hovered_bar;
-                                    data.iter().enumerate().map(|(i, point)| {
+                                    data.into_iter().enumerate().map(|(i, point)| {
                                         let val = point.amount;
-                                        let bar_h = (val / max_val * plot_h).max(if val > 0.0 { 3.0 } else { 0.0 });
+                                        let point_label = point.label.clone();
+                                        let bar_h = (val / max_tick * plot_h).max(if val > 0.0 { 3.0 } else { 0.0 });
                                         let x = pad_l + i as f64 * (bar_w + bar_gap);
                                         let y = pad_t + plot_h - bar_h;
+                                        let tooltip_w = 92.0;
+                                        let tooltip_x = (x + bar_w / 2.0 - tooltip_w / 2.0).max(pad_l).min(chart_w - pad_r - tooltip_w);
                                         let is_hovered = move || hovered.get() == Some(i);
                                         view! {
                                             <g>
@@ -757,12 +788,12 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                                     on:mouseenter=move |_| set_hovered_bar.set(Some(i))
                                                     on:mouseleave=move |_| set_hovered_bar.set(None)
                                                 ></rect>
-                                                // tooltip
                                                 {move || if hovered.get() == Some(i) {
                                                     view! {
                                                         <g>
-                                                            <rect x=x-20.0 y=y-28.0 width=bar_w+40.0 height=22.0 rx="6" fill="#111827"></rect>
-                                                            <text x=x+bar_w/2.0 y=y-13.0 text-anchor="middle" fill="white" font-size="12" font-weight="bold" font-family="Inter,system-ui,sans-serif">{fmt_f(val)}</text>
+                                                            <rect x=tooltip_x y=(y-42.0).max(4.0) width=tooltip_w height="34" rx="8" fill="#111827"></rect>
+                                                            <text x=tooltip_x+tooltip_w/2.0 y=(y-28.0).max(18.0) text-anchor="middle" fill="white" font-size="12" font-weight="bold" font-family="Inter,system-ui,sans-serif">{fmt_f(val)}</text>
+                                                            <text x=tooltip_x+tooltip_w/2.0 y=(y-15.0).max(30.0) text-anchor="middle" fill="#d1d5db" font-size="10" font-family="Inter,system-ui,sans-serif">{point_label.clone()}</text>
                                                         </g>
                                                     }.into_any()
                                                 } else { ().into_any() }}
@@ -770,36 +801,25 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
                                         }.into_any()
                                     }).collect::<Vec<_>>().into_any()
                                 }}
+                                // X-axis line
+                                <line x1=pad_l y1=chart_h-pad_b x2=chart_w-pad_r y2=chart_h-pad_b stroke="#e5e7eb" stroke-width="1"/>
                                 // X-axis labels
                                 {move || {
                                     let data = chart_data.get();
                                     if data.is_empty() { return ().into_any(); }
                                     let plot_w = chart_w - pad_l - pad_r;
-                                    let bar_gap = 4.0;
-                                    let bar_w = ((plot_w - bar_gap * (data.len() - 1) as f64) / data.len() as f64).max(6.0);
+                                    let bar_gap = 8.0;
+                                    let bar_w = ((plot_w - bar_gap * (data.len().saturating_sub(1)) as f64) / data.len() as f64).max(18.0);
                                     data.iter().enumerate().map(|(i, point)| {
                                         let x = pad_l + i as f64 * (bar_w + bar_gap) + bar_w / 2.0;
                                         view! {
-                                            <text x=x y=chart_h-6.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{point.label.clone()}</text>
+                                            <text x=x y=chart_h-14.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{point.label.clone()}</text>
                                         }.into_any()
                                     }).collect::<Vec<_>>().into_any()
                                 }}
+                                // X-axis title
+                                <text x=(pad_l + chart_w - pad_r) / 2.0 y=chart_h - 2.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{move || chart_meta().2}</text>
                             </svg>
-                        </div>
-                        // Summary stats
-                        <div class="grid grid-cols-3 gap-4 mt-5 pt-5 border-t border-gray-100">
-                            <div class="text-center">
-                                <p class="text-xs text-gray-500 mb-1">"Highest Day"</p>
-                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (h, _, _) = chart_stats(); h }}</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-xs text-gray-500 mb-1">"Average"</p>
-                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (_, a, _) = chart_stats(); a }}</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-xs text-gray-500 mb-1">"Period Total"</p>
-                                <p class="text-sm font-semibold text-[#0A0A0A]">{move || { let (_, _, t) = chart_stats(); t }}</p>
-                            </div>
                         </div>
                     </div>
 

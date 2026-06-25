@@ -14,6 +14,8 @@ use tauri::{Manager, State};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = dotenvy::dotenv();
+
     let auth_manager = AuthManager::new();
 
     tauri::Builder::default()

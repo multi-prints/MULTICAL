@@ -44,6 +44,182 @@ fn format_sale_timestamp(ts: &Option<String>) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+fn product_type_label(product_type: Option<&str>) -> &'static str {
+    match product_type.unwrap_or("") {
+        "life_saver" => "Lifesaver",
+        "chevron" => "Chevron",
+        "stripes" => "Stripes",
+        _ => "Product",
+    }
+}
+
+fn product_color_label(color: &str) -> String {
+    match color {
+        "white_red" => "White / Red".to_string(),
+        "yellow_red" => "Yellow / Red".to_string(),
+        "white" => "White".to_string(),
+        "yellow" => "Yellow".to_string(),
+        _ => color.to_string(),
+    }
+}
+
+fn render_sale_item_cell(
+    sale: &Sale,
+    product: Option<&Product>,
+    stock_item: Option<&StockItem>,
+) -> AnyView {
+    match sale.r#type.as_str() {
+        "product" => {
+            let name = sale
+                .product_name
+                .clone()
+                .unwrap_or_else(|| "Product".to_string());
+            let resolved_type = product
+                .map(|p| p.product_type.as_str())
+                .or(sale.product_type.as_deref());
+            let resolved_color = product.and_then(|p| p.color.as_deref());
+            let subtitle = resolved_color
+                .map(|color| {
+                    format!(
+                        "{} • {}",
+                        product_type_label(resolved_type),
+                        product_color_label(color)
+                    )
+                })
+                .unwrap_or_else(|| product_type_label(resolved_type).to_string());
+
+            let preview = match resolved_type.unwrap_or("") {
+                "life_saver" => view! {
+                    <svg viewBox="0 0 24 24" class="w-8 h-8 flex-shrink-0">
+                        <polygon points="12,2 22,20 2,20" fill="#ffffff" stroke="#ef4444" stroke-width="2"/>
+                        <text x="12" y="15" text-anchor="middle" font-size="9" font-weight="bold" fill="#1a1a1a">!</text>
+                    </svg>
+                }
+                .into_any(),
+                "chevron" => {
+                    let style = match resolved_color {
+                        Some("white_red") => "background:linear-gradient(135deg,#ffffff 50%,#ef4444 50%)",
+                        Some("yellow_red") => "background:linear-gradient(135deg,#eab308 50%,#ef4444 50%)",
+                        _ => "background:linear-gradient(135deg,#ffffff 50%,#ef4444 50%)",
+                    };
+                    view! { <div class="w-8 h-8 rounded-sm shadow-sm flex-shrink-0" style=style></div> }
+                        .into_any()
+                }
+                "stripes" => {
+                    let (style, border) = match resolved_color {
+                        Some("white") => ("background:#ffffff", "border border-gray-200"),
+                        Some("yellow") => ("background:#eab308", ""),
+                        _ => ("background:#ffffff", "border border-gray-200"),
+                    };
+                    let class = format!("w-8 h-8 rounded-sm shadow-sm flex-shrink-0 {}", border);
+                    view! { <div class=class style=style></div> }.into_any()
+                }
+                _ => view! {
+                    <div class="w-8 h-8 rounded-sm bg-gray-200 border border-gray-300 flex-shrink-0"></div>
+                }
+                .into_any(),
+            };
+
+            view! {
+                <div class="flex items-center gap-3">
+                    {preview}
+                    <div class="min-w-0">
+                        <p class="text-sm font-medium text-gray-900 truncate">{name}</p>
+                        <p class="text-xs text-gray-500 truncate">{subtitle}</p>
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
+        "stock" => {
+            let is_reflective = stock_item
+                .map(|item| item.sticker_type == "reflective")
+                .or_else(|| sale.sticker_type.as_deref().map(|t| t == "reflective"))
+                .unwrap_or(false);
+
+            let title = stock_item
+                .map(|item| {
+                    format!(
+                        "{} {}",
+                        item.color,
+                        if item.sticker_type == "reflective" {
+                            "Reflective"
+                        } else {
+                            "Colored"
+                        }
+                    )
+                })
+                .or_else(|| sale.product_name.clone())
+                .unwrap_or_else(|| "Stock Item".to_string());
+
+            let subtitle = stock_item
+                .map(|item| {
+                    format!(
+                        "{}in • {}",
+                        item.size,
+                        if item.sticker_type == "reflective" {
+                            "Reflective film"
+                        } else {
+                            "Colored film"
+                        }
+                    )
+                })
+                .unwrap_or_else(|| {
+                    if is_reflective {
+                        "Reflective film".to_string()
+                    } else {
+                        "Colored film".to_string()
+                    }
+                });
+
+            let color_name = stock_item
+                .map(|item| item.color.clone())
+                .or_else(|| title.split_whitespace().next().map(|part| part.to_string()))
+                .unwrap_or_else(|| "gray".to_string());
+            let color_hex = stock_color_hex(&color_name);
+            let swatch_style = if is_reflective {
+                format!(
+                    "background: repeating-linear-gradient(135deg, rgba(255,255,255,0.85) 0 4px, rgba(255,255,255,0.25) 4px 8px), {}; border-color: #a855f7;",
+                    color_hex
+                )
+            } else {
+                format!("background-color: {};", color_hex)
+            };
+
+            view! {
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-lg border shadow-sm flex-shrink-0" style=swatch_style></div>
+                    <div class="min-w-0">
+                        <p class="text-sm font-medium text-gray-900 truncate">{title}</p>
+                        <p class="text-xs text-gray-500 truncate">{subtitle}</p>
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
+        "service" => {
+            let name = sale
+                .product_name
+                .clone()
+                .unwrap_or_else(|| "Service".to_string());
+            view! {
+                <div class="flex items-center gap-2">
+                    <span class="status-badge bg-blue-500 text-white">"Service"</span>
+                    <span class="text-sm font-medium text-gray-900">{name}</span>
+                </div>
+            }
+            .into_any()
+        }
+        _ => {
+            let name = sale
+                .product_name
+                .clone()
+                .unwrap_or_else(|| sale.r#type.clone());
+            view! { <span class="text-sm font-medium text-gray-900">{name}</span> }.into_any()
+        }
+    }
+}
+
 #[component]
 pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (sales, set_sales) = signal(Vec::<Sale>::new());
@@ -637,20 +813,26 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                 let id = sale.id;
                                 let tm = format_sale_timestamp(&sale.timestamp);
                                 let is_sel = move || selected_sales.get().contains(&id);
-                                let typ_label = match sale.r#type.as_str() { "stock" => "Stock", "service" => "Service", _ => "Product" };
-                                let typ_cls = match sale.r#type.as_str() {
-                                    "stock" => "bg-gray-800 text-white", "service" => "bg-blue-500 text-white", _ => "bg-gray-100 text-gray-700"
-                                };
-                                let name = sale.product_name.clone().unwrap_or_else(|| sale.r#type.clone());
                                 let qty_display = sale.quantity.clone().unwrap_or_else(|| "-".into());
                                 let pm_display = sale.payment_method.clone();
                                 let cust_display = sale.customer_name.clone();
+                                let product_match = if sale.r#type == "product" {
+                                    sale.product_id.and_then(|pid| products.get().into_iter().find(|p| p.id == pid))
+                                } else {
+                                    None
+                                };
+                                let stock_match = if sale.r#type == "stock" {
+                                    sale.stock_id.and_then(|sid| stock.get().into_iter().find(|s| s.id == sid))
+                                } else {
+                                    None
+                                };
+                                let item_cell = render_sale_item_cell(&sale, product_match.as_ref(), stock_match.as_ref());
                                 let sale_clone = sale.clone();
                                 view!{
                                     <tr class=move || format!("hover:bg-gray-50 transition-colors {}", if is_sel() {"bg-green-50"} else {""})>
                                         <td class="px-5 py-4"><label class="custom-checkbox"><input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/><span class="checkmark"></span></label></td>
                                         <td class="px-5 py-4 text-sm text-gray-600 whitespace-nowrap">{tm}</td>
-                                        <td class="px-5 py-4"><div class="flex items-center gap-2"><span class=format!("status-badge {}", typ_cls)>{typ_label}</span><span class="text-sm font-medium text-gray-900">{name}</span></div></td>
+                                        <td class="px-5 py-4">{item_cell}</td>
                                         <td class="px-5 py-4 text-sm text-gray-600">{qty_display}</td>
                                         <td class="px-5 py-4 text-sm font-medium text-gray-900">{format!("KSh {:.2}", sale.amount)}</td>
                                         <td class="px-5 py-4"><span class="status-badge status-badge--success capitalize">{pm_display}</span></td>
@@ -752,8 +934,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                         on_select=Callback::new(move |v: String| set_product_payment.set(v))/>
                                 </div></div>
                             </div>
-                            <div><label>"Selling Price (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/></div>
-                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let q:f64=product_qty.get().parse().unwrap_or(0.0); let p=product_price.get(); format!("KSh {:.2}", q * p)}}</div></div>
+                            <div><label>"Sale Amount (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/></div>
+                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || { let p = product_price.get(); format!("KSh {:.2}", p) }}</div></div>
                             <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || product_cust.get() on:input=move |e| set_product_cust.set(event_target_value(&e))/></div>
                         </div>
                         <div class="modal-footer mt-4 pt-4 border-t border-gray-100">

@@ -3118,7 +3118,7 @@ impl Database {
             "month" => {
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE weeks(idx, start_date, end_date) AS (
-                        SELECT 0, DATE('now', '-6 days'), DATE('now')
+                        SELECT 0, DATE('now', 'localtime', '-6 days'), DATE('now', 'localtime')
                         UNION ALL
                         SELECT idx + 1,
                                DATE(start_date, '-7 days'),
@@ -3130,7 +3130,21 @@ impl Database {
                         UNION ALL
                         SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
                     )
-                    SELECT printf('%s–%s', strftime('%d', start_date), strftime('%d %b', end_date)) AS label,
+                    SELECT strftime('%d', start_date) || '–' || strftime('%d', end_date) || ' ' ||
+                           CASE strftime('%m', end_date)
+                               WHEN '01' THEN 'Jan'
+                               WHEN '02' THEN 'Feb'
+                               WHEN '03' THEN 'Mar'
+                               WHEN '04' THEN 'Apr'
+                               WHEN '05' THEN 'May'
+                               WHEN '06' THEN 'Jun'
+                               WHEN '07' THEN 'Jul'
+                               WHEN '08' THEN 'Aug'
+                               WHEN '09' THEN 'Sep'
+                               WHEN '10' THEN 'Oct'
+                               WHEN '11' THEN 'Nov'
+                               WHEN '12' THEN 'Dec'
+                           END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date BETWEEN w.start_date AND w.end_date), 0) AS amount,
                            idx
                     FROM weeks w
@@ -3152,7 +3166,7 @@ impl Database {
             "year" => {
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE months(idx, month_start) AS (
-                        SELECT 0, DATE('now', 'start of month')
+                        SELECT 0, DATE('now', 'localtime', 'start of month')
                         UNION ALL
                         SELECT idx + 1, DATE(month_start, '-1 month')
                         FROM months
@@ -3162,7 +3176,20 @@ impl Database {
                         UNION ALL
                         SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM service_transactions
                     )
-                    SELECT strftime('%b', month_start) AS label,
+                    SELECT CASE strftime('%m', month_start)
+                               WHEN '01' THEN 'Jan'
+                               WHEN '02' THEN 'Feb'
+                               WHEN '03' THEN 'Mar'
+                               WHEN '04' THEN 'Apr'
+                               WHEN '05' THEN 'May'
+                               WHEN '06' THEN 'Jun'
+                               WHEN '07' THEN 'Jul'
+                               WHEN '08' THEN 'Aug'
+                               WHEN '09' THEN 'Sep'
+                               WHEN '10' THEN 'Oct'
+                               WHEN '11' THEN 'Nov'
+                               WHEN '12' THEN 'Dec'
+                           END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.ym = strftime('%Y-%m', m.month_start)), 0) AS amount,
                            idx
                     FROM months m
@@ -3184,7 +3211,7 @@ impl Database {
             _ => {
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE days(idx, day_date) AS (
-                        SELECT 0, DATE('now')
+                        SELECT 0, DATE('now', 'localtime')
                         UNION ALL
                         SELECT idx + 1, DATE(day_date, '-1 day')
                         FROM days
@@ -3194,7 +3221,15 @@ impl Database {
                         UNION ALL
                         SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
                     )
-                    SELECT strftime('%a', day_date) AS label,
+                    SELECT CASE strftime('%w', day_date)
+                               WHEN '0' THEN 'Sun'
+                               WHEN '1' THEN 'Mon'
+                               WHEN '2' THEN 'Tue'
+                               WHEN '3' THEN 'Wed'
+                               WHEN '4' THEN 'Thu'
+                               WHEN '5' THEN 'Fri'
+                               WHEN '6' THEN 'Sat'
+                           END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date = d.day_date), 0) AS amount,
                            idx
                     FROM days d
