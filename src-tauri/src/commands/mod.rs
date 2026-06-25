@@ -7,3 +7,4 @@ pub mod sales;
 pub mod services;
 pub mod stock;
 pub mod transactions;
+pub mod updates;

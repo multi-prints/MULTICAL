@@ -63,7 +63,7 @@ jobs:
             patchelf
 
       - name: Build Tauri bundle
-        run: cargo tauri build
+        run: cargo tauri build --bundles ${{ matrix.os == 'windows-latest' && 'nsis' || 'deb' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -68,7 +68,7 @@ jobs:
             patchelf
 
       - name: Build Tauri bundle
-        run: cargo tauri build
+        run: cargo tauri build --bundles ${{ matrix.os == 'windows-latest' && 'nsis' || 'deb' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -102,10 +102,12 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/}
             echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "semver=${VERSION#v}" >> $GITHUB_OUTPUT
             echo "Using tag: $VERSION"
           else
             VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
             echo "version=v$VERSION" >> $GITHUB_OUTPUT
+            echo "semver=$VERSION" >> $GITHUB_OUTPUT
             echo "Using Cargo version: v$VERSION"
           fi
 
@@ -129,6 +131,50 @@ jobs:
           find artifacts -type f -exec cp {} release-assets/ \;
           echo "=== Final Release Assets ==="
           ls -la release-assets/
+
+      - name: Generate updater manifest
+        run: |
+          python3 -c '
+import datetime
+import json
+import hashlib
+import os
+from pathlib import Path
+
+repo = os.environ["GITHUB_REPOSITORY"]
+tag = os.environ["RELEASE_TAG"]
+version = os.environ["RELEASE_VERSION"]
+assets = Path("release-assets")
+platforms = {}
+
+for artifact in assets.iterdir():
+    if artifact.suffix == ".sig" or artifact.name == "latest.json":
+        continue
+    if artifact.suffix == ".exe":
+        key = "windows-x86_64"
+    elif artifact.suffix == ".deb":
+        key = "linux-x86_64"
+    else:
+        continue
+
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    platforms[key] = {
+        "url": f"https://github.com/{repo}/releases/download/{tag}/{artifact.name}",
+        "sha256": digest,
+    }
+
+manifest = {
+    "version": version,
+    "notes": "Latest MULTIPRINTS release",
+    "pub_date": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    "platforms": platforms,
+}
+
+(assets / "latest.json").write_text(json.dumps(manifest, indent=2))
+'
+        env:
+          RELEASE_TAG: ${{ steps.get_version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.get_version.outputs.semver }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

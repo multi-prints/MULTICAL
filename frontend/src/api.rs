@@ -462,6 +462,13 @@ pub struct SuccessResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateResult {
+    pub available: bool,
+    pub version: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionResponse {
     pub success: bool,
     pub session: Option<UserInfo>,
@@ -597,6 +604,11 @@ api_fn!(delete_user, "delete_user", username: String, SuccessResponse);
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
 api_fn!(get_app_version, "get_app_version", String);
 api_fn!(get_platform, "get_platform", String);
+api_fn!(
+    check_and_install_update,
+    "check_and_install_update",
+    UpdateResult
+);
 
 pub async fn get_dashboard_chart(period: &str) -> Result<Vec<DashboardChartPoint>, String> {
     tauri_invoke_inner(

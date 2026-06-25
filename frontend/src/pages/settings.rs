@@ -23,6 +23,8 @@ pub fn SettingsPage(
     let (users, set_users) = signal(Vec::<User>::new());
     let (app_version, set_app_version) = signal("1.1.1".to_string());
     let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
+    let (update_status, set_update_status) = signal(None::<String>);
+    let (checking_update, set_checking_update) = signal(false);
 
     // Username change
     let (new_username, set_new_username) = signal(String::new());
@@ -64,6 +66,18 @@ pub fn SettingsPage(
             set_platform.set(format!("Tauri ({})", p));
         }
     });
+
+    let install_update = move |_| {
+        set_checking_update.set(true);
+        set_update_status.set(Some("Checking for updates...".into()));
+        leptos::task::spawn_local(async move {
+            match api::check_and_install_update().await {
+                Ok(result) => set_update_status.set(Some(result.message)),
+                Err(e) => set_update_status.set(Some(e)),
+            }
+            set_checking_update.set(false);
+        });
+    };
 
     let change_username = move |_| {
         let old = cur_user();
@@ -240,6 +254,12 @@ pub fn SettingsPage(
                         <span class="text-xs font-medium text-gray-500">"Version"</span>
                         <span class="text-xs font-bold text-gray-900">{app_version.get()}</span>
                     </div>
+                    <div class="mt-6">
+                        <button class="btn-primary px-5 py-2 disabled:opacity-50" prop:disabled=move || checking_update.get() on:click=install_update>
+                            {move || if checking_update.get() { "Updating..." } else { "Check & Install Update" }}
+                        </button>
+                    </div>
+                    {move || update_status.get().map(|text| view!{<p class="mt-3 text-xs text-gray-500">{text}</p>})}
                 </div>
             </div>
             <div class="dashboard-panel p-6 mb-6">

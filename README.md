@@ -95,6 +95,9 @@ cargo tauri dev
 cargo tauri build
 ```
 
+### Updates
+Releases are installed from GitHub Releases through the in-app update button.
+
 ## Project Structure
 
 ```text
