@@ -266,6 +266,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (product_price, set_product_price) = signal(0.0f64);
     let (product_payment, set_product_payment) = signal("cash".to_string());
     let (product_cust, set_product_cust) = signal("Walk-in".to_string());
+    let (product_submit_error, set_product_submit_error) = signal(None::<String>);
+    let (product_submitting, set_product_submitting) = signal(false);
 
     // Service tab state
     let (svc_name, set_svc_name) = signal(String::new());
@@ -412,6 +414,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         set_product_price.set(0.0);
         set_product_payment.set("cash".into());
         set_product_cust.set("Walk-in".into());
+        set_product_submit_error.set(None);
+        set_product_submitting.set(false);
     };
     let reset_service_tab = move || {
         set_svc_name.set(String::new());
@@ -513,6 +517,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     payment_method,
                     customer_name,
                     is_debt: 0,
+                    product_quantity: None,
+                    stock_metres_used: Some(metres),
                 })
                 .await
                 {
@@ -524,21 +530,6 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         set_stock_submitting.set(false);
                         return;
                     }
-                }
-
-                if let Err(e) = api::update_stock(
-                    selected_stock.id,
-                    &serde_json::json!({"metres_used": used + metres}),
-                )
-                .await
-                {
-                    error!("update_stock failed after sale insert: {}", e);
-                    set_stock_submit_error.set(Some(format!(
-                        "Sale was saved, but stock could not be updated: {}",
-                        e
-                    )));
-                    set_stock_submitting.set(false);
-                    return;
                 }
 
                 set_show_modal.set(false);
@@ -559,10 +550,23 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let submit_product = {
         let l = reload;
         move |_| {
+            if product_submitting.get() {
+                return;
+            }
+
             let pid = product_id.get();
             let pqty: i64 = product_qty.get().parse().unwrap_or(0);
             let price = product_price.get();
-            if pid.is_none() || pqty <= 0 || price <= 0.0 {
+            if pid.is_none() {
+                set_product_submit_error.set(Some("Choose a product first.".into()));
+                return;
+            }
+            if pqty <= 0 {
+                set_product_submit_error.set(Some("Enter a valid quantity to sell.".into()));
+                return;
+            }
+            if price <= 0.0 {
+                set_product_submit_error.set(Some("Enter a valid sale amount.".into()));
                 return;
             }
             let p = products
@@ -571,9 +575,10 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                 .find(|p| p.id == pid.unwrap())
                 .cloned();
             let name = p.as_ref().map(|p| p.name.clone()).unwrap_or_default();
-            close_modal();
+            set_product_submit_error.set(None);
+            set_product_submitting.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::add_sale(&NewSale {
+                match api::add_sale(&NewSale {
                     r#type: "product".into(),
                     product_id: pid,
                     stock_id: None,
@@ -585,21 +590,22 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     payment_method: product_payment.get(),
                     customer_name: product_cust.get(),
                     is_debt: 0,
+                    product_quantity: Some(pqty),
+                    stock_metres_used: None,
                 })
-                .await;
-                if let Some(pr) = &p {
-                    let _ = api::update_product(
-                        pr.id,
-                        &api::ProductUpdate {
-                            stock: Some(pr.stock - pqty),
-                            name: None,
-                            product_type: None,
-                            color: None,
-                            size: None,
-                            selling_price: None,
-                        },
-                    )
-                    .await;
+                .await
+                {
+                    Ok(_) => {
+                        set_show_modal.set(false);
+                        reset_product_tab();
+                    }
+                    Err(e) => {
+                        error!("add product sale failed: {}", e);
+                        set_product_submit_error
+                            .set(Some(format!("Could not record the sale: {}", e)));
+                        set_product_submitting.set(false);
+                        return;
+                    }
                 }
                 l();
             });
@@ -629,6 +635,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     payment_method: svc_payment.get(),
                     customer_name: svc_cust.get(),
                     is_debt: 0,
+                    product_quantity: None,
+                    stock_metres_used: None,
                 })
                 .await;
                 l();
@@ -937,10 +945,17 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                             <div><label>"Sale Amount (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/></div>
                             <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || { let p = product_price.get(); format!("KSh {:.2}", p) }}</div></div>
                             <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || product_cust.get() on:input=move |e| set_product_cust.set(event_target_value(&e))/></div>
+                            {move || product_submit_error.get().map(|msg| view! {
+                                <div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                                    {msg}
+                                </div>
+                            })}
                         </div>
                         <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
                             <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_product>"Record Product Sale"</button>
+                            <button type="button" class="btn-primary px-4 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed" on:click=submit_product disabled=move || product_submitting.get()>
+                                {move || if product_submitting.get() { "Recording..." } else { "Record Product Sale" }}
+                            </button>
                         </div>
                     </div>}.into_any() } else { ().into_any() }}
 

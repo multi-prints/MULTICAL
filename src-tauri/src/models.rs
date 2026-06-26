@@ -152,6 +152,10 @@ pub struct NewSale {
     pub customer_name: String,
     #[serde(default)]
     pub is_debt: i64,
+    #[serde(default)]
+    pub product_quantity: Option<i64>,
+    #[serde(default)]
+    pub stock_metres_used: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

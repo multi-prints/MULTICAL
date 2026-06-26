@@ -29,6 +29,38 @@ struct UpdateAsset {
     sha256: String,
 }
 
+#[tauri::command]
+pub async fn check_for_update() -> Result<UpdateResult, String> {
+    let manifest = fetch_manifest().await?;
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+    if manifest.version == current_version {
+        return Ok(UpdateResult {
+            available: false,
+            version: None,
+            message: "Already on the latest version.".into(),
+        });
+    }
+
+    let platform_key = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    if !manifest.platforms.contains_key(&platform_key) {
+        return Ok(UpdateResult {
+            available: false,
+            version: None,
+            message: format!(
+                "No update asset is published for platform '{}'",
+                platform_key
+            ),
+        });
+    }
+
+    Ok(UpdateResult {
+        available: true,
+        version: Some(manifest.version.clone()),
+        message: format!("Version {} is available.", manifest.version),
+    })
+}
+
 #[allow(unreachable_code)]
 #[tauri::command]
 pub async fn check_and_install_update(app: tauri::AppHandle) -> Result<UpdateResult, String> {

@@ -228,6 +228,10 @@ pub struct NewSale {
     pub customer_name: String,
     #[serde(default)]
     pub is_debt: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_quantity: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stock_metres_used: Option<f64>,
 }
 
 fn default_payment() -> String {
@@ -604,6 +608,7 @@ api_fn!(delete_user, "delete_user", username: String, SuccessResponse);
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
 api_fn!(get_app_version, "get_app_version", String);
 api_fn!(get_platform, "get_platform", String);
+api_fn!(check_for_update, "check_for_update", UpdateResult);
 api_fn!(
     check_and_install_update,
     "check_and_install_update",

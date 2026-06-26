@@ -119,6 +119,7 @@ pub fn run() {
             // App info
             get_app_version,
             get_platform,
+            commands::updates::check_for_update,
             commands::updates::check_and_install_update,
             // Data management
             clear_all_data,

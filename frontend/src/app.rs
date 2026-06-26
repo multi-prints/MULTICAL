@@ -66,7 +66,7 @@ fn request_notification_permission() {
     }
 }
 
-fn show_desktop_notification(title: &str, body: &str) {
+fn show_desktop_notification(title: &str, body: &str, tag: &str) {
     let global = js_sys::global();
     let Ok(notification) = Reflect::get(&global, &JsValue::from_str("Notification")) else {
         return;
@@ -81,11 +81,7 @@ fn show_desktop_notification(title: &str, body: &str) {
         &JsValue::from_str("body"),
         &JsValue::from_str(body),
     );
-    let _ = Reflect::set(
-        &options,
-        &JsValue::from_str("tag"),
-        &JsValue::from_str("overdue-debts"),
-    );
+    let _ = Reflect::set(&options, &JsValue::from_str("tag"), &JsValue::from_str(tag));
 
     let args = Array::new();
     args.push(&JsValue::from_str(title));
@@ -124,6 +120,8 @@ pub fn App() -> impl IntoView {
     let user_role = move || user.get().map(|u| u.role.clone()).unwrap_or_default();
     let (overdue_debts, set_overdue_debts) = signal(Vec::<crate::api::Debt>::new());
     let (overdue_polling_started, set_overdue_polling_started) = signal(false);
+    let (available_update, set_available_update) = signal(None::<api::UpdateResult>);
+    let (update_polling_started, set_update_polling_started) = signal(false);
 
     let load_overdue = {
         move || {
@@ -146,6 +144,31 @@ pub fn App() -> impl IntoView {
             }
         } else {
             set_overdue_debts.set(Vec::new());
+        }
+    });
+
+    let check_for_update = move || {
+        leptos::task::spawn_local(async move {
+            if let Ok(result) = api::check_for_update().await {
+                if result.available {
+                    set_available_update.set(Some(result));
+                } else {
+                    set_available_update.set(None);
+                }
+            }
+        });
+    };
+
+    create_effect(move |_| {
+        if user.get().is_some() {
+            check_for_update();
+            if !update_polling_started.get() {
+                set_update_polling_started.set(true);
+                let check_for_update = check_for_update;
+                Interval::new(6 * 60 * 60 * 1000, check_for_update).forget();
+            }
+        } else {
+            set_available_update.set(None);
         }
     });
 
@@ -175,7 +198,11 @@ pub fn App() -> impl IntoView {
                     <div class="flex h-screen" style="background:var(--color-bg-base);font-family:var(--font-sans)">
                         <Sidebar user_role=role.clone() current_page=p set_page=sp on_logout=logout />
                         <div class="flex-1 flex flex-col overflow-hidden">
-                            <Header overdue_debts=Signal::derive(move || overdue_debts.get()) show_notifications=role == "admin" />
+                            <Header
+                                overdue_debts=Signal::derive(move || overdue_debts.get())
+                                available_update=Signal::derive(move || available_update.get())
+                                show_debt_notifications=role == "admin"
+                            />
                             <main class="flex-1 overflow-y-auto p-6">
                                 {move || match p.get() {
                                     Page::Dashboard => {
@@ -264,9 +291,36 @@ fn Sidebar(
 }
 
 #[component]
-fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool) -> impl IntoView {
+fn Header(
+    overdue_debts: Signal<Vec<crate::api::Debt>>,
+    available_update: Signal<Option<api::UpdateResult>>,
+    show_debt_notifications: bool,
+) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (initial_notified, set_initial_notified) = signal(false);
+    let (update_notified, set_update_notified) = signal(false);
+    let (installing_update, set_installing_update) = signal(false);
+
+    let notification_count = move || {
+        let debt_count = if show_debt_notifications {
+            overdue_debts.get().len()
+        } else {
+            0
+        };
+        debt_count + usize::from(available_update.get().is_some())
+    };
+
+    let install_update = move |_| {
+        if installing_update.get() {
+            return;
+        }
+        set_installing_update.set(true);
+        leptos::task::spawn_local(async move {
+            if api::check_and_install_update().await.is_err() {
+                set_installing_update.set(false);
+            }
+        });
+    };
 
     Effect::new(move |_| {
         if let Some(window) = web_sys::window() {
@@ -281,7 +335,7 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
     });
 
     Effect::new(move |_| {
-        if !show_notifications {
+        if !show_debt_notifications {
             return;
         }
 
@@ -298,6 +352,7 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
                             if overdue.len() > 1 { "s" } else { "" },
                             total
                         ),
+                        "overdue-debts",
                     );
                     set_initial_notified.set(true);
                 }
@@ -307,20 +362,42 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
         }
     });
 
+    Effect::new(move |_| {
+        let Some(update) = available_update.get() else {
+            return;
+        };
+        if update_notified.get() {
+            return;
+        }
+
+        match notification_permission().as_deref() {
+            Some("granted") => {
+                show_desktop_notification(
+                    "Update Available",
+                    &update.message,
+                    "app-update-available",
+                );
+                set_update_notified.set(true);
+            }
+            Some("denied") => {}
+            _ => request_notification_permission(),
+        }
+    });
+
     view! {
         <header class="h-14 bg-white border-b border-[#E5E5E5] flex items-center justify-between px-5 shrink-0">
             <div class="flex items-center gap-2"></div>
             <div class="flex items-center gap-2">
-                {move || if show_notifications { view! {
+                {move || if notification_count() > 0 || show_debt_notifications { view! {
                     <div class="relative" on:click=move |e| e.stop_propagation()>
                         <button class="relative p-2 rounded hover:bg-[#F5F5F5] text-[#525252] hover:text-[#0A0A0A] transition-all duration-100" on:click=move |_| set_open.update(|v| *v = !*v)>
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
                             </svg>
-                            {move || if !overdue_debts.get().is_empty() { view! {
+                            {move || if notification_count() > 0 { view! {
                                 <span class="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-medium">
                                     {move || {
-                                        let count = overdue_debts.get().len();
+                                        let count = notification_count();
                                         if count > 99 { "99+".to_string() } else { count.to_string() }
                                     }}
                                 </span>
@@ -332,27 +409,57 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
                                     <h3 class="text-sm font-semibold text-[#0A0A0A]">"Notifications"</h3>
                                     <span class="text-xs text-[#737373]">
                                         {move || {
-                                            let count = overdue_debts.get().len();
-                                            if count == 0 { "No overdue debts".to_string() }
-                                            else if count == 1 { "1 overdue debt".to_string() }
-                                            else { format!("{} overdue debts", count) }
+                                            let count = notification_count();
+                                            if count == 0 { "No notifications".to_string() }
+                                            else if count == 1 { "1 notification".to_string() }
+                                            else { format!("{} notifications", count) }
                                         }}
                                     </span>
                                 </div>
                                 <div class="max-h-[320px] overflow-y-auto">
                                     {move || {
-                                        let items = overdue_debts.get();
-                                        if items.is_empty() {
+                                        let items = if show_debt_notifications {
+                                            overdue_debts.get()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        if items.is_empty() && available_update.get().is_none() {
                                             view! {
                                                 <div class="p-6 text-center">
                                                     <div class="w-12 h-12 mx-auto mb-3 bg-green-100 flex items-center justify-center rounded-full">
                                                         <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                                                     </div>
-                                                    <p class="text-sm text-gray-500">"All debts are up to date!"</p>
+                                                    <p class="text-sm text-gray-500">"No notifications right now."</p>
                                                 </div>
                                             }.into_any()
                                         } else {
-                                            items.into_iter().map(|debt| {
+                                            let mut views = Vec::new();
+                                            if let Some(update) = available_update.get() {
+                                                let version_text = update
+                                                    .version
+                                                    .clone()
+                                                    .map(|version| format!("Version {} is ready to install.", version))
+                                                    .unwrap_or_else(|| update.message.clone());
+                                                views.push(view! {
+                                                    <button type="button" class="w-full p-3 bg-blue-50 border-l-4 border-blue-500 text-left hover:bg-blue-100 transition-colors disabled:opacity-70" prop:disabled=move || installing_update.get() on:click=install_update>
+                                                        <div class="flex items-start gap-3">
+                                                            <div class="w-8 h-8 bg-blue-100 text-blue-700 flex items-center justify-center rounded-full shrink-0">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                                                </svg>
+                                                            </div>
+                                                            <div class="min-w-0 flex-1">
+                                                                <p class="text-sm font-medium text-gray-900">"Update available"</p>
+                                                                <p class="text-xs text-gray-600 mt-0.5">{version_text}</p>
+                                                                <p class="text-xs font-medium text-blue-700 mt-1">
+                                                                    {move || if installing_update.get() { "Installing update..." } else { "Click to install" }}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                }.into_any());
+                                            }
+                                            views.extend(items.into_iter().map(|debt| {
                                                 let due = debt.due_date.clone().unwrap_or_default();
                                                 let days_overdue = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
                                                     .ok()
@@ -386,7 +493,9 @@ fn Header(overdue_debts: Signal<Vec<crate::api::Debt>>, show_notifications: bool
                                                         </div>
                                                     </div>
                                                 }
-                                            }).collect::<Vec<_>>().into_any()
+                                                .into_any()
+                                            }));
+                                            views.into_any()
                                         }
                                     }}
                                 </div>
@@ -1034,6 +1143,8 @@ fn SalesPage() -> impl IntoView {
                 payment_method: pm.get(),
                 customer_name: cust.get(),
                 is_debt: 0,
+                product_quantity: None,
+                stock_metres_used: None,
             })
             .await;
             set_amount.set(0.0);

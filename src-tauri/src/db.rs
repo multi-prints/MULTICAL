@@ -166,21 +166,22 @@ impl Database {
     }
 
     fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.sync_now_blocking().map_err(|e| {
+            format!(
+                "Could not sync with Turso before accessing the database. Check internet connection: {}",
+                e
+            )
+        })?;
         self.conn.lock().map_err(|e| e.to_string())
     }
 
-    fn request_sync_async(&self) {
-        if let Some(sync_db) = self.sync_db.clone() {
-            tauri::async_runtime::spawn(async move {
-                if let Err(err) = sync_db.sync().await {
-                    eprintln!("Background Turso sync failed: {}", err);
-                }
-            });
-        }
-    }
-
     fn finish_write<T>(&self, value: T) -> Result<T, String> {
-        self.request_sync_async();
+        self.sync_now_blocking().map_err(|e| {
+            format!(
+                "Database change was saved locally, but could not sync to Turso. Check internet connection: {}",
+                e
+            )
+        })?;
         Ok(value)
     }
 
@@ -1270,12 +1271,58 @@ impl Database {
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
 
-        conn.execute(
-            "INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp],
-        ).map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| e.to_string())?;
 
-        let id = conn.last_insert_rowid();
+        let insert_result = (|| -> Result<i64, String> {
+            if let (Some(product_id), Some(quantity)) = (sale.product_id, sale.product_quantity) {
+                if quantity > 0 {
+                    let updated = conn
+                        .execute(
+                            "UPDATE products SET stock = stock - ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND stock >= ?1",
+                            params![quantity, product_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if updated == 0 {
+                        return Err("Insufficient product stock or product was not found.".into());
+                    }
+                }
+            }
+
+            if let (Some(stock_id), Some(metres_used)) = (sale.stock_id, sale.stock_metres_used) {
+                if metres_used > 0.0 {
+                    let updated = conn
+                        .execute(
+                            "UPDATE stock SET metres_used = metres_used + ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND (total_metres - metres_used) >= ?1",
+                            params![metres_used, stock_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if updated == 0 {
+                        return Err("Insufficient stock metres or stock item was not found.".into());
+                    }
+                }
+            }
+
+            conn.execute(
+                "INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp],
+            ).map_err(|e| e.to_string())?;
+
+            Ok(conn.last_insert_rowid())
+        })();
+
+        let id = match insert_result {
+            Ok(id) => {
+                conn.execute_batch("COMMIT;").map_err(|e| e.to_string())?;
+                id
+            }
+            Err(err) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(err);
+            }
+        };
+
+        drop(conn);
         self.finish_write(Sale {
             id,
             r#type: sale.r#type,
