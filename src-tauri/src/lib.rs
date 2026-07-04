@@ -189,10 +189,36 @@ fn uninstall_app(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
             .spawn()
             .map_err(|e| format!("Failed to start uninstaller: {e}"))?;
     } else if cfg!(target_os = "linux") {
-        Command::new("pkexec")
-            .arg("dpkg")
-            .arg("-r")
-            .arg("multiprints")
+        // Cannot dpkg -r while app is running (files locked).
+        // Write a detached helper script that waits for this process to exit,
+        // then runs pkexec dpkg -r, then deletes itself.
+        let helper = r#"#!/bin/bash
+set -e
+APP_PID="$1"
+if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
+    tail --pid="$APP_PID" -f /dev/null
+fi
+pkexec dpkg -r multiprints
+rm -f "$0"
+"#;
+
+        let pid = std::process::id();
+        let script_path = std::env::temp_dir().join("multiprints-uninstall.sh");
+        std::fs::write(&script_path, helper).map_err(|e| e.to_string())?;
+
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).map_err(|e| e.to_string())?;
+
+        // Spawn detached — survives parent exit
+        Command::new(&script_path)
+            .arg(pid.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to start uninstall: {e}"))?;
     } else {
