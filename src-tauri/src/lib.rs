@@ -124,6 +124,7 @@ pub fn run() {
             // Data management
             clear_all_data,
             migrate_from_localstorage,
+            uninstall_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -163,5 +164,45 @@ fn migrate_from_localstorage(
         success: true,
         error: None,
         message: Some("Migration completed".to_string()),
+    })
+}
+
+#[tauri::command]
+fn uninstall_app(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
+    use std::process::Command;
+
+    if cfg!(target_os = "windows") {
+        // NSIS installs uninstall.exe next to the app binary
+        let exe_dir = std::env::current_exe()
+            .map_err(|e| format!("Cannot locate app binary: {e}"))?
+            .parent()
+            .ok_or("Invalid exe path")?
+            .to_path_buf();
+
+        let uninstaller = exe_dir.join("uninstall.exe");
+        if !uninstaller.exists() {
+            return Err("Uninstaller not found. Uninstall via Settings > Apps.".into());
+        }
+
+        Command::new(&uninstaller)
+            .arg("/S")
+            .spawn()
+            .map_err(|e| format!("Failed to start uninstaller: {e}"))?;
+    } else if cfg!(target_os = "linux") {
+        Command::new("pkexec")
+            .arg("dpkg")
+            .arg("-r")
+            .arg("multiprints")
+            .spawn()
+            .map_err(|e| format!("Failed to start uninstall: {e}"))?;
+    } else {
+        return Err("Uninstall is not supported on this platform".into());
+    }
+
+    app.exit(0);
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: Some("Uninstalling…".to_string()),
     })
 }

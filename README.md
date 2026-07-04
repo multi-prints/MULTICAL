@@ -118,6 +118,21 @@ MULTICAL/
 - `service_transactions`: Printing service transactions
 - `debts`: Customer debt balances and status
 
+## Uninstall
+
+Uninstalling the app removes both the binary and all app data (database, config files).
+
+### Windows
+Run the bundled uninstaller (`uninstall.exe`) from the installation directory, or use **Settings > Apps > MULTIPRINTS > Uninstall**. The uninstaller automatically removes app data from `%APPDATA%\com.multiprints.desktop` and `%LOCALAPPDATA%\com.multiprints.desktop`.
+
+### Linux
+```bash
+sudo dpkg -r multiprints
+# or
+sudo apt remove multiprints
+```
+The post-removal script automatically cleans up `~/.local/share/com.multiprints.desktop`, `~/.config/com.multiprints.desktop`, and `~/.cache/com.multiprints.desktop`.
+
 ## License
 
 MIT License. Copyright © 2026 Godwin Mayodi (codegoddy@gmail.com)

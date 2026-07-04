@@ -21,10 +21,12 @@ pub fn SettingsPage(
     let (active_tab, set_active_tab) = signal(SettingsTab::Account);
     let (msg, set_msg) = signal(None::<(bool, String)>);
     let (users, set_users) = signal(Vec::<User>::new());
-    let (app_version, set_app_version) = signal("1.1.2".to_string());
+    let (app_version, set_app_version) = signal("1.1.3".to_string());
     let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
     let (update_status, set_update_status) = signal(None::<String>);
     let (checking_update, set_checking_update) = signal(false);
+    let (show_uninstall, set_show_uninstall) = signal(false);
+    let (uninstalling, set_uninstalling) = signal(false);
 
     // Username change
     let (new_username, set_new_username) = signal(String::new());
@@ -76,6 +78,19 @@ pub fn SettingsPage(
                 Err(e) => set_update_status.set(Some(e)),
             }
             set_checking_update.set(false);
+        });
+    };
+
+    let do_uninstall = move |_| {
+        set_uninstalling.set(true);
+        leptos::task::spawn_local(async move {
+            match api::uninstall_app().await {
+                Ok(_) => set_msg.set(Some((true, "Uninstalling…".into()))),
+                Err(e) => {
+                    set_msg.set(Some((false, e)));
+                    set_uninstalling.set(false);
+                }
+            }
         });
     };
 
@@ -238,10 +253,34 @@ pub fn SettingsPage(
             <div class="dashboard-panel p-6 bg-red-50 border-red-200">
                 <h3 class="text-base font-semibold text-red-900 mb-2">"Danger Zone"</h3>
                 <p class="text-sm text-red-700 mb-4">"Irreversible actions - proceed with caution"</p>
-                <button class="w-full bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 transition-colors"
-                    on:click=move |_| { leptos::task::spawn_local(async move { let _ = api::clear_all_data().await; set_msg.set(Some((true, "All data cleared".into()))); }); }>"Clear All Data"</button>
+                <div class="space-y-3">
+                    <button class="w-full bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 transition-colors"
+                        on:click=move |_| { leptos::task::spawn_local(async move { let _ = api::clear_all_data().await; set_msg.set(Some((true, "All data cleared".into()))); }); }>"Clear All Data"</button>
+                    <button class="w-full bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 transition-colors"
+                        on:click=move |_| set_show_uninstall.set(true)>"Uninstall MULTIPRINTS"</button>
+                </div>
             </div>
         </div>}.into_any() } else { ().into_any() }}
+
+        // Uninstall confirmation modal
+        {move || if show_uninstall.get() { view!{
+            <div class="fixed inset-0 z-50 flex items-center justify-center">
+                <div class="absolute inset-0 bg-black/40" on:click=move |_| set_show_uninstall.set(false)></div>
+                <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+                    <h3 class="text-lg font-semibold mb-2">"Uninstall MULTIPRINTS"</h3>
+                    <p class="text-gray-600 text-sm mb-2">"This will remove the application and all its data from your system."</p>
+                    <p class="text-red-600 text-sm mb-6">"This action cannot be undone."</p>
+                    <div class="flex justify-end gap-3">
+                        <button on:click=move |_| set_show_uninstall.set(false)
+                            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">"Cancel"</button>
+                        <button on:click=do_uninstall prop:disabled=move || uninstalling.get()
+                            class="px-4 py-2 text-sm bg-red-600 text-white hover:bg-red-700 rounded-lg disabled:opacity-50">
+                            {move || if uninstalling.get() { "Uninstalling…" } else { "Uninstall" }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        }.into_any() } else { ().into_any() }}
 
         // About Panel
         {move || if active_tab.get() == SettingsTab::About { view!{<div>

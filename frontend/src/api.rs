@@ -614,6 +614,7 @@ api_fn!(
     "check_and_install_update",
     UpdateResult
 );
+api_fn!(uninstall_app, "uninstall_app", SuccessResponse);
 
 pub async fn get_dashboard_chart(period: &str) -> Result<Vec<DashboardChartPoint>, String> {
     tauri_invoke_inner(
