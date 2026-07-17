@@ -112,7 +112,15 @@ impl Database {
             .ok_or_else(|| "Invalid database path".to_string())?;
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
 
-        let turso_config = Self::load_turso_config(data_dir);
+        // Load .env from app data if present (installed builds don't use the repo cwd).
+        let _ = dotenvy::from_path(data_dir.join(".env"));
+
+        let (turso_config, turso_source) = Self::load_turso_config(data_dir);
+        if let Some(ref config) = turso_config {
+            // Persist so every future launch works without manual setup / env vars.
+            Self::persist_turso_config(data_dir, config, &turso_source);
+        }
+
         let active_db_path = if turso_config.is_some() {
             data_dir.join(SYNC_DB_FILE)
         } else {
@@ -176,37 +184,177 @@ impl Database {
         if turso_config.is_some() {
             let _ = db.sync_now_blocking();
             println!(
-                "Database initialized in Turso sync mode at: {:?}",
-                active_db_path
+                "Database initialized in Turso sync mode at: {:?} (config: {})",
+                active_db_path, turso_source
             );
         } else {
             println!(
-                "Database initialized in local mode at: {:?}",
+                "Database initialized in local mode at: {:?} (no Turso config found)",
                 active_db_path
             );
         }
         Ok(db)
     }
 
-    fn load_turso_config(data_dir: &Path) -> Option<TursoConfig> {
-        let env_url = std::env::var("TURSO_DATABASE_URL").ok();
-        let env_token = std::env::var("TURSO_AUTH_TOKEN").ok();
-        if let (Some(database_url), Some(auth_token)) = (env_url, env_token) {
-            if !database_url.trim().is_empty() && !auth_token.trim().is_empty() {
-                return Some(TursoConfig {
-                    database_url,
-                    auth_token,
-                });
+    /// Resolve Turso credentials automatically, in priority order:
+    /// 1. Process env (`TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN`)
+    /// 2. App data `turso.json` (or `.env` next to the DB)
+    /// 3. User config dir / system-wide install paths
+    /// 4. Compile-time defaults baked in at release build
+    fn load_turso_config(data_dir: &Path) -> (Option<TursoConfig>, String) {
+        if let Some(cfg) = Self::turso_from_env() {
+            return (Some(cfg), "environment".into());
+        }
+
+        // Explicit files next to the database (highest local priority)
+        for path in [data_dir.join(TURSO_CONFIG_FILE), data_dir.join(".env")] {
+            if let Some(cfg) = Self::turso_from_path(&path) {
+                return (Some(cfg), path.display().to_string());
             }
         }
 
-        let config_path = data_dir.join(TURSO_CONFIG_FILE);
-        let raw = std::fs::read_to_string(config_path).ok()?;
-        let parsed: TursoConfig = serde_json::from_str(&raw).ok()?;
-        if parsed.database_url.trim().is_empty() || parsed.auth_token.trim().is_empty() {
+        for path in Self::turso_search_paths() {
+            if path.starts_with(data_dir) {
+                continue; // already checked
+            }
+            if let Some(cfg) = Self::turso_from_path(&path) {
+                return (Some(cfg), path.display().to_string());
+            }
+        }
+
+        if let Some(cfg) = Self::turso_from_compile_time() {
+            return (Some(cfg), "compile-time (release embed)".into());
+        }
+
+        (None, "none".into())
+    }
+
+    fn turso_from_env() -> Option<TursoConfig> {
+        let database_url = std::env::var("TURSO_DATABASE_URL").ok()?;
+        let auth_token = std::env::var("TURSO_AUTH_TOKEN").ok()?;
+        Self::turso_if_valid(database_url, auth_token)
+    }
+
+    fn turso_from_compile_time() -> Option<TursoConfig> {
+        // Set at release build time via CI secrets (see .github/workflows/release.yml).
+        let database_url = option_env!("MULTIPRINTS_TURSO_DATABASE_URL")?.to_string();
+        let auth_token = option_env!("MULTIPRINTS_TURSO_AUTH_TOKEN")?.to_string();
+        Self::turso_if_valid(database_url, auth_token)
+    }
+
+    fn turso_if_valid(database_url: String, auth_token: String) -> Option<TursoConfig> {
+        if database_url.trim().is_empty() || auth_token.trim().is_empty() {
             return None;
         }
-        Some(parsed)
+        // Ignore placeholder example values
+        if database_url.contains("your-database-name") || auth_token.contains("your-turso-auth") {
+            return None;
+        }
+        Some(TursoConfig {
+            database_url: database_url.trim().to_string(),
+            auth_token: auth_token.trim().to_string(),
+        })
+    }
+
+    fn turso_from_path(path: &Path) -> Option<TursoConfig> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let name = path.file_name()?.to_string_lossy();
+        if name == ".env" {
+            return Self::turso_from_dotenv_contents(&raw);
+        }
+        let parsed: TursoConfig = serde_json::from_str(&raw).ok()?;
+        Self::turso_if_valid(parsed.database_url, parsed.auth_token)
+    }
+
+    fn turso_from_dotenv_contents(raw: &str) -> Option<TursoConfig> {
+        let mut url = None;
+        let mut token = None;
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            match k.trim() {
+                "TURSO_DATABASE_URL" | "MULTIPRINTS_TURSO_DATABASE_URL" => url = Some(v),
+                "TURSO_AUTH_TOKEN" | "MULTIPRINTS_TURSO_AUTH_TOKEN" => token = Some(v),
+                _ => {}
+            }
+        }
+        Self::turso_if_valid(url?, token?)
+    }
+
+    /// Extra locations checked automatically so installs work without a manual step.
+    fn turso_search_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        // User config (Linux XDG)
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            let base = PathBuf::from(xdg).join("com.multiprints.desktop");
+            paths.push(base.join(TURSO_CONFIG_FILE));
+            paths.push(base.join(".env"));
+        } else if let Ok(home) = std::env::var("HOME") {
+            let base = PathBuf::from(home).join(".config/com.multiprints.desktop");
+            paths.push(base.join(TURSO_CONFIG_FILE));
+            paths.push(base.join(".env"));
+        }
+
+        // Windows user config
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let base = PathBuf::from(appdata).join("com.multiprints.desktop");
+            paths.push(base.join(TURSO_CONFIG_FILE));
+            paths.push(base.join(".env"));
+        }
+        // Windows machine-wide (admin drop once for all users)
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            paths.push(
+                PathBuf::from(program_data)
+                    .join("multiprints")
+                    .join(TURSO_CONFIG_FILE),
+            );
+        }
+
+        // Linux machine-wide (admin drop once for all users)
+        paths.push(PathBuf::from("/etc/multiprints").join(TURSO_CONFIG_FILE));
+        paths.push(PathBuf::from("/etc/multiprints").join(".env"));
+
+        paths
+    }
+
+    /// Write credentials into app data so subsequent launches don't depend on env/cwd.
+    /// Never overwrites an existing app-data file (user/admin edits win).
+    fn persist_turso_config(data_dir: &Path, config: &TursoConfig, source: &str) {
+        let path = data_dir.join(TURSO_CONFIG_FILE);
+        if path.exists() {
+            return;
+        }
+
+        let payload = serde_json::json!({
+            "database_url": config.database_url,
+            "auth_token": config.auth_token,
+        });
+        match serde_json::to_string_pretty(&payload) {
+            Ok(body) => {
+                if let Err(e) = std::fs::write(&path, format!("{body}\n")) {
+                    eprintln!("Could not persist Turso config to {:?}: {}", path, e);
+                    return;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o600);
+                        let _ = std::fs::set_permissions(&path, perms);
+                    }
+                }
+                println!("Persisted Turso config to {:?} (from {})", path, source);
+            }
+            Err(e) => eprintln!("Could not serialize Turso config: {}", e),
+        }
     }
 
     fn sync_now_blocking(&self) -> Result<(), String> {

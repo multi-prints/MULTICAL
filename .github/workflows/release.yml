@@ -71,6 +71,10 @@ jobs:
         run: cargo tauri build --bundles ${{ matrix.os == 'windows-latest' && 'nsis' || 'deb' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into the binary at compile time so installed apps auto-connect to Turso
+          # without a manual turso.json step. Set these once under repo Settings → Secrets.
+          MULTIPRINTS_TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          MULTIPRINTS_TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
 
       - name: List build artifacts
         run: |

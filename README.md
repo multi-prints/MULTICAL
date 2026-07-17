@@ -69,21 +69,31 @@ git clone git@github.com:multi-prints/MULTICAL.git
 cd MULTICAL
 ```
 
-### Turso configuration
-The desktop app can run in shared online mode using Turso. Configure it in one of these ways:
+### Turso configuration (automatic)
 
-1. Environment variables
+The app enables shared multi-PC mode when it finds Turso credentials. **You should not need to do this by hand on every install.**
+
+Priority order:
+
+1. **Release builds (recommended)** — credentials are compiled into the binary from GitHub Secrets during CI:
+   - `TURSO_DATABASE_URL`
+   - `TURSO_AUTH_TOKEN`  
+   Set once under **GitHub → Settings → Secrets and variables → Actions**.  
+   On first launch the app writes them to app data as `turso.json` (mode `600` on Linux).
+
+2. **Environment variables** (dev / override)
 ```bash
 export TURSO_DATABASE_URL="libsql://your-database-name.region.turso.io"
 export TURSO_AUTH_TOKEN="your-turso-auth-token"
 ```
 
-2. Local config file
-- Copy `src-tauri/turso.example.json`
-- Save it as `turso.json` inside the app data directory used by MULTIPRINTS on the target machine
-- Fill in your Turso database URL and auth token
+3. **App data / config files** (optional manual override)
+   - Linux: `~/.local/share/com.multiprints.desktop/turso.json` or `~/.config/com.multiprints.desktop/turso.json`
+   - Linux system-wide: `/etc/multiprints/turso.json`
+   - Windows: `%APPDATA%\com.multiprints.desktop\turso.json` or `%ProgramData%\multiprints\turso.json`
+   - Copy from `src-tauri/turso.example.json` and fill in URL + token
 
-When Turso is configured, the app uses a synced local replica per PC and syncs with the shared Turso database.
+When Turso is configured, the app uses a synced local replica per PC and syncs with the shared Turso database. Local-only `multiprints.db` data is imported into the replica if the shared DB is empty.
 
 ### Multi-PC live updates
 With Turso enabled on every PC:
