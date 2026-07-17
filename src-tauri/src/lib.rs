@@ -28,11 +28,14 @@ pub fn run() {
 
             let db_path = app_data_dir.join("multiprints.db");
 
-            // Initialize database
+            // Initialize database (local open is fast; Turso sync runs in background)
             let database = Database::new(db_path).expect("Failed to initialize database");
 
             // Initialize default users
             auth_manager.init_default_users(&database);
+
+            // Pull/push Turso after the window can show — do not block setup on the network
+            database.spawn_background_sync();
 
             // Store database and auth as managed state
             app.manage(database);

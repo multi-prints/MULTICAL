@@ -127,23 +127,18 @@ impl Database {
             db_path.clone()
         };
 
+        // Build the embedded replica connection, but do NOT block startup on a full
+        // network sync. Background sync runs after the UI is up (see spawn_background_sync).
         let sync_db = if let Some(config) = turso_config.clone() {
             let sync_path = active_db_path.clone();
             let db = tauri::async_runtime::block_on(async move {
-                let db = Builder::new_synced_database(
-                    &sync_path,
-                    config.database_url,
-                    config.auth_token,
-                )
-                .read_your_writes(true)
-                .remote_writes(false)
-                .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
-                .build()
-                .await
-                .map_err(|e| e.to_string())?;
-
-                db.sync().await.map_err(|e| e.to_string())?;
-                Ok::<libsql::Database, String>(db)
+                Builder::new_synced_database(&sync_path, config.database_url, config.auth_token)
+                    .read_your_writes(true)
+                    .remote_writes(false)
+                    .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
+                    .build()
+                    .await
+                    .map_err(|e| e.to_string())
             })?;
             Some(Arc::new(db))
         } else {
@@ -158,6 +153,7 @@ impl Database {
             PRAGMA synchronous = NORMAL;
             PRAGMA temp_store = MEMORY;
             PRAGMA cache_size = -20000;
+            PRAGMA journal_mode = WAL;
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -169,22 +165,25 @@ impl Database {
             last_sync_at: Mutex::new(None),
         };
 
-        db.create_tables()?;
-        db.run_migrations()?;
+        // Schema work is purely local — never force a Turso round-trip during boot.
+        db.create_tables_local()?;
+        db.run_migrations_local()?;
 
         if turso_config.is_some()
-            && db.is_business_data_empty()?
+            && db.is_business_data_empty_local()?
             && db_path.exists()
             && db_path != active_db_path
         {
             db.import_legacy_sqlite(&db_path)?;
-            let _ = db.sync_now_blocking();
         }
 
         if turso_config.is_some() {
-            let _ = db.sync_now_blocking();
+            // Prevent schema/user bootstrap from forcing a network sync before the UI opens.
+            if let Ok(mut last) = db.last_sync_at.lock() {
+                *last = Some(Instant::now());
+            }
             println!(
-                "Database initialized in Turso sync mode at: {:?} (config: {})",
+                "Database initialized in Turso sync mode at: {:?} (config: {}; sync deferred to background)",
                 active_db_path, turso_source
             );
         } else {
@@ -194,6 +193,23 @@ impl Database {
             );
         }
         Ok(db)
+    }
+
+    /// Kick off a non-blocking Turso pull/push after the window is shown.
+    pub fn spawn_background_sync(&self) {
+        let Some(sync_db) = self.sync_db.clone() else {
+            return;
+        };
+        tauri::async_runtime::spawn(async move {
+            match sync_db.sync().await {
+                Ok(_) => {
+                    println!("Background Turso sync completed");
+                }
+                Err(e) => {
+                    eprintln!("Background Turso sync failed (will retry later): {}", e);
+                }
+            }
+        });
     }
 
     /// Resolve Turso credentials automatically, in priority order:
@@ -392,11 +408,16 @@ impl Database {
         self.sync_now_blocking()
     }
 
+    /// Local SQLite only — never touches the network. Used for bootstrapping schema.
+    fn local_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.conn.lock().map_err(|e| e.to_string())
+    }
+
     /// Read path: use local SQLite; occasionally best-effort pull from Turso.
     fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         // Best-effort only — never fail a read because the network is slow.
         let _ = self.maybe_sync(false);
-        self.conn.lock().map_err(|e| e.to_string())
+        self.local_conn()
     }
 
     /// Write path: data is already on disk; force-push to Turso so other PCs see it soon.
@@ -410,6 +431,27 @@ impl Database {
             // Still return success so the UI stays responsive offline / on flaky network.
         }
         Ok(value)
+    }
+
+    fn is_business_data_empty_local(&self) -> Result<bool, String> {
+        let conn = self.local_conn()?;
+        let total: i64 = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM products) +
+                    (SELECT COUNT(*) FROM stock) +
+                    (SELECT COUNT(*) FROM sales) +
+                    (SELECT COUNT(*) FROM debts) +
+                    (SELECT COUNT(*) FROM debt_payments) +
+                    (SELECT COUNT(*) FROM services) +
+                    (SELECT COUNT(*) FROM service_transactions) +
+                    (SELECT COUNT(*) FROM printing_materials) +
+                    (SELECT COUNT(*) FROM users)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(total == 0)
     }
 
     fn is_business_data_empty(&self) -> Result<bool, String> {
@@ -449,7 +491,7 @@ impl Database {
             return Ok(());
         }
 
-        let conn = self.synced_conn()?;
+        let conn = self.local_conn()?;
         let legacy_path = legacy_path.to_string_lossy().to_string();
 
         conn.execute("ATTACH DATABASE ?1 AS legacy", params![legacy_path])
@@ -538,13 +580,14 @@ impl Database {
             "Imported legacy local database into synced database at {:?}",
             self.db_path
         );
-        self.finish_write(())
+        // Network push is deferred to background sync after startup.
+        Ok(())
     }
 
     // ==================== Table Creation ====================
 
-    fn create_tables(&self) -> Result<(), String> {
-        let conn = self.synced_conn()?;
+    fn create_tables_local(&self) -> Result<(), String> {
+        let conn = self.local_conn()?;
 
         conn.execute_batch(
             "
@@ -708,11 +751,11 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         println!("Database tables created");
-        self.finish_write(())
+        Ok(())
     }
 
-    fn run_migrations(&self) -> Result<(), String> {
-        let conn = self.synced_conn()?;
+    fn run_migrations_local(&self) -> Result<(), String> {
+        let conn = self.local_conn()?;
 
         // Check and add missing columns (same migration logic as JS version)
         let migrations = [
@@ -929,7 +972,7 @@ impl Database {
         Self::ensure_multi_pc_hardening(&conn)?;
 
         println!("Database migrations completed");
-        self.finish_write(())
+        Ok(())
     }
 
     fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
