@@ -1,4 +1,5 @@
 use crate::api::{self, Debt, DebtPayment, DebtsPageQuery, NewDebt, NewDebtPayment};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 
 #[path = "../components/dropdown.rs"]
@@ -99,7 +100,18 @@ pub fn DebtsPage() -> impl IntoView {
             })
         }
     };
-    reload();
+
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        let _ = live_tick.get();
+        reload();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
+    });
 
     let payment_items = Signal::derive(move || {
         vec![
@@ -121,13 +133,6 @@ pub fn DebtsPage() -> impl IntoView {
         let _ = search.get();
         let _ = sort_by.get();
         set_current_page.set(1);
-    });
-
-    create_effect(move |_| {
-        let _ = search.get();
-        let _ = sort_by.get();
-        let _ = current_page.get();
-        reload();
     });
 
     let total_items = move || total_count.get();

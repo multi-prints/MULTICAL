@@ -668,6 +668,15 @@ pub async fn update_product(id: i64, updates: &ProductUpdate) -> Result<SuccessR
     .await
 }
 
+/// Relative product stock change — safe when multiple PCs update the same item.
+pub async fn adjust_product_stock(id: i64, delta: i64) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner(
+        "adjust_product_stock",
+        &serde_json::json!({ "id": id, "delta": delta }),
+    )
+    .await
+}
+
 pub async fn get_stock_by_color_size_type(
     color: &str,
     size: &str,
@@ -688,6 +697,15 @@ pub async fn update_stock(id: i64, updates: &serde_json::Value) -> Result<Succes
     tauri_invoke_inner(
         "update_stock",
         &serde_json::json!({ "id": id, "updates": updates }),
+    )
+    .await
+}
+
+/// Atomically add rolls to a stock item (safe across concurrent PCs).
+pub async fn add_stock_rolls(id: i64, rolls: i64) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner(
+        "add_stock_rolls",
+        &serde_json::json!({ "id": id, "rolls": rolls }),
     )
     .await
 }
@@ -769,6 +787,15 @@ pub async fn update_printing_material(
     tauri_invoke_inner(
         "update_printing_material",
         &serde_json::json!({ "id": id, "updates": updates }),
+    )
+    .await
+}
+
+/// Atomically add rolls to a printing material (safe across concurrent PCs).
+pub async fn add_printing_material_rolls(id: i64, rolls: i64) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner(
+        "add_printing_material_rolls",
+        &serde_json::json!({ "id": id, "rolls": rolls }),
     )
     .await
 }

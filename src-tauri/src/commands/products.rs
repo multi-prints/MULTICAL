@@ -40,6 +40,21 @@ pub fn update_product(
     })
 }
 
+/// Relative stock change (e.g. +5 or -2). Safe for concurrent multi-PC use.
+#[tauri::command]
+pub fn adjust_product_stock(
+    db: State<'_, Database>,
+    id: i64,
+    delta: i64,
+) -> Result<SuccessResponse, String> {
+    db.adjust_product_stock(id, delta)?;
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: None,
+    })
+}
+
 #[tauri::command]
 pub fn delete_product(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
     db.delete_product(id)?;

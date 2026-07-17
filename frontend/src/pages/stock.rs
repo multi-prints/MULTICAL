@@ -1,4 +1,5 @@
 use crate::api::{self, NewStockItem, StockItem, StockPageQuery};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 use log::error;
 
@@ -1066,7 +1067,17 @@ pub fn StockPage() -> impl IntoView {
             }
         })
     };
-    reload();
+
+    // Initial load + page changes + multi-PC live refresh (syncs via Turso on each poll)
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let _ = current_page.get();
+        let _ = live_tick.get();
+        reload();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
+    });
 
     let reset_add_modal = move || {
         set_color.set(String::new());
@@ -1103,11 +1114,6 @@ pub fn StockPage() -> impl IntoView {
             }
         })
     };
-
-    create_effect(move |_| {
-        let _ = current_page.get();
-        reload();
-    });
 
     let total_items = move || total_count.get();
     let total_pages = move || {
@@ -1214,15 +1220,8 @@ pub fn StockPage() -> impl IntoView {
     let add_rolls_action = {
         move |id: i64, rolls: i64| {
             leptos::task::spawn_local(async move {
-                if let Some(s) = stock.get().into_iter().find(|x| x.id == id) {
-                    let _ = api::update_stock(
-                        id,
-                        &serde_json::json!({
-                            "rolls": s.rolls + rolls,
-                            "total_metres": s.total_metres + rolls as f64 * s.metres_per_roll
-                        }),
-                    )
-                    .await;
+                if let Err(e) = api::add_stock_rolls(id, rolls).await {
+                    error!("add_stock_rolls failed: {}", e);
                 }
                 reload();
             });

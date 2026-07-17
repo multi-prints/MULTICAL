@@ -2,6 +2,7 @@ use leptos::prelude::*;
 
 mod api;
 mod app;
+mod auto_refresh;
 
 fn main() {
     console_log::init_with_level(log::Level::Debug).ok();

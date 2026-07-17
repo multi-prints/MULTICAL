@@ -1,5 +1,6 @@
 use super::stock_page::get_hex as stock_color_hex;
 use crate::api::{self, NewDebt, NewSale, Product, Sale, SalesPageQuery, StockItem};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 use log::error;
 
@@ -277,6 +278,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
 
     let items_per_page = 10u32;
 
+    // Full reload: sales list + product/stock catalogs (for sale form dropdowns)
     let reload = {
         let ss = set_sales;
         let sp = set_products;
@@ -321,7 +323,60 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             })
         }
     };
-    reload();
+
+    // Lightweight poll: sales list only (avoids re-fetching catalogs every tick)
+    let reload_list = {
+        let ss = set_sales;
+        let tt = set_today_total;
+        let ar = set_all_revenue;
+        let psc = set_product_sales_count;
+        let tc = set_total_count;
+        let search_r = search;
+        let sort_r = sort_by;
+        let page_r = current_page;
+        move || {
+            leptos::task::spawn_local({
+                let ss = ss;
+                let tt = tt;
+                let ar = ar;
+                let psc = psc;
+                let tc = tc;
+                let query = SalesPageQuery {
+                    search: Some(search_r.get()),
+                    sort_by: Some(sort_r.get()),
+                    page: Some(page_r.get()),
+                    per_page: Some(items_per_page),
+                };
+                async move {
+                    if let Ok(page) = api::get_sales_page(&query).await {
+                        tt.set(page.today_total);
+                        ar.set(page.all_revenue);
+                        psc.set(page.product_sales_count);
+                        tc.set(page.total_count as u32);
+                        ss.set(page.items);
+                    }
+                }
+            })
+        }
+    };
+
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        reload();
+    });
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let tick = live_tick.get();
+        if tick == 0 {
+            return;
+        }
+        reload_list();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
+    });
 
     // Dropdown item signals
     let stock_dropdown_items = Signal::derive(move || {
@@ -743,13 +798,6 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         let _ = search.get();
         let _ = sort_by.get();
         set_current_page.set(1);
-    });
-
-    create_effect(move |_| {
-        let _ = search.get();
-        let _ = sort_by.get();
-        let _ = current_page.get();
-        reload();
     });
 
     // Pagination

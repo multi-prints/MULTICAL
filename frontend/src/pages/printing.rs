@@ -2,6 +2,7 @@ use crate::api::{
     self, NewDebt, NewPrintingMaterial, NewServiceTransaction, PrintingMaterial, PrintingPageQuery,
     ServiceTransaction,
 };
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 
 #[path = "../components/dropdown.rs"]
@@ -114,7 +115,63 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             })
         }
     };
-    reload();
+
+    // Lightweight poll: jobs page only (materials catalog reloads on full reload)
+    let reload_list = {
+        let sj = set_jobs;
+        let ste = set_today_earnings;
+        let stjc = set_total_jobs_count;
+        let smu = set_material_used;
+        let strv = set_total_revenue;
+        let stc = set_total_count;
+        let search_r = search;
+        let sort_r = sort_by;
+        let page_r = current_page;
+        move || {
+            leptos::task::spawn_local({
+                let sj = sj;
+                let ste = ste;
+                let stjc = stjc;
+                let smu = smu;
+                let strv = strv;
+                let stc = stc;
+                let query = PrintingPageQuery {
+                    search: Some(search_r.get()),
+                    sort_by: Some(sort_r.get()),
+                    page: Some(page_r.get()),
+                    per_page: Some(items_per_page),
+                };
+                async move {
+                    if let Ok(page) = api::get_printing_page(&query).await {
+                        ste.set(page.today_earnings);
+                        stjc.set(page.total_jobs_count as u32);
+                        smu.set(page.material_used);
+                        strv.set(page.total_revenue);
+                        stc.set(page.total_count as u32);
+                        sj.set(page.items);
+                    }
+                }
+            })
+        }
+    };
+
+    create_effect(move |_| {
+        let _ = search.get();
+        let _ = sort_by.get();
+        let _ = current_page.get();
+        reload();
+    });
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let tick = live_tick.get();
+        if tick == 0 {
+            return;
+        }
+        reload_list();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
+    });
 
     // Dropdowns
     let material_items = Signal::derive(move || {
@@ -166,13 +223,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         let _ = search.get();
         let _ = sort_by.get();
         set_current_page.set(1);
-    });
-
-    create_effect(move |_| {
-        let _ = search.get();
-        let _ = sort_by.get();
-        let _ = current_page.get();
-        reload();
     });
 
     // Pagination
@@ -288,14 +338,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             let m = mat.unwrap();
             set_show_add_rolls.set(None);
             leptos::task::spawn_local(async move {
-                let _ = api::update_printing_material(
-                    m.id,
-                    &serde_json::json!({
-                        "rolls": m.rolls + added,
-                        "total_metres": m.total_metres + added as f64 * m.metres_per_roll
-                    }),
-                )
-                .await;
+                let _ = api::add_printing_material_rolls(m.id, added).await;
                 l();
             });
         }

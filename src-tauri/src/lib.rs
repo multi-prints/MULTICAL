@@ -61,6 +61,7 @@ pub fn run() {
             commands::products::get_product,
             commands::products::add_product,
             commands::products::update_product,
+            commands::products::adjust_product_stock,
             commands::products::delete_product,
             // Stock commands
             commands::stock::get_all_stock,
@@ -69,6 +70,7 @@ pub fn run() {
             commands::stock::get_stock_by_color_size_type,
             commands::stock::add_stock,
             commands::stock::update_stock,
+            commands::stock::add_stock_rolls,
             commands::stock::delete_stock,
             // Sales commands
             commands::sales::get_all_sales,
@@ -115,6 +117,7 @@ pub fn run() {
             commands::materials::get_printing_material,
             commands::materials::add_printing_material,
             commands::materials::update_printing_material,
+            commands::materials::add_printing_material_rolls,
             commands::materials::delete_printing_material,
             // App info
             get_app_version,
@@ -169,9 +172,11 @@ fn migrate_from_localstorage(
 
 #[tauri::command]
 fn uninstall_app(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
-    use std::process::Command;
+    // Use compile-time #[cfg] so Unix-only APIs are not type-checked on Windows.
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
 
-    if cfg!(target_os = "windows") {
         // NSIS installs uninstall.exe next to the app binary
         let exe_dir = std::env::current_exe()
             .map_err(|e| format!("Cannot locate app binary: {e}"))?
@@ -188,7 +193,13 @@ fn uninstall_app(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
             .arg("/S")
             .spawn()
             .map_err(|e| format!("Failed to start uninstaller: {e}"))?;
-    } else if cfg!(target_os = "linux") {
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
         // Cannot dpkg -r while app is running (files locked).
         // Write a detached helper script that waits for this process to exit,
         // then runs pkexec dpkg -r, then deletes itself.
@@ -206,7 +217,6 @@ rm -f "$0"
         let script_path = std::env::temp_dir().join("multiprints-uninstall.sh");
         std::fs::write(&script_path, helper).map_err(|e| e.to_string())?;
 
-        use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&script_path)
             .map_err(|e| e.to_string())?
             .permissions();
@@ -221,7 +231,10 @@ rm -f "$0"
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to start uninstall: {e}"))?;
-    } else {
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
         return Err("Uninstall is not supported on this platform".into());
     }
 

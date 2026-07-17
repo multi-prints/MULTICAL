@@ -1,15 +1,66 @@
 use libsql::Builder;
+use rand::Rng;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::models::*;
 
 const TURSO_CONFIG_FILE: &str = "turso.json";
 const SYNC_DB_FILE: &str = "multiprints-sync.db";
-const SYNC_INTERVAL_SECS: u64 = 15;
+/// Background libSQL replica interval (pull/push without blocking UI reads).
+const SYNC_INTERVAL_SECS: u64 = 10;
+/// Minimum gap between forced network syncs on ordinary reads.
+/// Prevents every Tauri invoke from blocking on Turso (was the main lag source).
+const MIN_READ_SYNC_GAP: Duration = Duration::from_secs(8);
+
+/// Collision-resistant positive i64 for multi-PC inserts (avoids AUTOINCREMENT races).
+/// Layout: 42 bits UTC ms + 21 bits random ≈ unique across machines without a central allocator.
+fn new_distributed_id() -> i64 {
+    let ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let rand_bits: u64 = rand::thread_rng().gen::<u32>() as u64 & ((1u64 << 21) - 1);
+    let id = ((ms & ((1u64 << 42) - 1)) << 21) | rand_bits;
+    (id as i64).max(1)
+}
+
+fn product_natural_key(
+    product_type: &str,
+    color: &Option<String>,
+    size: &Option<String>,
+) -> String {
+    format!(
+        "{}|{}|{}",
+        product_type.trim().to_lowercase(),
+        color.as_deref().unwrap_or("").trim().to_lowercase(),
+        size.as_deref().unwrap_or("").trim().to_lowercase()
+    )
+}
+
+fn stock_natural_key(color: &str, size: &str, sticker_type: &str) -> String {
+    format!(
+        "{}|{}|{}",
+        color.trim().to_lowercase(),
+        size.trim(),
+        sticker_type.trim().to_lowercase()
+    )
+}
+
+fn material_natural_key(
+    name: &str,
+    material_type: &str,
+    width: f64,
+    color: &Option<String>,
+) -> String {
+    format!(
+        "{}|{}|{:.4}|{}",
+        name.trim().to_lowercase(),
+        material_type.trim().to_lowercase(),
+        width,
+        color.as_deref().unwrap_or("").trim().to_lowercase()
+    )
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct TursoConfig {
@@ -21,6 +72,8 @@ pub struct Database {
     pub conn: Mutex<Connection>,
     sync_db: Option<Arc<libsql::Database>>,
     db_path: PathBuf,
+    /// Last successful Turso sync — used to throttle read-path network syncs.
+    last_sync_at: Mutex<Option<Instant>>,
 }
 
 fn infer_debt_payment_method(
@@ -105,6 +158,7 @@ impl Database {
             conn: Mutex::new(conn),
             sync_db,
             db_path: active_db_path.clone(),
+            last_sync_at: Mutex::new(None),
         };
 
         db.create_tables()?;
@@ -159,29 +213,54 @@ impl Database {
         if let Some(sync_db) = self.sync_db.clone() {
             tauri::async_runtime::block_on(async move {
                 sync_db.sync().await.map(|_| ()).map_err(|e| e.to_string())
-            })
+            })?;
+            if let Ok(mut last) = self.last_sync_at.lock() {
+                *last = Some(Instant::now());
+            }
+            Ok(())
         } else {
             Ok(())
         }
     }
 
+    /// Pull from Turso when needed. `force` always syncs (writes).
+    /// Ordinary reads only sync if the throttle window has elapsed.
+    /// Read failures never block the UI — local replica stays available offline.
+    fn maybe_sync(&self, force: bool) -> Result<(), String> {
+        if self.sync_db.is_none() {
+            return Ok(());
+        }
+
+        if !force {
+            if let Ok(last) = self.last_sync_at.lock() {
+                if let Some(at) = *last {
+                    if at.elapsed() < MIN_READ_SYNC_GAP {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        self.sync_now_blocking()
+    }
+
+    /// Read path: use local SQLite; occasionally best-effort pull from Turso.
     fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        self.sync_now_blocking().map_err(|e| {
-            format!(
-                "Could not sync with Turso before accessing the database. Check internet connection: {}",
-                e
-            )
-        })?;
+        // Best-effort only — never fail a read because the network is slow.
+        let _ = self.maybe_sync(false);
         self.conn.lock().map_err(|e| e.to_string())
     }
 
+    /// Write path: data is already on disk; force-push to Turso so other PCs see it soon.
     fn finish_write<T>(&self, value: T) -> Result<T, String> {
-        self.sync_now_blocking().map_err(|e| {
-            format!(
-                "Database change was saved locally, but could not sync to Turso. Check internet connection: {}",
+        if let Err(e) = self.maybe_sync(true) {
+            // Local write already succeeded; surface sync failure without losing the save.
+            eprintln!(
+                "Database change was saved locally, but could not sync to Turso: {}",
                 e
-            )
-        })?;
+            );
+            // Still return success so the UI stays responsive offline / on flaky network.
+        }
         Ok(value)
     }
 
@@ -329,6 +408,7 @@ impl Database {
                 size TEXT,
                 selling_price REAL NOT NULL DEFAULT 0,
                 stock INTEGER NOT NULL DEFAULT 0,
+                natural_key TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -342,6 +422,7 @@ impl Database {
                 metres_per_roll REAL NOT NULL DEFAULT 50,
                 total_metres REAL NOT NULL DEFAULT 0,
                 metres_used REAL NOT NULL DEFAULT 0,
+                natural_key TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -433,6 +514,7 @@ impl Database {
                 total_metres REAL NOT NULL DEFAULT 0,
                 metres_used REAL NOT NULL DEFAULT 0,
                 color TEXT,
+                natural_key TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -695,8 +777,226 @@ impl Database {
             }
         }
 
+        // Multi-PC hardening: natural keys, unique indexes, merge pre-existing duplicates
+        Self::ensure_multi_pc_hardening(&conn)?;
+
         println!("Database migrations completed");
         self.finish_write(())
+    }
+
+    fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+        let exists = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| e.to_string())?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .any(|name| name == column);
+        Ok(exists)
+    }
+
+    fn ensure_column(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        alter_sql: &str,
+    ) -> Result<(), String> {
+        if !Self::table_has_column(conn, table, column)? {
+            println!("Adding {} column to {}", column, table);
+            conn.execute_batch(alter_sql).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Natural keys + unique constraints so concurrent multi-PC creates merge instead of duplicating.
+    fn ensure_multi_pc_hardening(conn: &Connection) -> Result<(), String> {
+        Self::ensure_column(
+            conn,
+            "products",
+            "natural_key",
+            "ALTER TABLE products ADD COLUMN natural_key TEXT",
+        )?;
+        Self::ensure_column(
+            conn,
+            "stock",
+            "natural_key",
+            "ALTER TABLE stock ADD COLUMN natural_key TEXT",
+        )?;
+        Self::ensure_column(
+            conn,
+            "printing_materials",
+            "natural_key",
+            "ALTER TABLE printing_materials ADD COLUMN natural_key TEXT",
+        )?;
+
+        // Backfill natural keys from business fields
+        conn.execute_batch(
+            "
+            UPDATE products SET natural_key =
+                lower(trim(product_type)) || '|' ||
+                lower(trim(ifnull(color, ''))) || '|' ||
+                lower(trim(ifnull(size, '')))
+            WHERE natural_key IS NULL OR natural_key = '';
+
+            UPDATE stock SET natural_key =
+                lower(trim(color)) || '|' ||
+                trim(size) || '|' ||
+                lower(trim(sticker_type))
+            WHERE natural_key IS NULL OR natural_key = '';
+
+            UPDATE printing_materials SET natural_key =
+                lower(trim(name)) || '|' ||
+                lower(trim(material_type)) || '|' ||
+                printf('%.4f', width) || '|' ||
+                lower(trim(ifnull(color, '')))
+            WHERE natural_key IS NULL OR natural_key = '';
+            ",
+        )
+        .map_err(|e| e.to_string())?;
+
+        Self::dedupe_by_natural_key(
+            conn,
+            "products",
+            "stock",
+            "SELECT natural_key, MIN(id) AS keeper, COUNT(*) AS c FROM products WHERE natural_key IS NOT NULL AND natural_key != '' GROUP BY natural_key HAVING c > 1",
+            |conn, keeper, dupe| {
+                conn.execute(
+                    "UPDATE products SET
+                        stock = stock + COALESCE((SELECT stock FROM products WHERE id = ?2), 0),
+                        updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?1",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE sales SET product_id = ?1 WHERE product_id = ?2",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM products WHERE id = ?1", params![dupe])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )?;
+
+        Self::dedupe_by_natural_key(
+            conn,
+            "stock",
+            "rolls",
+            "SELECT natural_key, MIN(id) AS keeper, COUNT(*) AS c FROM stock WHERE natural_key IS NOT NULL AND natural_key != '' GROUP BY natural_key HAVING c > 1",
+            |conn, keeper, dupe| {
+                conn.execute(
+                    "UPDATE stock SET
+                        rolls = rolls + COALESCE((SELECT rolls FROM stock WHERE id = ?2), 0),
+                        total_metres = total_metres + COALESCE((SELECT total_metres FROM stock WHERE id = ?2), 0),
+                        metres_used = metres_used + COALESCE((SELECT metres_used FROM stock WHERE id = ?2), 0),
+                        updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?1",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE sales SET stock_id = ?1 WHERE stock_id = ?2",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE service_transactions SET stock_id = ?1 WHERE stock_id = ?2",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM stock WHERE id = ?1", params![dupe])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )?;
+
+        Self::dedupe_by_natural_key(
+            conn,
+            "printing_materials",
+            "rolls",
+            "SELECT natural_key, MIN(id) AS keeper, COUNT(*) AS c FROM printing_materials WHERE natural_key IS NOT NULL AND natural_key != '' GROUP BY natural_key HAVING c > 1",
+            |conn, keeper, dupe| {
+                conn.execute(
+                    "UPDATE printing_materials SET
+                        rolls = rolls + COALESCE((SELECT rolls FROM printing_materials WHERE id = ?2), 0),
+                        total_metres = total_metres + COALESCE((SELECT total_metres FROM printing_materials WHERE id = ?2), 0),
+                        metres_used = metres_used + COALESCE((SELECT metres_used FROM printing_materials WHERE id = ?2), 0),
+                        updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?1",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE service_transactions SET printing_material_id = ?1 WHERE printing_material_id = ?2",
+                    params![keeper, dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "DELETE FROM printing_materials WHERE id = ?1",
+                    params![dupe],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )?;
+
+        // Full unique indexes (all rows backfilled) so INSERT … ON CONFLICT(natural_key) works.
+        conn.execute_batch(
+            "
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_products_natural_key ON products(natural_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_natural_key ON stock(natural_key);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_printing_materials_natural_key ON printing_materials(natural_key);
+            ",
+        )
+        .map_err(|e| e.to_string())?;
+
+        println!("Multi-PC hardening applied (natural keys + unique indexes)");
+        Ok(())
+    }
+
+    /// Merge rows that share a natural_key, keeping the lowest id.
+    fn dedupe_by_natural_key<F>(
+        conn: &Connection,
+        table: &str,
+        _merge_hint: &str,
+        group_sql: &str,
+        mut merge_one: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&Connection, i64, i64) -> Result<(), String>,
+    {
+        let groups: Vec<(String, i64)> = {
+            let mut stmt = conn.prepare(group_sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+
+        for (natural_key, keeper) in groups {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT id FROM {} WHERE natural_key = ?1 AND id != ?2",
+                    table
+                ))
+                .map_err(|e| e.to_string())?;
+            let dupes: Vec<i64> = stmt
+                .query_map(params![natural_key, keeper], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            drop(stmt);
+            for dupe in dupes {
+                merge_one(conn, keeper, dupe)?;
+                println!("Merged duplicate {} row {} into {}", table, dupe, keeper);
+            }
+        }
+        Ok(())
     }
 
     // ==================== Products CRUD ====================
@@ -825,63 +1125,84 @@ impl Database {
         })
     }
 
-    pub fn add_product(&self, product: NewProduct) -> Result<Product, String> {
+    /// Atomically adjust product stock by a relative delta (safe across concurrent PCs).
+    pub fn adjust_product_stock(&self, id: i64, delta: i64) -> Result<(), String> {
+        if delta == 0 {
+            return Ok(());
+        }
         let conn = self.synced_conn()?;
-
-        // Preserve legacy behavior: find existing variant by type/color/size, update stock instead of insert
-        let existing_id: Option<i64> = {
-            let mut stmt = conn
-                .prepare("SELECT id, color, size FROM products WHERE product_type = ?1")
-                .map_err(|e| e.to_string())?;
-            let rows: Vec<(i64, Option<String>, Option<String>)> = stmt
-                .query_map(params![product.product_type], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows.into_iter()
-                .find(|(_, c, s)| c == &product.color && s == &product.size)
-                .map(|(id, _, _)| id)
-        };
-
-        let id = if let Some(id) = existing_id {
+        let updated = if delta > 0 {
             conn.execute(
                 "UPDATE products SET stock = stock + ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-                params![product.stock, id],
-            ).map_err(|e| e.to_string())?;
-            id
+                params![delta, id],
+            )
+            .map_err(|e| e.to_string())?
         } else {
+            let need = -delta;
             conn.execute(
-                "INSERT INTO products (name, product_type, color, size, selling_price, stock) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![product.name, product.product_type, product.color, product.size, product.selling_price, product.stock],
-            ).map_err(|e| e.to_string())?;
-            conn.last_insert_rowid()
+                "UPDATE products SET stock = stock + ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2 AND stock >= ?3",
+                params![delta, id, need],
+            )
+            .map_err(|e| e.to_string())?
         };
+        if updated == 0 {
+            return Err(if delta < 0 {
+                "Insufficient product stock or product was not found.".into()
+            } else {
+                "Product was not found.".into()
+            });
+        }
+        self.finish_write(())
+    }
 
-        // IMPORTANT: do not call self.get_product(id) here while holding the mutex,
-        // because get_product() also locks the same mutex and deadlocks the UI.
-        let product = conn.query_row(
-            "SELECT id, name, product_type, color, size, selling_price, stock, created_at, updated_at FROM products WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(Product {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    product_type: row.get(2)?,
-                    color: row.get(3)?,
-                    size: row.get(4)?,
-                    selling_price: row.get(5)?,
-                    stock: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            },
-        ).map_err(|e| e.to_string())?;
+    pub fn add_product(&self, product: NewProduct) -> Result<Product, String> {
+        let conn = self.synced_conn()?;
+        let natural_key = product_natural_key(&product.product_type, &product.color, &product.size);
+        let candidate_id = new_distributed_id();
+
+        // Upsert by natural key: concurrent PCs adding the same variant merge stock instead of duplicating
+        conn.execute(
+            "INSERT INTO products (id, name, product_type, color, size, selling_price, stock, natural_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(natural_key) DO UPDATE SET
+                stock = stock + excluded.stock,
+                name = CASE WHEN length(excluded.name) > 0 THEN excluded.name ELSE name END,
+                selling_price = CASE WHEN excluded.selling_price > 0 THEN excluded.selling_price ELSE selling_price END,
+                updated_at = CURRENT_TIMESTAMP",
+            params![
+                candidate_id,
+                product.name,
+                product.product_type,
+                product.color,
+                product.size,
+                product.selling_price,
+                product.stock,
+                natural_key
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        // IMPORTANT: resolve by natural_key (conflict keeps the existing id)
+        let product = conn
+            .query_row(
+                "SELECT id, name, product_type, color, size, selling_price, stock, created_at, updated_at
+                 FROM products WHERE natural_key = ?1",
+                params![natural_key],
+                |row| {
+                    Ok(Product {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        product_type: row.get(2)?,
+                        color: row.get(3)?,
+                        size: row.get(4)?,
+                        selling_price: row.get(5)?,
+                        stock: row.get(6)?,
+                        created_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
         self.finish_write(product)
     }
 
@@ -891,6 +1212,7 @@ impl Database {
         let mut sql = String::from("UPDATE products SET ");
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut first = true;
+        let mut touches_identity = false;
 
         if let Some(v) = updates.name {
             if !first {
@@ -907,6 +1229,7 @@ impl Database {
             sql.push_str("product_type = ?");
             params.push(Box::new(v));
             first = false;
+            touches_identity = true;
         }
         if let Some(v) = updates.color {
             if !first {
@@ -915,6 +1238,7 @@ impl Database {
             sql.push_str("color = ?");
             params.push(Box::new(v));
             first = false;
+            touches_identity = true;
         }
         if let Some(v) = updates.size {
             if !first {
@@ -923,6 +1247,7 @@ impl Database {
             sql.push_str("size = ?");
             params.push(Box::new(v));
             first = false;
+            touches_identity = true;
         }
         if let Some(v) = updates.selling_price {
             if !first {
@@ -951,6 +1276,24 @@ impl Database {
             params.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())
             .map_err(|e| e.to_string())?;
+
+        if touches_identity {
+            // Keep natural_key in sync so multi-PC upserts still match
+            conn.execute(
+                "UPDATE products SET natural_key =
+                    lower(trim(product_type)) || '|' ||
+                    lower(trim(ifnull(color, ''))) || '|' ||
+                    lower(trim(ifnull(size, '')))
+                 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| {
+                format!(
+                    "Could not update product identity (another product may already use that type/color/size): {}",
+                    e
+                )
+            })?;
+        }
         self.finish_write(())
     }
 
@@ -1103,11 +1446,33 @@ impl Database {
         })
     }
 
+    /// Atomically add rolls (and metres) to an existing stock row.
+    pub fn add_stock_rolls(&self, id: i64, rolls: i64) -> Result<(), String> {
+        if rolls <= 0 {
+            return Err("Rolls to add must be greater than zero.".into());
+        }
+        let conn = self.synced_conn()?;
+        let updated = conn
+            .execute(
+                "UPDATE stock SET
+                    rolls = rolls + ?1,
+                    total_metres = total_metres + (?1 * metres_per_roll),
+                    updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?2",
+                params![rolls, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Stock item was not found.".into());
+        }
+        self.finish_write(())
+    }
+
     pub fn add_stock(&self, item: NewStockItem) -> Result<StockItem, String> {
         let conn = self.synced_conn()?;
 
         let base_metres_per_roll = 50.0_f64;
-        let (metres_per_roll, total_metres) = if item.sticker_type == "reflective" {
+        let (metres_per_roll, add_metres) = if item.sticker_type == "reflective" {
             if let Some(custom) = item.custom_metres_per_roll {
                 (custom, item.rolls as f64 * custom)
             } else {
@@ -1123,31 +1488,59 @@ impl Database {
             )
         };
 
-        conn.execute(
-            "INSERT INTO stock (color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![item.color, item.size, item.sticker_type, item.rolls, metres_per_roll, total_metres],
-        ).map_err(|e| e.to_string())?;
+        let natural_key = stock_natural_key(&item.color, &item.size, &item.sticker_type);
+        let candidate_id = new_distributed_id();
 
-        let id = conn.last_insert_rowid();
-        // IMPORTANT: do not call self.get_stock(id) here while holding the mutex,
-        // because get_stock() also locks the same mutex and deadlocks the UI.
-        let stock_item = conn.query_row(
-            "SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at FROM stock WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(StockItem {
-                    id: row.get(0)?, color: row.get(1)?, size: row.get(2)?,
-                    sticker_type: row.get(3)?, rolls: row.get(4)?,
-                    metres_per_roll: row.get(5)?, total_metres: row.get(6)?,
-                    metres_used: row.get(7)?, created_at: row.get(8)?, updated_at: row.get(9)?,
-                })
-            },
-        ).map_err(|e| e.to_string())?;
+        // Upsert by natural key — concurrent multi-PC stock adds accumulate on one row
+        conn.execute(
+            "INSERT INTO stock (id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, natural_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)
+             ON CONFLICT(natural_key) DO UPDATE SET
+                rolls = rolls + excluded.rolls,
+                total_metres = total_metres + excluded.total_metres,
+                updated_at = CURRENT_TIMESTAMP",
+            params![
+                candidate_id,
+                item.color,
+                item.size,
+                item.sticker_type,
+                item.rolls,
+                metres_per_roll,
+                add_metres,
+                natural_key
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let stock_item = conn
+            .query_row(
+                "SELECT id, color, size, sticker_type, rolls, metres_per_roll, total_metres, metres_used, created_at, updated_at
+                 FROM stock WHERE natural_key = ?1",
+                params![natural_key],
+                |row| {
+                    Ok(StockItem {
+                        id: row.get(0)?,
+                        color: row.get(1)?,
+                        size: row.get(2)?,
+                        sticker_type: row.get(3)?,
+                        rolls: row.get(4)?,
+                        metres_per_roll: row.get(5)?,
+                        total_metres: row.get(6)?,
+                        metres_used: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
         self.finish_write(stock_item)
     }
 
     pub fn update_stock(&self, id: i64, updates: StockUpdate) -> Result<(), String> {
         let conn = self.synced_conn()?;
+
+        let touches_identity =
+            updates.color.is_some() || updates.size.is_some() || updates.sticker_type.is_some();
 
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1193,6 +1586,21 @@ impl Database {
             params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())
             .map_err(|e| e.to_string())?;
+
+        if touches_identity {
+            conn.execute(
+                "UPDATE stock SET natural_key =
+                    lower(trim(color)) || '|' || trim(size) || '|' || lower(trim(sticker_type))
+                 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| {
+                format!(
+                    "Could not update stock identity (another row may already use that color/size/type): {}",
+                    e
+                )
+            })?;
+        }
         self.finish_write(())
     }
 
@@ -1303,12 +1711,13 @@ impl Database {
                 }
             }
 
+            let id = new_distributed_id();
             conn.execute(
-                "INSERT INTO sales (type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp],
+                "INSERT INTO sales (id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![id, sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp],
             ).map_err(|e| e.to_string())?;
 
-            Ok(conn.last_insert_rowid())
+            Ok(id)
         })();
 
         let id = match insert_result {
@@ -1613,19 +2022,19 @@ impl Database {
             None
         };
 
+        let id = new_distributed_id();
         conn.execute(
-            "INSERT INTO debts (customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![debt.customer_name, debt.phone, debt.amount, paid_amount, remaining_amount, debt.due_date, debt.description, status, debt.sale_id, debt.service_transaction_id, paid_at, created_at],
+            "INSERT INTO debts (id, customer_name, phone, amount, paid_amount, remaining_amount, due_date, description, status, sale_id, service_transaction_id, paid_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![id, debt.customer_name, debt.phone, debt.amount, paid_amount, remaining_amount, debt.due_date, debt.description, status, debt.sale_id, debt.service_transaction_id, paid_at, created_at],
         ).map_err(|e| e.to_string())?;
-
-        let id = conn.last_insert_rowid();
 
         if paid_amount > 0.0 {
             let payment_method =
                 infer_debt_payment_method(&conn, debt.sale_id, debt.service_transaction_id);
+            let payment_id = new_distributed_id();
             conn.execute(
-                "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, paid_amount, payment_method, Some("Initial payment".to_string()), created_at.clone()],
+                "INSERT INTO debt_payments (id, debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![payment_id, id, paid_amount, payment_method, Some("Initial payment".to_string()), created_at.clone()],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -1723,9 +2132,10 @@ impl Database {
 
         if settlement_amount > 0.0 {
             let payment_method = infer_debt_payment_method(&conn, sale_id, transaction_id);
+            let payment_id = new_distributed_id();
             conn.execute(
-                "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, settlement_amount, payment_method, Some("Marked as paid".to_string()), paid_at.clone()],
+                "INSERT INTO debt_payments (id, debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![payment_id, id, settlement_amount, payment_method, Some("Marked as paid".to_string()), paid_at.clone()],
             ).map_err(|e| e.to_string())?;
         }
 
@@ -2066,12 +2476,11 @@ impl Database {
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
 
+        let id = new_distributed_id();
         conn.execute(
-            "INSERT INTO debt_payments (debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![payment.debt_id, payment.amount, payment.payment_method, payment.notes, payment_date],
+            "INSERT INTO debt_payments (id, debt_id, amount, payment_method, notes, payment_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, payment.debt_id, payment.amount, payment.payment_method, payment.notes, payment_date],
         ).map_err(|e| e.to_string())?;
-
-        let id = conn.last_insert_rowid();
 
         // Update debt paid_amount, remaining_amount, status
         let debt: (f64, f64) = conn
@@ -2233,13 +2642,13 @@ impl Database {
         let created_at = chrono::Local::now()
             .format("%Y-%m-%dT%H:%M:%S%.3f")
             .to_string();
+        let id = new_distributed_id();
 
         conn.execute(
-            "INSERT INTO services (name, description, price, unit, is_active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![service.name, service.description, service.price.unwrap_or(0.0), service.unit, service.is_active, created_at],
+            "INSERT INTO services (id, name, description, price, unit, is_active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, service.name, service.description, service.price.unwrap_or(0.0), service.unit, service.is_active, created_at],
         ).map_err(|e| e.to_string())?;
 
-        let id = conn.last_insert_rowid();
         // IMPORTANT: do not call self.get_service(id) here while holding the mutex,
         // because get_service() also locks the same mutex and deadlocks the UI.
         let service = conn.query_row(
@@ -2385,53 +2794,64 @@ impl Database {
             .to_string();
         let amount = tx.amount.unwrap_or(tx.quantity * tx.price.unwrap_or(0.0));
 
-        conn.execute(
-            "INSERT INTO service_transactions (service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            params![tx.service_id, tx.service_name, tx.quantity, tx.price.unwrap_or(0.0), amount, tx.payment_method, tx.customer_name, tx.notes, tx.stock_id, tx.stock_metres_used, tx.material_size, tx.material_type, tx.printing_material_id, tx.is_debt, timestamp],
-        ).map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| e.to_string())?;
 
-        let id = conn.last_insert_rowid();
-
-        // Auto-deduct stock metres_used if stock was used
-        // IMPORTANT: use inline queries to avoid deadlocking the mutex
-        if let (Some(stock_id), stock_metres) = (tx.stock_id, tx.stock_metres_used) {
-            if stock_metres > 0.0 {
-                let current_metres_used: Option<f64> = conn
-                    .query_row(
-                        "SELECT metres_used FROM stock WHERE id = ?1",
-                        params![stock_id],
-                        |row| row.get(0),
-                    )
-                    .ok();
-                if let Some(current_used) = current_metres_used {
-                    let new_metres_used = current_used + stock_metres;
-                    conn.execute(
-                        "UPDATE stock SET metres_used = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-                        params![new_metres_used, stock_id],
-                    ).map_err(|e| e.to_string())?;
+        let insert_result = (|| -> Result<i64, String> {
+            // Auto-deduct stock / materials first so concurrent PCs cannot oversell metres
+            if let (Some(stock_id), stock_metres) = (tx.stock_id, tx.stock_metres_used) {
+                if stock_metres > 0.0 {
+                    let updated = conn
+                        .execute(
+                            "UPDATE stock SET metres_used = metres_used + ?1, updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?2 AND (total_metres - metres_used) >= ?1",
+                            params![stock_metres, stock_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if updated == 0 {
+                        return Err("Insufficient stock metres or stock item was not found.".into());
+                    }
                 }
             }
-        }
 
-        if let Some(material_id) = tx.printing_material_id {
-            if tx.stock_metres_used > 0.0 {
-                let current_metres_used: Option<f64> = conn
-                    .query_row(
-                        "SELECT metres_used FROM printing_materials WHERE id = ?1",
-                        params![material_id],
-                        |row| row.get(0),
-                    )
-                    .ok();
-                if let Some(current_used) = current_metres_used {
-                    let new_metres_used = current_used + tx.stock_metres_used;
-                    conn.execute(
-                        "UPDATE printing_materials SET metres_used = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-                        params![new_metres_used, material_id],
-                    ).map_err(|e| e.to_string())?;
+            if let Some(material_id) = tx.printing_material_id {
+                if tx.stock_metres_used > 0.0 {
+                    let updated = conn
+                        .execute(
+                            "UPDATE printing_materials SET metres_used = metres_used + ?1, updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?2 AND (total_metres - metres_used) >= ?1",
+                            params![tx.stock_metres_used, material_id],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if updated == 0 {
+                        return Err(
+                            "Insufficient printing material or material was not found.".into()
+                        );
+                    }
                 }
             }
-        }
 
+            let id = new_distributed_id();
+            conn.execute(
+                "INSERT INTO service_transactions (id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![id, tx.service_id, tx.service_name, tx.quantity, tx.price.unwrap_or(0.0), amount, tx.payment_method, tx.customer_name, tx.notes, tx.stock_id, tx.stock_metres_used, tx.material_size, tx.material_type, tx.printing_material_id, tx.is_debt, timestamp],
+            ).map_err(|e| e.to_string())?;
+
+            Ok(id)
+        })();
+
+        let id = match insert_result {
+            Ok(id) => {
+                conn.execute_batch("COMMIT;").map_err(|e| e.to_string())?;
+                id
+            }
+            Err(err) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(err);
+            }
+        };
+
+        drop(conn);
         self.finish_write(ServiceTransaction {
             id,
             service_id: tx.service_id,
@@ -2810,29 +3230,81 @@ impl Database {
         let total_metres = material
             .total_metres
             .unwrap_or(material.rolls as f64 * material.metres_per_roll);
+        let natural_key = material_natural_key(
+            &material.name,
+            &material.material_type,
+            material.width,
+            &material.color,
+        );
+        let candidate_id = new_distributed_id();
 
         conn.execute(
-            "INSERT INTO printing_materials (name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
-            params![material.name, material.material_type, material.width, material.rolls, material.metres_per_roll, total_metres, material.color],
-        ).map_err(|e| e.to_string())?;
+            "INSERT INTO printing_materials (id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, natural_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)
+             ON CONFLICT(natural_key) DO UPDATE SET
+                rolls = rolls + excluded.rolls,
+                total_metres = total_metres + excluded.total_metres,
+                metres_per_roll = excluded.metres_per_roll,
+                updated_at = CURRENT_TIMESTAMP",
+            params![
+                candidate_id,
+                material.name,
+                material.material_type,
+                material.width,
+                material.rolls,
+                material.metres_per_roll,
+                total_metres,
+                material.color,
+                natural_key
+            ],
+        )
+        .map_err(|e| e.to_string())?;
 
-        let id = conn.last_insert_rowid();
-        // IMPORTANT: do not call self.get_printing_material(id) here while holding the mutex,
-        // because get_printing_material() also locks the same mutex and deadlocks the UI.
-        let printing_material = conn.query_row(
-            "SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at FROM printing_materials WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(PrintingMaterial {
-                    id: row.get(0)?, name: row.get(1)?, material_type: row.get(2)?,
-                    width: row.get(3)?, rolls: row.get(4)?,
-                    metres_per_roll: row.get(5)?, total_metres: row.get(6)?,
-                    metres_used: row.get(7)?, color: row.get(8)?,
-                    created_at: row.get(9)?, updated_at: row.get(10)?,
-                })
-            },
-        ).map_err(|e| e.to_string())?;
+        let printing_material = conn
+            .query_row(
+                "SELECT id, name, material_type, width, rolls, metres_per_roll, total_metres, metres_used, color, created_at, updated_at
+                 FROM printing_materials WHERE natural_key = ?1",
+                params![natural_key],
+                |row| {
+                    Ok(PrintingMaterial {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        material_type: row.get(2)?,
+                        width: row.get(3)?,
+                        rolls: row.get(4)?,
+                        metres_per_roll: row.get(5)?,
+                        total_metres: row.get(6)?,
+                        metres_used: row.get(7)?,
+                        color: row.get(8)?,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
         self.finish_write(printing_material)
+    }
+
+    /// Atomically add rolls (and metres) to an existing printing material row.
+    pub fn add_printing_material_rolls(&self, id: i64, rolls: i64) -> Result<(), String> {
+        if rolls <= 0 {
+            return Err("Rolls to add must be greater than zero.".into());
+        }
+        let conn = self.synced_conn()?;
+        let updated = conn
+            .execute(
+                "UPDATE printing_materials SET
+                    rolls = rolls + ?1,
+                    total_metres = total_metres + (?1 * metres_per_roll),
+                    updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?2",
+                params![rolls, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Printing material was not found.".into());
+        }
+        self.finish_write(())
     }
 
     pub fn update_printing_material(
@@ -2841,6 +3313,11 @@ impl Database {
         updates: PrintingMaterialUpdate,
     ) -> Result<(), String> {
         let conn = self.synced_conn()?;
+        let touches_identity = updates.name.is_some()
+            || updates.material_type.is_some()
+            || updates.width.is_some()
+            || updates.color.is_some();
+
         let mut set_clauses = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -2892,6 +3369,24 @@ impl Database {
             params_vec.iter().map(|p| p.as_ref()).collect();
         conn.execute(&sql, param_refs.as_slice())
             .map_err(|e| e.to_string())?;
+
+        if touches_identity {
+            conn.execute(
+                "UPDATE printing_materials SET natural_key =
+                    lower(trim(name)) || '|' ||
+                    lower(trim(material_type)) || '|' ||
+                    printf('%.4f', width) || '|' ||
+                    lower(trim(ifnull(color, '')))
+                 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| {
+                format!(
+                    "Could not update material identity (another material may already use that name/type/width/color): {}",
+                    e
+                )
+            })?;
+        }
         self.finish_write(())
     }
 
@@ -2935,9 +3430,10 @@ impl Database {
         permissions: &str,
     ) -> Result<(), String> {
         let conn = self.synced_conn()?;
+        let id = new_distributed_id();
         conn.execute(
-            "INSERT INTO users (username, password_hash, role, permissions) VALUES (?1, ?2, ?3, ?4)",
-            params![username, password_hash, role, permissions],
+            "INSERT INTO users (id, username, password_hash, role, permissions) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, username, password_hash, role, permissions],
         ).map_err(|e| e.to_string())?;
         self.finish_write(())
     }

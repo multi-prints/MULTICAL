@@ -1,4 +1,5 @@
 use crate::api::{self, ProductsPageQuery, SuccessResponse};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 
 #[component]
@@ -52,7 +53,16 @@ pub fn ProductsPage() -> impl IntoView {
             });
         }
     };
-    refetch();
+
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let _ = page.get();
+        let _ = live_tick.get();
+        refetch();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
+    });
 
     #[allow(clippy::type_complexity)]
     let add_action: Action<
@@ -100,22 +110,9 @@ pub fn ProductsPage() -> impl IntoView {
             async move { api::delete_product(id).await }
         });
     let stock_action: Action<(i64, i64, i64), Result<SuccessResponse, String>, SyncStorage> =
-        Action::new_unsync(move |(pid, add_qty, current): &(i64, i64, i64)| {
-            let (pid, add_qty, current) = (*pid, *add_qty, *current);
-            async move {
-                api::update_product(
-                    pid,
-                    &crate::api::ProductUpdate {
-                        stock: Some(current + add_qty),
-                        name: None,
-                        product_type: None,
-                        color: None,
-                        size: None,
-                        selling_price: None,
-                    },
-                )
-                .await
-            }
+        Action::new_unsync(move |(pid, add_qty, _current): &(i64, i64, i64)| {
+            let (pid, add_qty) = (*pid, *add_qty);
+            async move { api::adjust_product_stock(pid, add_qty).await }
         });
 
     let add_ver = add_action.version();
@@ -188,11 +185,6 @@ pub fn ProductsPage() -> impl IntoView {
             stock_action.dispatch(stock_payload.get_value());
             set_stock_trigger.set(false);
         }
-    });
-
-    create_effect(move |_| {
-        let _ = page.get();
-        refetch();
     });
 
     let total = move || total_stock_units.get();

@@ -85,6 +85,19 @@ export TURSO_AUTH_TOKEN="your-turso-auth-token"
 
 When Turso is configured, the app uses a synced local replica per PC and syncs with the shared Turso database.
 
+### Multi-PC live updates
+With Turso enabled on every PC:
+- Each open page auto-refreshes about every **12 seconds** (stock, products, sales, printing, debts, dashboard)
+- Writes push to Turso immediately; reads use the local replica and pull from Turso at most every ~8s (plus background replica sync)
+- Stock and product quantity changes use **relative atomic updates** so concurrent tills do not overwrite each other
+- Sales and printing jobs refuse insufficient stock/material instead of going negative
+
+### Multi-PC conflict prevention
+- **Natural keys** on products (`type|color|size`), stock (`color|size|type`), and printing materials so the same item cannot be created twice
+- **Upserts** on add: concurrent “add stock/product” on different PCs merges quantities instead of duplicating rows
+- **Distributed IDs** for new sales, debts, payments, services, and other inserts (not plain AUTOINCREMENT), so two PCs creating rows at once do not clash on primary keys
+- On upgrade, existing duplicate product/stock/material rows are merged automatically
+
 ### Run in development
 ```bash
 cargo tauri dev

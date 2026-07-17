@@ -3,6 +3,7 @@
 #![allow(clippy::duplicate_mod)]
 
 use crate::api::{self, LoginResponse, UserInfo};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use chrono::Timelike;
 use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Interval;
@@ -202,6 +203,7 @@ pub fn App() -> impl IntoView {
                                 overdue_debts=Signal::derive(move || overdue_debts.get())
                                 available_update=Signal::derive(move || available_update.get())
                                 show_debt_notifications=role == "admin"
+                                set_page=sp
                             />
                             <main class="flex-1 overflow-y-auto p-6">
                                 {move || match p.get() {
@@ -295,6 +297,7 @@ fn Header(
     overdue_debts: Signal<Vec<crate::api::Debt>>,
     available_update: Signal<Option<api::UpdateResult>>,
     show_debt_notifications: bool,
+    set_page: WriteSignal<Page>,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (initial_notified, set_initial_notified) = signal(false);
@@ -310,6 +313,17 @@ fn Header(
         debt_count + usize::from(available_update.get().is_some())
     };
 
+    let overdue_total = move || {
+        if !show_debt_notifications {
+            return 0.0;
+        }
+        overdue_debts
+            .get()
+            .iter()
+            .map(|d| d.remaining_amount)
+            .sum::<f64>()
+    };
+
     let install_update = move |_| {
         if installing_update.get() {
             return;
@@ -320,6 +334,11 @@ fn Header(
                 set_installing_update.set(false);
             }
         });
+    };
+
+    let go_to_debts = move |_| {
+        set_open.set(false);
+        set_page.set(Page::Debts);
     };
 
     Effect::new(move |_| {
@@ -390,12 +409,18 @@ fn Header(
             <div class="flex items-center gap-2">
                 {move || if notification_count() > 0 || show_debt_notifications { view! {
                     <div class="relative" on:click=move |e| e.stop_propagation()>
-                        <button class="relative p-2 rounded hover:bg-[#F5F5F5] text-[#525252] hover:text-[#0A0A0A] transition-all duration-100" on:click=move |_| set_open.update(|v| *v = !*v)>
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <button
+                            type="button"
+                            class=move || if open.get() { "notif-bell is-open" } else { "notif-bell" }
+                            aria-label="Notifications"
+                            aria-expanded=move || open.get().to_string()
+                            on:click=move |_| set_open.update(|v| *v = !*v)
+                        >
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
                             </svg>
                             {move || if notification_count() > 0 { view! {
-                                <span class="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-medium">
+                                <span class="notification-badge">
                                     {move || {
                                         let count = notification_count();
                                         if count > 99 { "99+".to_string() } else { count.to_string() }
@@ -404,92 +429,136 @@ fn Header(
                             }.into_any() } else { ().into_any() }}
                         </button>
                         {move || if open.get() { view! {
-                            <div class="absolute right-0 mt-2 w-[360px] bg-white border border-[#E5E5E5] shadow-lg z-50 overflow-hidden">
-                                <div class="px-4 py-3 border-b border-[#F0F0F0] flex items-center justify-between">
-                                    <h3 class="text-sm font-semibold text-[#0A0A0A]">"Notifications"</h3>
-                                    <span class="text-xs text-[#737373]">
+                            <div class="notification-dropdown" role="menu" aria-label="Notifications">
+                                <div class="notification-dropdown-header">
+                                    <h3>"Notifications"</h3>
+                                    <span class=move || {
+                                        if notification_count() > 0 {
+                                            "notif-count-pill has-items".to_string()
+                                        } else {
+                                            "notif-count-pill".to_string()
+                                        }
+                                    }>
                                         {move || {
                                             let count = notification_count();
-                                            if count == 0 { "No notifications".to_string() }
-                                            else if count == 1 { "1 notification".to_string() }
-                                            else { format!("{} notifications", count) }
+                                            if count == 0 {
+                                                "All clear".to_string()
+                                            } else if count == 1 {
+                                                "1 new".to_string()
+                                            } else {
+                                                format!("{} new", count)
+                                            }
                                         }}
                                     </span>
                                 </div>
-                                <div class="max-h-[320px] overflow-y-auto">
+                                <div class="notification-dropdown-list">
                                     {move || {
                                         let items = if show_debt_notifications {
                                             overdue_debts.get()
                                         } else {
                                             Vec::new()
                                         };
-                                        if items.is_empty() && available_update.get().is_none() {
+                                        let has_update = available_update.get().is_some();
+                                        if items.is_empty() && !has_update {
                                             view! {
-                                                <div class="p-6 text-center">
-                                                    <div class="w-12 h-12 mx-auto mb-3 bg-green-100 flex items-center justify-center rounded-full">
-                                                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                                <div class="notification-empty">
+                                                    <div class="notification-empty-icon">
+                                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                                                        </svg>
                                                     </div>
-                                                    <p class="text-sm text-gray-500">"No notifications right now."</p>
+                                                    <p class="notification-empty-title">"You're all caught up"</p>
+                                                    <p class="notification-empty-sub">"Overdue debts and app updates will show up here."</p>
                                                 </div>
                                             }.into_any()
                                         } else {
                                             let mut views = Vec::new();
+
+                                            if show_debt_notifications && !items.is_empty() {
+                                                let total = overdue_total();
+                                                views.push(view! {
+                                                    <div class="notif-summary">
+                                                        <span class="notif-summary-label">"Overdue total"</span>
+                                                        <span class="notif-summary-value">{format!("KSh {:.0}", total)}</span>
+                                                    </div>
+                                                }.into_any());
+                                            }
+
                                             if let Some(update) = available_update.get() {
                                                 let version_text = update
                                                     .version
                                                     .clone()
-                                                    .map(|version| format!("Version {} is ready to install.", version))
+                                                    .map(|version| format!("Version {} is ready to install", version))
                                                     .unwrap_or_else(|| update.message.clone());
                                                 views.push(view! {
-                                                    <button type="button" class="w-full p-3 bg-blue-50 border-l-4 border-blue-500 text-left hover:bg-blue-100 transition-colors disabled:opacity-70" prop:disabled=move || installing_update.get() on:click=install_update>
-                                                        <div class="flex items-start gap-3">
-                                                            <div class="w-8 h-8 bg-blue-100 text-blue-700 flex items-center justify-center rounded-full shrink-0">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                                                                </svg>
+                                                    <button
+                                                        type="button"
+                                                        class="notif-item is-action"
+                                                        prop:disabled=move || installing_update.get()
+                                                        on:click=install_update
+                                                    >
+                                                        <div class="notif-item-icon update">
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                                            </svg>
+                                                        </div>
+                                                        <div class="notif-item-body">
+                                                            <div class="notif-item-top">
+                                                                <p class="notif-item-title">"Update available"</p>
                                                             </div>
-                                                            <div class="min-w-0 flex-1">
-                                                                <p class="text-sm font-medium text-gray-900">"Update available"</p>
-                                                                <p class="text-xs text-gray-600 mt-0.5">{version_text}</p>
-                                                                <p class="text-xs font-medium text-blue-700 mt-1">
-                                                                    {move || if installing_update.get() { "Installing update..." } else { "Click to install" }}
-                                                                </p>
-                                                            </div>
+                                                            <p class="notif-item-meta">{version_text}</p>
+                                                            <p class="notif-item-cta">
+                                                                {move || if installing_update.get() {
+                                                                    "Installing…"
+                                                                } else {
+                                                                    "Install now"
+                                                                }}
+                                                            </p>
                                                         </div>
                                                     </button>
                                                 }.into_any());
                                             }
+
                                             views.extend(items.into_iter().map(|debt| {
                                                 let due = debt.due_date.clone().unwrap_or_default();
                                                 let days_overdue = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
                                                     .ok()
                                                     .map(|d| (chrono::Local::now().date_naive() - d).num_days().max(0))
                                                     .unwrap_or(0);
-                                                let urgency_cls = if days_overdue > 7 {
-                                                    "bg-red-50 border-l-4 border-red-500"
-                                                } else if days_overdue > 3 {
-                                                    "bg-amber-50 border-l-4 border-amber-500"
+                                                let pill_cls = if days_overdue > 7 {
+                                                    "notif-pill hot"
                                                 } else {
-                                                    "bg-yellow-50 border-l-4 border-yellow-500"
+                                                    "notif-pill mild"
                                                 };
-                                                let badge_cls = if days_overdue > 7 {
-                                                    "bg-red-100 text-red-800"
+                                                let due_label = if due.is_empty() {
+                                                    "No due date".to_string()
                                                 } else {
-                                                    "bg-amber-100 text-amber-800"
+                                                    format!("Due {}", due)
+                                                };
+                                                let overdue_label = if days_overdue == 0 {
+                                                    "Due today".to_string()
+                                                } else if days_overdue == 1 {
+                                                    "1 day".to_string()
+                                                } else {
+                                                    format!("{} days", days_overdue)
                                                 };
                                                 view! {
-                                                    <div class=move || format!("p-3 {}", urgency_cls)>
-                                                        <div class="flex items-start justify-between gap-3">
-                                                            <div class="min-w-0 flex-1">
-                                                                <p class="text-sm font-medium text-gray-900 truncate">{debt.customer_name}</p>
-                                                                <p class="text-xs text-gray-600 mt-0.5">{format!("KSh {:.0}", debt.remaining_amount)}</p>
-                                                                {debt.description.clone().map(|desc| view! {
-                                                                    <p class="text-xs text-gray-500 mt-1 truncate">{desc}</p>
-                                                                })}
+                                                    <div class="notif-item">
+                                                        <div class="notif-item-icon debt">
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                            </svg>
+                                                        </div>
+                                                        <div class="notif-item-body">
+                                                            <div class="notif-item-top">
+                                                                <p class="notif-item-title">{debt.customer_name.clone()}</p>
+                                                                <span class=pill_cls.to_string()>{overdue_label}</span>
                                                             </div>
-                                                            <span class=move || format!("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {}", badge_cls)>
-                                                                {format!("{}d overdue", days_overdue)}
-                                                            </span>
+                                                            <p class="notif-item-amount">{format!("KSh {:.0}", debt.remaining_amount)}</p>
+                                                            <p class="notif-item-meta">{due_label}</p>
+                                                            {debt.description.clone().filter(|d| !d.trim().is_empty()).map(|desc| view! {
+                                                                <p class="notif-item-desc">{desc}</p>
+                                                            })}
                                                         </div>
                                                     </div>
                                                 }
@@ -499,6 +568,20 @@ fn Header(
                                         }
                                     }}
                                 </div>
+                                {move || {
+                                    let has_debts = show_debt_notifications && !overdue_debts.get().is_empty();
+                                    if has_debts {
+                                        view! {
+                                            <div class="notification-dropdown-footer">
+                                                <button type="button" on:click=go_to_debts>
+                                                    "View all debts"
+                                                </button>
+                                            </div>
+                                        }.into_any()
+                                    } else {
+                                        ().into_any()
+                                    }
+                                }}
                             </div>
                         }.into_any() } else { ().into_any() }}
                     </div>
@@ -686,12 +769,22 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
         }
     };
 
+    // Initial load + period change for chart; live poll only refreshes summary cards
     load_summary();
-    load_chart();
-
     create_effect(move |_| {
-        chart_period.get();
+        let _ = chart_period.get();
         load_chart();
+    });
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let tick = live_tick.get();
+        if tick == 0 {
+            return;
+        }
+        load_summary();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
     });
 
     let fmt_f = |a: f64| format!("KSh {:.0}", a);

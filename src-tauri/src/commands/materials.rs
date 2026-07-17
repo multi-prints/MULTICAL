@@ -40,6 +40,21 @@ pub fn update_printing_material(
     })
 }
 
+/// Atomically add rolls to a printing material (and metres via metres_per_roll).
+#[tauri::command]
+pub fn add_printing_material_rolls(
+    db: State<'_, Database>,
+    id: i64,
+    rolls: i64,
+) -> Result<SuccessResponse, String> {
+    db.add_printing_material_rolls(id, rolls)?;
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: None,
+    })
+}
+
 #[tauri::command]
 pub fn delete_printing_material(
     db: State<'_, Database>,

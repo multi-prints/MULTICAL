@@ -1,5 +1,6 @@
-use leptos::prelude::*;
 use crate::api::{self, Sale, Debt};
+use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
+use leptos::prelude::*;
 
 #[component]
 pub fn DashboardPage() -> impl IntoView {
@@ -10,21 +11,32 @@ pub fn DashboardPage() -> impl IntoView {
     let (sales_count, set_sales_count) = signal(0i64);
     let (loading, set_loading) = signal(true);
 
-    leptos::task::spawn_local(async move {
-        if let Ok(s) = api::get_all_sales().await {
-            let count = s.len() as i64;
-            let rev: f64 = s.iter().map(|s| s.amount).sum();
-            set_sales.set(s.into_iter().take(10).collect());
-            set_sales_count.set(count);
-            set_total_revenue.set(rev);
-        }
-        if let Ok(d) = api::get_all_debts().await {
-            let pending: Vec<Debt> = d.into_iter().filter(|d| d.status == "pending").collect();
-            let outstanding: f64 = pending.iter().map(|d| d.remaining_amount).sum();
-            set_total_outstanding.set(outstanding);
-            set_debts.set(pending.into_iter().take(10).collect());
-        }
-        set_loading.set(false);
+    let reload = move || {
+        leptos::task::spawn_local(async move {
+            if let Ok(s) = api::get_all_sales().await {
+                let count = s.len() as i64;
+                let rev: f64 = s.iter().map(|s| s.amount).sum();
+                set_sales.set(s.into_iter().take(10).collect());
+                set_sales_count.set(count);
+                set_total_revenue.set(rev);
+            }
+            if let Ok(d) = api::get_all_debts().await {
+                let pending: Vec<Debt> = d.into_iter().filter(|d| d.status == "pending").collect();
+                let outstanding: f64 = pending.iter().map(|d| d.remaining_amount).sum();
+                set_total_outstanding.set(outstanding);
+                set_debts.set(pending.into_iter().take(10).collect());
+            }
+            set_loading.set(false);
+        });
+    };
+
+    let (live_tick, set_live_tick) = signal(0u64);
+    create_effect(move |_| {
+        let _ = live_tick.get();
+        reload();
+    });
+    use_auto_refresh(LIVE_REFRESH_MS, move || {
+        set_live_tick.update(|t| *t = t.wrapping_add(1));
     });
 
     let fmt = |amount: f64| format!("KSh {}", amount);

@@ -50,6 +50,21 @@ pub fn update_stock(
     })
 }
 
+/// Atomically add rolls to a stock item (and metres via metres_per_roll).
+#[tauri::command]
+pub fn add_stock_rolls(
+    db: State<'_, Database>,
+    id: i64,
+    rolls: i64,
+) -> Result<SuccessResponse, String> {
+    db.add_stock_rolls(id, rolls)?;
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: None,
+    })
+}
+
 #[tauri::command]
 pub fn delete_stock(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
     db.delete_stock(id)?;
