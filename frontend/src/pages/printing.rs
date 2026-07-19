@@ -8,6 +8,9 @@ use leptos::prelude::*;
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
+#[path = "../components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
 
 fn format_printing_timestamp(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -72,6 +75,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (conv_phone, set_conv_phone) = signal(String::new());
     let (conv_paid, set_conv_paid) = signal(String::new());
     let (conv_due, set_conv_due) = signal(String::new());
+    let (loading, set_loading) = signal(true);
 
     let reload = {
         let sj = set_jobs;
@@ -81,6 +85,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         let smu = set_material_used;
         let strv = set_total_revenue;
         let stc = set_total_count;
+        let sl = set_loading;
         let search_r = search;
         let sort_r = sort_by;
         let page_r = current_page;
@@ -93,6 +98,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 let smu = smu;
                 let strv = strv;
                 let stc = stc;
+                let sl = sl;
                 let query = PrintingPageQuery {
                     search: Some(search_r.get()),
                     sort_by: Some(sort_r.get()),
@@ -111,6 +117,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     if let Ok(m) = api::get_all_printing_materials().await {
                         sm.set(m);
                     }
+                    sl.set(false);
                 }
             })
         }
@@ -400,184 +407,334 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         });
     };
 
-    view! { <div id="page-printing" class="page-content">
-        <div class="flex items-center justify-between mb-6">
-            <div><h1 class="page-title">"Printing Services"</h1><p class="page-subtitle">"One-way vision, banners, satin, and reflective printing"</p></div>
-            <div class="flex gap-3">
-                {move || if can_manage_materials { view! {
-                    <button class="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 text-sm font-medium hover:bg-gray-50 transition-all"
-                        on:click=move |_| { set_mat_name.set(String::new()); set_mat_width.set(String::new()); set_mat_rolls.set("1".into()); set_mat_mpr.set("50".into()); set_show_add_mat.set(true); }>
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                        "Add Material"</button>
-                }.into_any() } else { ().into_any() }}
-                <button class="flex items-center gap-2 bg-brand-500 text-white px-4 py-2 text-sm font-medium hover:bg-brand-600 transition-all"
-                    on:click=move |_| { set_mat_id.set(None); set_metres_printed.set("1".into()); set_total_price.set(String::new()); set_payment.set("cash".into()); set_customer.set("Walk-in".into()); set_show_record.set(true); }>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    "Record Printing Job"</button>
+    view! {
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div id="page-printing" class="dash">
+                <PageLoading message="Loading printing..."/>
             </div>
-        </div>
-
-        // Stats
-        <div class=move || format!("grid grid-cols-1 gap-4 mb-6 {}", if show_revenue_stats { "md:grid-cols-4" } else { "md:grid-cols-3" })>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Today's Earnings"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", today_earnings.get())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Jobs"</p><p class="text-xl font-bold text-gray-900">{move || total_jobs_count.get()}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Material Used"</p><p class="text-xl font-bold text-gray-900">{move || format!("{}m", material_used.get() as u64)}</p></div>
-            {move || if show_revenue_stats { view! {
-                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Revenue"</p><p class="text-xl font-bold text-gray-900">{move || format!("KSh {:.0}", total_revenue.get())}</p></div>
-            }.into_any() } else { ().into_any() }}
-        </div>
-
-        // Materials Inventory
-        <div class="grid grid-cols-1 gap-6 mb-6">
-            <div class="dashboard-panel overflow-hidden">
-                <div class="p-5 border-b border-gray-100"><h2 class="dashboard-panel-title">"Printing Materials Inventory"</h2><p class="text-xs text-gray-500 mt-1">"Materials used for printing (Banner, Satin, Canvas, etc.)"</p></div>
-                <div class="p-5">
-                    <div class="space-y-3">
-                        {move || {
-                            let mats = materials.get();
-                            if mats.is_empty() {
-                                view!{<div class="text-center py-8 text-gray-400"><svg class="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg><p>"No materials added yet"</p></div>}.into_any()
-                            } else {
-                                mats.into_iter().map(|m| {
-                                    let rem = remaining(&m);
-                                    let rr = rolls_remaining(&m);
-                                    let pct = if m.total_metres > 0.0 { rem / m.total_metres * 100.0 } else { 0.0 };
-                                    let (status_label, status_text, status_bg, progress_bg) = if pct > 20.0 {
-                                        ("Healthy", "text-green-700", "bg-green-50", "bg-green-500")
-                                    } else if pct > 10.0 {
-                                        ("Low", "text-yellow-700", "bg-yellow-50", "bg-yellow-500")
-                                    } else {
-                                        ("Critical", "text-red-700", "bg-red-50", "bg-red-500")
-                                    };
-                                    let mid = m.id;
-                                    view!{
-                                        <div class="p-5 bg-white border border-gray-200 rounded-xl hover:border-gray-300 transition-colors">
-                                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                                                <div class="min-w-0 flex-1">
-                                                    <div class="flex flex-wrap items-center gap-2 mb-3">
-                                                        <h4 class="text-base font-semibold text-gray-900 truncate">{m.name.clone()}</h4>
-                                                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-100">{m.material_type.clone()}</span>
-                                                        <span class=format!("inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium {} {} border border-transparent", status_bg, status_text)>{status_label}</span>
-                                                    </div>
-
-                                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                                        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
-                                                            <p class="text-[11px] uppercase tracking-wide text-gray-500 font-medium">"Width"</p>
-                                                            <p class="mt-1 text-sm font-semibold text-gray-900">{format!("{}m", m.width)}</p>
-                                                        </div>
-                                                        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
-                                                            <p class="text-[11px] uppercase tracking-wide text-gray-500 font-medium">"Total Rolls"</p>
-                                                            <p class="mt-1 text-sm font-semibold text-gray-900">{m.rolls}</p>
-                                                        </div>
-                                                        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-3">
-                                                            <p class="text-[11px] uppercase tracking-wide text-gray-500 font-medium">"Remaining"</p>
-                                                            <p class=format!("mt-1 text-sm font-semibold {}", status_text)>{format!("{:.1} rolls", rr)}</p>
-                                                            <p class="text-xs text-gray-500 mt-0.5">{format!("{:.1}m left", rem)}</p>
-                                                        </div>
-                                                    </div>
-
-                                                    <div class="mt-4">
-                                                        <div class="flex items-center justify-between text-xs mb-1.5">
-                                                            <span class="text-gray-500 font-medium">"Stock Level"</span>
-                                                            <span class=format!("font-semibold {}", status_text)>{format!("{:.0}% remaining", pct.max(0.0))}</span>
-                                                        </div>
-                                                        <div class="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
-                                                            <div class=progress_bg style=move || format!("width: {}%", pct.clamp(0.0, 100.0))></div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-
-                                                <div class="flex gap-2 lg:ml-4">
-                                                    <button on:click=move |_| { set_add_rolls_val.set(String::new()); set_show_add_rolls.set(Some(m.clone())); } class="px-3 py-2 text-xs font-medium bg-black text-white rounded-md hover:bg-gray-800 transition-colors whitespace-nowrap">"Add Rolls"</button>
-                                                    <button on:click=move |_| delete_material(mid) class="h-9 w-9 inline-flex items-center justify-center text-gray-400 hover:text-red-600 transition-colors border border-gray-200 rounded-md hover:border-red-200">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    }
-                                }).collect::<Vec<_>>().into_any()
-                            }
-                        }}
-                    </div>
+        }>
+        <div id="page-printing" class="dash">
+            <div class="dash-table-head">
+                <div>
+                    <h2 class="dash-section-title">"Printing jobs"</h2>
+                    <p class="prod-sub">"Materials, metres, and service income"</p>
+                </div>
+                <div class="dash-table-actions">
+                    {move || if can_manage_materials {
+                        view! {
+                            <button
+                                type="button"
+                                class="sales-btn-secondary"
+                                on:click=move |_| {
+                                    set_mat_name.set(String::new());
+                                    set_mat_width.set(String::new());
+                                    set_mat_rolls.set("1".into());
+                                    set_mat_mpr.set("50".into());
+                                    set_show_add_mat.set(true);
+                                }
+                            >"+ Material"</button>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
+                    <button
+                        type="button"
+                        class="dash-btn-primary"
+                        on:click=move |_| {
+                            set_mat_id.set(None);
+                            set_metres_printed.set("1".into());
+                            set_total_price.set(String::new());
+                            set_payment.set("cash".into());
+                            set_customer.set("Walk-in".into());
+                            set_show_record.set(true);
+                        }
+                    >
+                        <span aria-hidden="true">"+"</span>
+                        " Record Job"
+                    </button>
                 </div>
             </div>
-        </div>
 
-        // Jobs Table
-        <div class="dashboard-panel overflow-hidden">
-            <div class="p-5 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <h2 class="dashboard-panel-title">"Printing Jobs"</h2>
-                <div class="flex flex-col sm:flex-row gap-2">
+            <div class=move || {
+                if show_revenue_stats {
+                    "prod-metrics dash-card sales-metrics sales-metrics--4"
+                } else {
+                    "prod-metrics dash-card sales-metrics sales-metrics--3"
+                }
+            }>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Today's earnings"</p>
+                    <p class="dash-metric-value">{move || format!("KSh {:.0}", today_earnings.get())}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Total jobs"</p>
+                    <p class="dash-metric-value">{move || total_jobs_count.get()}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Material used"</p>
+                    <p class="dash-metric-value">{move || format!("{}m", material_used.get() as u64)}</p>
+                </div>
+                {move || if show_revenue_stats {
+                    view! {
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Total revenue"</p>
+                            <p class="dash-metric-value dash-metric-value--sm">
+                                {move || format!("KSh {:.0}", total_revenue.get())}
+                            </p>
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+            </div>
+
+            // Materials
+            <div class="dash-card print-materials-card">
+                <div class="print-section-head">
+                    <div>
+                        <h3 class="dash-chart-title">"Materials inventory"</h3>
+                        <p class="prod-sub">"Banner, satin, canvas, and more"</p>
+                    </div>
+                </div>
+                <div class="print-materials-list">
+                    {move || {
+                        let mats = materials.get();
+                        if mats.is_empty() {
+                            return view! {
+                                <div class="dash-table-empty print-materials-empty">"No materials yet."</div>
+                            }.into_any();
+                        }
+                        mats.into_iter().map(|m| {
+                            let rem = remaining(&m);
+                            let rr = rolls_remaining(&m);
+                            let pct = if m.total_metres > 0.0 {
+                                rem / m.total_metres * 100.0
+                            } else {
+                                0.0
+                            };
+                            let (status_label, status_cls, bar_cls) = if pct > 20.0 {
+                                ("Healthy", "dash-status is-ok", "print-progress-fill is-ok")
+                            } else if pct > 10.0 {
+                                ("Low", "dash-status is-warn", "print-progress-fill is-warn")
+                            } else {
+                                ("Critical", "dash-status is-danger", "print-progress-fill is-danger")
+                            };
+                            let mid = m.id;
+                            let m_clone = m.clone();
+                            view! {
+                                <div class="print-mat-row">
+                                    <div class="print-mat-main">
+                                        <div class="print-mat-title-row">
+                                            <span class="dash-td-strong">{m.name.clone()}</span>
+                                            <span class="dash-status is-info">{m.material_type.clone()}</span>
+                                            <span class=status_cls>{status_label}</span>
+                                        </div>
+                                        <div class="print-mat-stats">
+                                            <div class="print-mat-stat">
+                                                <span class="dash-metric-label">"Width"</span>
+                                                <span class="dash-td-strong tnum">{format!("{}m", m.width)}</span>
+                                            </div>
+                                            <div class="print-mat-stat">
+                                                <span class="dash-metric-label">"Rolls"</span>
+                                                <span class="dash-td-strong tnum">{m.rolls}</span>
+                                            </div>
+                                            <div class="print-mat-stat">
+                                                <span class="dash-metric-label">"Remaining"</span>
+                                                <span class="dash-td-strong tnum">{format!("{:.1} rolls", rr)}</span>
+                                                <span class="prod-sub tnum">{format!("{:.1}m left", rem)}</span>
+                                            </div>
+                                        </div>
+                                        <div class="print-progress">
+                                            <div class="print-progress-meta">
+                                                <span class="dash-metric-label">"Stock level"</span>
+                                                <span class="prod-sub tnum">{format!("{:.0}%", pct.max(0.0))}</span>
+                                            </div>
+                                            <div class="print-progress-track">
+                                                <div
+                                                    class=bar_cls
+                                                    style=format!("width:{:.1}%", pct.clamp(0.0, 100.0))
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="prod-actions">
+                                        <button
+                                            type="button"
+                                            class="prod-btn-add"
+                                            on:click=move |_| {
+                                                set_add_rolls_val.set(String::new());
+                                                set_show_add_rolls.set(Some(m_clone.clone()));
+                                            }
+                                        >"Add Rolls"</button>
+                                        <button
+                                            type="button"
+                                            class="prod-btn-icon is-danger"
+                                            aria-label="Delete material"
+                                            on:click=move |_| delete_material(mid)
+                                        >
+                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        }).collect::<Vec<_>>().into_any()
+                    }}
+                </div>
+            </div>
+
+            // Jobs table — toolbar separate from table card
+            <div class="sales-toolbar">
+                <label class="dash-search sales-search">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/>
+                    </svg>
                     <input
-                        type="text"
-                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
+                        type="search"
                         placeholder="Search job, customer, material..."
                         prop:value=move || search.get()
                         on:input=move |e| set_search.set(event_target_value(&e))
+                        aria-label="Search printing jobs"
                     />
-                    <div class="min-w-[220px]">
-                        <CustomDropdown
-                            items=sort_items
-                            placeholder="Newest First".to_string()
-                            on_select=Callback::new(move |v: String| set_sort_by.set(v))
-                        />
-                    </div>
+                </label>
+                <div class="sales-sort">
+                    <CustomDropdown
+                        items=sort_items
+                        placeholder="Newest First".to_string()
+                        on_select=Callback::new(move |v: String| set_sort_by.set(v))
+                    />
                 </div>
             </div>
-            <table class="w-full data-table">
-                <thead><tr><th>"Date / Time"</th><th>"Job Details"</th><th>"Metres"</th><th>"Material"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th></tr></thead>
-                <tbody>
-                    {move || {
-                        let items = paginated();
-                        if items.is_empty() {
-                            view!{<tr><td colspan="8" class="px-5 py-8 text-center text-gray-500">"No printing jobs recorded."</td></tr>}.into_any()
-                        } else {
+            <div class="dash-card dash-table-card">
+                <table class="dash-table print-jobs-table">
+                    <thead>
+                        <tr>
+                            <th>"Date"</th>
+                            <th>"Job"</th>
+                            <th>"Metres"</th>
+                            <th>"Material"</th>
+                            <th>"Amount"</th>
+                            <th>"Payment"</th>
+                            <th>"Customer"</th>
+                            <th>"Actions"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {move || {
+                            let items = paginated();
+                            if items.is_empty() {
+                                return view! {
+                                    <tr>
+                                        <td colspan="8" class="dash-table-empty">"No printing jobs recorded."</td>
+                                    </tr>
+                                }.into_any();
+                            }
                             items.into_iter().map(|t| {
                                 let id = t.id;
                                 let tm = format_printing_timestamp(&t.timestamp);
-                                let mat = if let Some(ref sz) = t.material_size { format!("{}m {}", sz, t.material_type.as_deref().unwrap_or("")) } else { "N/A".into() };
+                                let mat = if let Some(ref sz) = t.material_size {
+                                    format!("{}m {}", sz, t.material_type.as_deref().unwrap_or(""))
+                                } else {
+                                    "N/A".into()
+                                };
                                 let name = t.service_name.clone();
                                 let pm_label = t.payment_method.clone();
                                 let cust = t.customer_name.clone();
                                 let txn_clone = t.clone();
-                                view!{
-                                    <tr class="hover:bg-gray-50 transition-colors">
-                                        <td class="px-5 py-4 text-sm text-gray-500 whitespace-nowrap">{tm}</td>
-                                        <td class="px-5 py-4"><p class="text-sm font-medium text-gray-900">{name}</p></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{format!("{:.1}m", t.stock_metres_used)}</td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{mat}</td>
-                                        <td class="px-5 py-4 text-sm font-medium text-gray-900">{format!("KSh {:.2}", t.amount)}</td>
-                                        <td class="px-5 py-4"><span class="status-badge status-badge--success capitalize">{pm_label}</span></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{cust}</td>
-                                        <td class="px-5 py-4"><div class="flex items-center gap-2">
-                                            <button on:click=move |_| { set_conv_cust.set(txn_clone.customer_name.clone()); set_conv_phone.set(String::new()); set_conv_paid.set("0".into()); set_conv_due.set(String::new()); set_show_convert.set(Some(txn_clone.clone())); } class="text-gray-400 hover:text-blue-600 transition-colors" title="Convert to debt">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
-                                            </button>
-                                            <button on:click=move |_| delete_job(id) class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                            </button>
-                                        </div></td>
+                                let amount = t.amount;
+                                let metres = t.stock_metres_used;
+                                view! {
+                                    <tr class="sales-row">
+                                        <td class="dash-td-muted tnum">{tm}</td>
+                                        <td class="dash-td-strong">{name}</td>
+                                        <td class="dash-td-muted tnum">{format!("{:.1}m", metres)}</td>
+                                        <td class="dash-td-muted">{mat}</td>
+                                        <td class="dash-td-strong tnum">{format!("KSh {:.0}", amount)}</td>
+                                        <td><span class="dash-status is-ok capitalize">{pm_label}</span></td>
+                                        <td class="dash-td-muted">{cust}</td>
+                                        <td>
+                                            <div class="prod-actions">
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon"
+                                                    title="Convert to debt"
+                                                    aria-label="Convert to debt"
+                                                    on:click=move |_| {
+                                                        set_conv_cust.set(txn_clone.customer_name.clone());
+                                                        set_conv_phone.set(String::new());
+                                                        set_conv_paid.set("0".into());
+                                                        set_conv_due.set(String::new());
+                                                        set_show_convert.set(Some(txn_clone.clone()));
+                                                    }
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon is-danger"
+                                                    title="Delete"
+                                                    aria-label="Delete job"
+                                                    on:click=move |_| delete_job(id)
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 }
                             }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </tbody>
-            </table>
-            {move || { let n = total_items(); if n == 0 { ().into_any() } else {
-                let cp = current_page.get(); let tp = total_pages();
-                let si = (cp-1)*items_per_page+1; let ei = (cp*items_per_page).min(n);
-                view!{<div class="flex items-center justify-between px-5 py-3 bg-gray-50 border-t border-gray-200">
-                    <div class="text-sm text-gray-600">"Showing "<span class="font-medium">{si}</span>" to "<span class="font-medium">{ei}</span>" of "<span class="font-medium">{n}</span>" jobs"</div>
-                    <div class="flex gap-2">
-                        <button on:click=move |_| { if cp>1 {set_current_page.set(cp-1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
-                        <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
-                        <button on:click=move |_| { if cp<tp {set_current_page.set(cp+1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button>
-                    </div>
-                </div>}.into_any()
-            }}}
-        </div>
+                        }}
+                    </tbody>
+                </table>
+                {move || {
+                    let n = total_items();
+                    if n == 0 {
+                        return ().into_any();
+                    }
+                    let cp = current_page.get();
+                    let tp = total_pages();
+                    let si = (cp - 1) * items_per_page + 1;
+                    let ei = (cp * items_per_page).min(n);
+                    let count_label = format!("Showing {}–{} of {}", si, ei, n);
+                    let page_label = format!("Page {} of {}", cp, tp);
+                    let prev_disabled = cp <= 1;
+                    let next_disabled = cp >= tp;
+                    let go_prev = move |_| {
+                        set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
+                    };
+                    let go_next = move |_| {
+                        set_current_page.update(move |p| {
+                            let next = *p + 1;
+                            *p = if next > tp { tp } else { next };
+                        });
+                    };
+                    view! {
+                        <div class="dash-table-foot">
+                            <span class="dash-table-count">{count_label}</span>
+                            <div class="prod-pager">
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=prev_disabled
+                                    on:click=go_prev
+                                >"Previous"</button>
+                                <span class="prod-pager-meta">{page_label}</span>
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=next_disabled
+                                    on:click=go_next
+                                >"Next"</button>
+                            </div>
+                        </div>
+                    }.into_any()
+                }}
+            </div>
 
         // Record Job Modal
         {move || if show_record.get() { view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 900px;"><div class="modal-header"><h3 class="modal-title">"Record Printing Job"</h3><button class="modal-close-btn" on:click=move |_| set_show_record.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
@@ -621,14 +778,14 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             let mpr = m.metres_per_roll;
             view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Printing Material"</h3><button class="modal-close-btn" on:click=move |_| set_show_add_rolls.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
                 <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Printing Material"</p><p class="font-semibold text-gray-900">{m.name.clone()}</p>
-                    <p class="text-sm text-gray-600 mt-1"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">{m.material_type.clone()}</span>
+                    <p class="text-sm text-gray-600 mt-1"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-100 text-neutral-800">{m.material_type.clone()}</span>
                     <span class="ml-2">{format!("Width: {}m", m.width)}</span></p>
                     <p class="text-sm text-gray-600 mt-1">{format!("Current: {:.1}m remaining ({:.1} rolls)", remaining(&m), rolls_remaining(&m))}</p>
                 </div>
                 <div class="space-y-4">
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Number of Rolls to Add *"</label><input type="number" min="1" step="1" class="w-full" placeholder="Enter rolls to add" prop:value=move || add_rolls_val.get() on:input=move |e| set_add_rolls_val.set(event_target_value(&e))/>
                         <p class="text-xs text-gray-500 mt-1">{format!("Each roll = {}m", mpr as u64)}</p></div>
-                    <div class="bg-blue-50 border border-blue-200 p-3">
+                    <div class="bg-neutral-50 border border-neutral-200 p-3">
                         <p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || { let a: i64 = add_rolls_val.get().parse().unwrap_or(0); format!("{} rolls ({}m)", m.rolls + a, (m.total_metres + a as f64 * mpr) as u64) }}</p>
                     </div>
                 </div>
@@ -650,5 +807,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 </div>
             </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_convert.set(None)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=submit_convert>"Create Debt"</button></div></div></div>}.into_any()
         }).unwrap_or_else(|| ().into_any())}
-    </div> }
+    </div>
+        </Show>
+    }
 }

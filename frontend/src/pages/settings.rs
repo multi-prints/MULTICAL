@@ -5,6 +5,9 @@ use leptos::prelude::*;
 #[path = "../components/dropdown.rs"]
 mod dropdown_comp;
 use dropdown_comp::{CustomDropdown, DropdownItem};
+#[path = "../components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
 
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
@@ -27,6 +30,7 @@ pub fn SettingsPage(
     let (checking_update, set_checking_update) = signal(false);
     let (show_uninstall, set_show_uninstall) = signal(false);
     let (uninstalling, set_uninstalling) = signal(false);
+    let (loading, set_loading) = signal(true);
 
     // Username change
     let (new_username, set_new_username) = signal(String::new());
@@ -56,6 +60,7 @@ pub fn SettingsPage(
             if let Ok(u) = api::get_all_users().await {
                 set_users.set(u);
             }
+            set_loading.set(false);
         });
     };
     load_users();
@@ -67,6 +72,9 @@ pub fn SettingsPage(
         if let Ok(p) = api::get_platform().await {
             set_platform.set(format!("Tauri ({})", p));
         }
+        // Non-admin pages may never call load_users successfully for listing;
+        // still clear spinner after version fetch so settings is usable.
+        set_loading.set(false);
     });
 
     let install_update = move |_| {
@@ -174,186 +182,349 @@ pub fn SettingsPage(
         });
     };
 
-    view! {<div id="page-settings" class="page-content">
-        <div class="flex items-center justify-between mb-6">
-            <div><h1 class="page-title">"Settings"</h1><p class="page-subtitle">"Manage your application preferences and account"</p></div>
-        </div>
-
-        // Tabs
-        <div class="mb-6"><div class="border-b border-gray-200"><nav class="flex gap-8">
-            <button class=move || format!("settings-tab pb-4 px-2 text-sm font-medium border-b-2 transition-colors {}", if active_tab.get()==SettingsTab::Account {"border-brand-500 text-gray-900"} else {"border-transparent text-gray-500 hover:text-gray-700"})
-                on:click=move |_| set_active_tab.set(SettingsTab::Account)>"Account"</button>
-            {move || if is_admin() { view!{<button class=move || format!("settings-tab pb-4 px-2 text-sm font-medium border-b-2 transition-colors {}", if active_tab.get()==SettingsTab::Backup {"border-brand-500 text-gray-900"} else {"border-transparent text-gray-500 hover:text-gray-700"})
-                on:click=move |_| set_active_tab.set(SettingsTab::Backup)>"Backup & Data"</button>}.into_any() } else { ().into_any() }}
-            <button class=move || format!("settings-tab pb-4 px-2 text-sm font-medium border-b-2 transition-colors {}", if active_tab.get()==SettingsTab::About {"border-brand-500 text-gray-900"} else {"border-transparent text-gray-500 hover:text-gray-700"})
-                on:click=move |_| set_active_tab.set(SettingsTab::About)>"About"</button>
-        </nav></div></div>
-
-        // Message
-        {move || msg.get().map(|(ok, m)| view!{<div class=format!("px-4 py-3 rounded-lg mb-4 text-sm {}", if ok {"bg-green-50 text-green-700"} else {"bg-red-50 text-red-700"})>{m}</div>})}
-
-        // Account Panel
-        {move || if active_tab.get() == SettingsTab::Account { view!{<div>
-            <div class="dashboard-panel p-6 mb-6">
-                <h3 class="text-base font-semibold text-gray-900 mb-4">"Change Username"</h3>
-                <div class="space-y-4">
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Current Username"</label>
-                        <input type="text" class="w-full bg-gray-50" readonly prop:value=cur_user/></div>
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"New Username"</label>
-                        <input type="text" class="w-full" placeholder="Enter new username"
-                            prop:value=move || new_username.get() on:input=move |e| set_new_username.set(event_target_value(&e))/></div>
-                    <div class="flex justify-end pt-4 border-t border-gray-100">
-                        <button type="button" class="btn-primary px-6 py-2" on:click=change_username>"Update Username"</button>
-                    </div>
+    view! {
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div id="page-settings" class="dash settings-page">
+                <PageLoading message="Loading settings..."/>
+            </div>
+        }>
+        <div id="page-settings" class="dash settings-page">
+            <div class="dash-table-head">
+                <div>
+                    <h2 class="dash-section-title">"Preferences"</h2>
+                    <p class="prod-sub">"Account, data, and system details"</p>
                 </div>
-            </div>
-
-            <div class="dashboard-panel p-6">
-                <h3 class="text-base font-semibold text-gray-900 mb-4">"Change Password"</h3>
-                <div class="space-y-4">
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Current Password"</label>
-                        <input type="password" class="w-full" placeholder="Enter current password"
-                            prop:value=move || old_pw.get() on:input=move |e| set_old_pw.set(event_target_value(&e))/></div>
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"New Password"</label>
-                        <input type="password" class="w-full" placeholder="Enter new password"
-                            prop:value=move || new_pw.get() on:input=move |e| set_new_pw.set(event_target_value(&e))/></div>
-                    <div class="flex justify-end pt-4 border-t border-gray-100">
-                        <button type="button" class="btn-primary px-6 py-2" on:click=change_pw>"Update Password"</button>
-                    </div>
-                </div>
-            </div>
-        </div>}.into_any() } else { ().into_any() }}
-
-        // Backup & Data Panel (admin only)
-        {move || if active_tab.get() == SettingsTab::Backup && is_admin() { view!{<div>
-            <div class="dashboard-panel p-6 mb-6">
-                <h3 class="text-base font-semibold text-gray-900 mb-2">"Database Backup"</h3>
-                <p class="text-sm text-gray-500 mb-4">"Export or import your business data"</p>
-                <div class="space-y-3">
-                    <button class="w-full flex items-center justify-between p-4 border border-gray-200 hover:bg-gray-50 transition-colors">
-                        <div class="flex items-center gap-3">
-                            <div class="w-10 h-10 bg-blue-50 flex items-center justify-center">
-                                <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                            </div>
-                            <div class="text-left"><p class="text-sm font-medium text-gray-900">"Export Database"</p><p class="text-xs text-gray-500">"Download all your data as JSON file"</p></div>
-                        </div>
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                    </button>
-                    <button class="w-full flex items-center justify-between p-4 border border-gray-200 hover:bg-gray-50 transition-colors">
-                        <div class="flex items-center gap-3">
-                            <div class="w-10 h-10 bg-green-50 flex items-center justify-center">
-                                <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-                            </div>
-                            <div class="text-left"><p class="text-sm font-medium text-gray-900">"Import Database"</p><p class="text-xs text-gray-500">"Restore data from backup file"</p></div>
-                        </div>
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                    </button>
-                </div>
-            </div>
-            <div class="dashboard-panel p-6 bg-red-50 border-red-200">
-                <h3 class="text-base font-semibold text-red-900 mb-2">"Danger Zone"</h3>
-                <p class="text-sm text-red-700 mb-4">"Irreversible actions - proceed with caution"</p>
-                <div class="space-y-3">
-                    <button class="w-full bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 transition-colors"
-                        on:click=move |_| { leptos::task::spawn_local(async move { let _ = api::clear_all_data().await; set_msg.set(Some((true, "All data cleared".into()))); }); }>"Clear All Data"</button>
-                    <button class="w-full bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 transition-colors"
-                        on:click=move |_| set_show_uninstall.set(true)>"Uninstall MULTIPRINTS"</button>
-                </div>
-            </div>
-        </div>}.into_any() } else { ().into_any() }}
-
-        // Uninstall confirmation modal
-        {move || if show_uninstall.get() { view!{
-            <div class="fixed inset-0 z-50 flex items-center justify-center">
-                <div class="absolute inset-0 bg-black/40" on:click=move |_| set_show_uninstall.set(false)></div>
-                <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-                    <h3 class="text-lg font-semibold mb-2">"Uninstall MULTIPRINTS"</h3>
-                    <p class="text-gray-600 text-sm mb-2">"This will remove the application and all its data from your system."</p>
-                    <p class="text-red-600 text-sm mb-6">"This action cannot be undone."</p>
-                    <div class="flex justify-end gap-3">
-                        <button on:click=move |_| set_show_uninstall.set(false)
-                            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">"Cancel"</button>
-                        <button on:click=do_uninstall prop:disabled=move || uninstalling.get()
-                            class="px-4 py-2 text-sm bg-red-600 text-white hover:bg-red-700 rounded-lg disabled:opacity-50">
-                            {move || if uninstalling.get() { "Uninstalling…" } else { "Uninstall" }}
-                        </button>
-                    </div>
-                </div>
-            </div>
-        }.into_any() } else { ().into_any() }}
-
-        // About Panel
-        {move || if active_tab.get() == SettingsTab::About { view!{<div>
-            <div class="dashboard-panel p-6 mb-6">
-                <div class="text-center py-8">
-                    <div class="w-16 h-16 bg-brand-500 flex items-center justify-center mx-auto mb-4"><span class="text-2xl font-bold text-white">"M"</span></div>
-                    <h3 class="text-xl font-bold text-gray-900 mb-2">"Multiprints"</h3>
-                    <p class="text-sm text-gray-500 mb-4">"Inventory & Sales Management System"</p>
-                    <div class="inline-flex items-center gap-2 bg-gray-100 px-4 py-2">
-                        <span class="text-xs font-medium text-gray-500">"Version"</span>
-                        <span class="text-xs font-bold text-gray-900">{app_version.get()}</span>
-                    </div>
-                    <div class="mt-6">
-                        <button class="btn-primary px-5 py-2 disabled:opacity-50" prop:disabled=move || checking_update.get() on:click=install_update>
-                            {move || if checking_update.get() { "Updating..." } else { "Check & Install Update" }}
-                        </button>
-                    </div>
-                    {move || update_status.get().map(|text| view!{<p class="mt-3 text-xs text-gray-500">{text}</p>})}
-                </div>
-            </div>
-            <div class="dashboard-panel p-6 mb-6">
-                <h3 class="text-base font-semibold text-gray-900 mb-4">"System Information"</h3>
-                <div class="space-y-3">
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Platform"</span><span class="text-sm font-medium text-gray-900">{platform.get()}</span></div>
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Database"</span><span class="text-sm font-medium text-gray-900">"SQLite"</span></div>
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Framework"</span><span class="text-sm font-medium text-gray-900">"Rust + Leptos"</span></div>
-                </div>
-            </div>
-            <div class="dashboard-panel p-6">
-                <h3 class="text-base font-semibold text-gray-900 mb-4">"Developer"</h3>
-                <div class="space-y-3">
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Author"</span><span class="text-sm font-medium text-gray-900">"Godwin Mayodi"</span></div>
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Email"</span><span class="text-sm font-medium text-gray-900">"codegoddy@gmail.com"</span></div>
-                    <div class="flex justify-between py-2 border-b border-gray-100"><span class="text-sm text-gray-500">"Repository"</span><a href="https://github.com/multi-prints/MULTICAL" target="_blank" class="text-sm font-medium text-brand-500 hover:underline">"github.com/multi-prints/MULTICAL"</a></div>
-                </div>
-            </div>
-        </div>}.into_any() } else { ().into_any() }}
-
-        // Admin: User Management
-        {move || if is_admin() { view!{<div class="dashboard-panel p-6 mt-6">
-            <h3 class="text-base font-semibold text-gray-900 mb-4">"User Management"</h3>
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Username"</label><input type="text" class="w-full border border-[#E5E5E5] rounded px-3 py-2 text-sm font-sans text-[#0A0A0A] bg-white outline-none" placeholder="Username" prop:value=move || new_user.get() on:input=move |e| set_new_user.set(event_target_value(&e))/></div>
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Password"</label><input type="password" class="w-full border border-[#E5E5E5] rounded px-3 py-2 text-sm font-sans text-[#0A0A0A] bg-white outline-none" placeholder="Password" prop:value=move || new_upass.get() on:input=move |e| set_new_upass.set(event_target_value(&e))/></div>
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Role"</label>
-                    <div class="w-full">
-                        <CustomDropdown items=role_items placeholder="Employee".to_string() on_select=Callback::new(move |v: String| set_new_role.set(v))/>
-                    </div></div>
-            </div>
-            <button class="btn-primary px-6 py-2" on:click=add_user>"Add User"</button>
-            <div class="mt-6"><table class="w-full data-table">
-                <thead><tr><th>"Username"</th><th>"Role"</th><th>"Actions"</th></tr></thead>
-                <tbody>
-                    {move || {
-                        let items = users.get();
-                        items.into_iter().map(|u| {
-                            let uname = u.username.clone();
-                            let is_self = uname == cur_user();
-                            view!{<tr class="border-b border-gray-50">
-                                <td class="px-4 py-2 font-medium">{u.username.clone()}{if is_self {view!{<span class="text-xs text-gray-400 ml-2">"(you)"</span>}.into_any()} else {().into_any()}}</td>
-                                <td class="px-4 py-2 text-gray-600 capitalize">{u.role.clone()}</td>
-                                <td class="px-4 py-2 text-right">
-                                    {if u.username != "admin" && !is_self {
-                                        let un = uname.clone();
-                                        let del = delete_user;
-                                        view!{<button on:click=move |_| del(un.clone()) class="text-red-600 hover:underline text-xs">"Remove"</button>}.into_any()
-                                    } else { ().into_any() }}
-                                </td>
-                            </tr>}
-                        }).collect::<Vec<_>>()
+                <div class="dash-period settings-tabs" role="tablist" aria-label="Settings sections">
+                    <button
+                        type="button"
+                        class=move || if active_tab.get() == SettingsTab::Account { "dash-period-btn is-active" } else { "dash-period-btn" }
+                        on:click=move |_| set_active_tab.set(SettingsTab::Account)
+                    >"Account"</button>
+                    {move || if is_admin() {
+                        view! {
+                            <button
+                                type="button"
+                                class=move || if active_tab.get() == SettingsTab::Backup { "dash-period-btn is-active" } else { "dash-period-btn" }
+                                on:click=move |_| set_active_tab.set(SettingsTab::Backup)
+                            >"Backup & Data"</button>
+                        }.into_any()
+                    } else {
+                        ().into_any()
                     }}
-                </tbody>
-            </table></div>
-        </div>}.into_any() } else { ().into_any() }}
-    </div>}
+                    <button
+                        type="button"
+                        class=move || if active_tab.get() == SettingsTab::About { "dash-period-btn is-active" } else { "dash-period-btn" }
+                        on:click=move |_| set_active_tab.set(SettingsTab::About)
+                    >"About"</button>
+                </div>
+            </div>
+
+            {move || msg.get().map(|(ok, m)| {
+                let cls = if ok { "settings-alert is-ok" } else { "settings-alert is-err" };
+                view! { <div class=cls>{m}</div> }
+            })}
+
+            // Account
+            {move || if active_tab.get() == SettingsTab::Account {
+                view! {
+                    <div class="settings-stack">
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"Change username"</h3>
+                            <div class="settings-form">
+                                <div class="settings-field">
+                                    <label class="settings-label">"Current username"</label>
+                                    <input type="text" class="settings-input is-readonly" readonly prop:value=cur_user/>
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-label">"New username"</label>
+                                    <input
+                                        type="text"
+                                        class="settings-input"
+                                        placeholder="Enter new username"
+                                        prop:value=move || new_username.get()
+                                        on:input=move |e| set_new_username.set(event_target_value(&e))
+                                    />
+                                </div>
+                                <div class="settings-actions">
+                                    <button type="button" class="dash-btn-primary" on:click=change_username>"Update username"</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"Change password"</h3>
+                            <div class="settings-form">
+                                <div class="settings-field">
+                                    <label class="settings-label">"Current password"</label>
+                                    <input
+                                        type="password"
+                                        class="settings-input"
+                                        placeholder="Enter current password"
+                                        prop:value=move || old_pw.get()
+                                        on:input=move |e| set_old_pw.set(event_target_value(&e))
+                                    />
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-label">"New password"</label>
+                                    <input
+                                        type="password"
+                                        class="settings-input"
+                                        placeholder="Enter new password"
+                                        prop:value=move || new_pw.get()
+                                        on:input=move |e| set_new_pw.set(event_target_value(&e))
+                                    />
+                                </div>
+                                <div class="settings-actions">
+                                    <button type="button" class="dash-btn-primary" on:click=change_pw>"Update password"</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {move || if is_admin() {
+                            view! {
+                                <div class="dash-card settings-card settings-users">
+                                    <h3 class="settings-card-title">"User management"</h3>
+                                    <div class="settings-user-form">
+                                        <div class="settings-field">
+                                            <label class="settings-label">"Username"</label>
+                                            <input
+                                                type="text"
+                                                class="settings-input"
+                                                placeholder="Username"
+                                                prop:value=move || new_user.get()
+                                                on:input=move |e| set_new_user.set(event_target_value(&e))
+                                            />
+                                        </div>
+                                        <div class="settings-field">
+                                            <label class="settings-label">"Password"</label>
+                                            <input
+                                                type="password"
+                                                class="settings-input"
+                                                placeholder="Password"
+                                                prop:value=move || new_upass.get()
+                                                on:input=move |e| set_new_upass.set(event_target_value(&e))
+                                            />
+                                        </div>
+                                        <div class="settings-field">
+                                            <label class="settings-label">"Role"</label>
+                                            <CustomDropdown
+                                                items=role_items
+                                                placeholder="Employee".to_string()
+                                                on_select=Callback::new(move |v: String| set_new_role.set(v))
+                                            />
+                                        </div>
+                                        <div class="settings-field settings-field--btn">
+                                            <label class="settings-label" style="opacity:0">"Add"</label>
+                                            <button type="button" class="dash-btn-primary" on:click=add_user>"Add user"</button>
+                                        </div>
+                                    </div>
+                                    <div class="dash-table-card settings-users-table-wrap">
+                                        <table class="dash-table settings-users-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>"Username"</th>
+                                                    <th>"Role"</th>
+                                                    <th>"Actions"</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {move || {
+                                                    users.get().into_iter().map(|u| {
+                                                        let uname = u.username.clone();
+                                                        let is_self = uname == cur_user();
+                                                        let role = u.role.clone();
+                                                        view! {
+                                                            <tr class="sales-row">
+                                                                <td class="dash-td-strong">
+                                                                    {u.username.clone()}
+                                                                    {if is_self {
+                                                                        view! { <span class="prod-sub">" (you)"</span> }.into_any()
+                                                                    } else {
+                                                                        ().into_any()
+                                                                    }}
+                                                                </td>
+                                                                <td class="dash-td-muted capitalize">{role}</td>
+                                                                <td>
+                                                                    {if u.username != "admin" && !is_self {
+                                                                        let un = uname.clone();
+                                                                        let del = delete_user;
+                                                                        view! {
+                                                                            <button
+                                                                                type="button"
+                                                                                class="prod-btn-icon is-danger"
+                                                                                aria-label="Remove user"
+                                                                                on:click=move |_| del(un.clone())
+                                                                            >
+                                                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                                                </svg>
+                                                                            </button>
+                                                                        }.into_any()
+                                                                    } else {
+                                                                        view! { <span class="prod-sub">"—"</span> }.into_any()
+                                                                    }}
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    }).collect::<Vec<_>>()
+                                                }}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            }.into_any()
+                        } else {
+                            ().into_any()
+                        }}
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Backup
+            {move || if active_tab.get() == SettingsTab::Backup && is_admin() {
+                view! {
+                    <div class="settings-stack">
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"Database backup"</h3>
+                            <p class="prod-sub settings-card-desc">"Export or import your business data"</p>
+                            <div class="settings-action-list">
+                                <button type="button" class="settings-action-row">
+                                    <div class="settings-action-left">
+                                        <span class="settings-action-icon is-blue" aria-hidden="true">
+                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                                        </span>
+                                        <span>
+                                            <span class="settings-action-title">"Export database"</span>
+                                            <span class="prod-sub">"Download all your data as JSON"</span>
+                                        </span>
+                                    </div>
+                                    <svg class="settings-action-chev" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5l7 7-7 7"/></svg>
+                                </button>
+                                <button type="button" class="settings-action-row">
+                                    <div class="settings-action-left">
+                                        <span class="settings-action-icon is-green" aria-hidden="true">
+                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+                                        </span>
+                                        <span>
+                                            <span class="settings-action-title">"Import database"</span>
+                                            <span class="prod-sub">"Restore data from a backup file"</span>
+                                        </span>
+                                    </div>
+                                    <svg class="settings-action-chev" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5l7 7-7 7"/></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="dash-card settings-card settings-danger">
+                            <h3 class="settings-card-title is-danger">"Danger zone"</h3>
+                            <p class="prod-sub settings-card-desc is-danger">"Irreversible actions — proceed with caution"</p>
+                            <div class="settings-danger-actions">
+                                <button
+                                    type="button"
+                                    class="settings-btn-danger"
+                                    on:click=move |_| {
+                                        leptos::task::spawn_local(async move {
+                                            let _ = api::clear_all_data().await;
+                                            set_msg.set(Some((true, "All data cleared".into())));
+                                        });
+                                    }
+                                >"Clear all data"</button>
+                                <button
+                                    type="button"
+                                    class="settings-btn-danger is-solid"
+                                    on:click=move |_| set_show_uninstall.set(true)
+                                >"Uninstall MULTIPRINTS"</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Uninstall modal
+            {move || if show_uninstall.get() {
+                view! {
+                    <div class="modal-overlay open">
+                        <div class="modal-container" style="max-width:420px">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Uninstall MULTIPRINTS"</h3>
+                                <button type="button" class="modal-close-btn" on:click=move |_| set_show_uninstall.set(false)>
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="prod-sub">"This will remove the application and all its data from your system."</p>
+                                <p class="settings-danger-note">"This action cannot be undone."</p>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn-secondary" on:click=move |_| set_show_uninstall.set(false)>"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="settings-btn-danger is-solid"
+                                    prop:disabled=move || uninstalling.get()
+                                    on:click=do_uninstall
+                                >{move || if uninstalling.get() { "Uninstalling…" } else { "Uninstall" }}</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // About
+            {move || if active_tab.get() == SettingsTab::About {
+                view! {
+                    <div class="settings-stack">
+                        <div class="dash-card settings-card settings-about">
+                            <div class="settings-about-mark" aria-hidden="true">"M"</div>
+                            <h3 class="settings-about-name">"MULTIPRINTS"</h3>
+                            <p class="prod-sub">"Inventory & sales management"</p>
+                            <div class="settings-version-pill">
+                                <span class="dash-metric-label">"Version"</span>
+                                <span class="dash-td-strong">{app_version.get()}</span>
+                            </div>
+                            <button
+                                type="button"
+                                class="dash-btn-primary"
+                                prop:disabled=move || checking_update.get()
+                                on:click=install_update
+                            >{move || if checking_update.get() { "Updating…" } else { "Check & install update" }}</button>
+                            {move || update_status.get().map(|text| view! {
+                                <p class="prod-sub">{text}</p>
+                            })}
+                        </div>
+
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"System information"</h3>
+                            <div class="settings-kv-list">
+                                <div class="settings-kv"><span class="dash-metric-label">"Platform"</span><span class="dash-td-strong">{platform.get()}</span></div>
+                                <div class="settings-kv"><span class="dash-metric-label">"Database"</span><span class="dash-td-strong">"SQLite"</span></div>
+                                <div class="settings-kv"><span class="dash-metric-label">"Framework"</span><span class="dash-td-strong">"Rust + Leptos"</span></div>
+                            </div>
+                        </div>
+
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"Developer"</h3>
+                            <div class="settings-kv-list">
+                                <div class="settings-kv"><span class="dash-metric-label">"Author"</span><span class="dash-td-strong">"Godwin Mayodi"</span></div>
+                                <div class="settings-kv"><span class="dash-metric-label">"Email"</span><span class="dash-td-strong">"codegoddy@gmail.com"</span></div>
+                                <div class="settings-kv">
+                                    <span class="dash-metric-label">"Repository"</span>
+                                    <a href="https://github.com/multi-prints/MULTICAL" target="_blank" class="settings-link">"github.com/multi-prints/MULTICAL"</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+        </div>
+        </Show>
+    }
 }

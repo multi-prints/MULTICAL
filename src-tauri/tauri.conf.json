@@ -4,6 +4,7 @@
   "version": "1.1.5",
   "identifier": "com.multiprints.desktop",
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "MULTIPRINTS",
@@ -14,7 +15,9 @@
         "center": true,
         "resizable": true,
         "fullscreen": false,
-        "decorations": true
+        "decorations": false,
+        "transparent": true,
+        "shadow": true
       }
     ],
     "security": {
@@ -22,6 +25,7 @@
     }
   },
   "build": {
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../src",
     "beforeDevCommand": "cd frontend && trunk serve --release --port 1420",
     "beforeBuildCommand": "cd frontend && trunk build"

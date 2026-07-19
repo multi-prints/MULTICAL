@@ -10,22 +10,28 @@ pub fn ConfirmModal(
 ) -> impl IntoView {
     view! {
         <Show when=move || show.get()>
-            <div class="fixed inset-0 z-50 flex items-center justify-center">
-                <div class="absolute inset-0 bg-black/40" on:click=move |_| on_cancel.call(())></div>
-                <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
-                    <h3 class="text-lg font-semibold mb-2">{title.clone()}</h3>
-                    <p class="text-gray-600 text-sm mb-6">{message.clone()}</p>
-                    <div class="flex justify-end gap-3">
-                        <button
-                            on:click=move |_| on_cancel.call(())
-                            class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
-                        >
+            <div class="modal-overlay open" on:click=move |e| {
+                if e.target() == e.current_target() {
+                    on_cancel.call(());
+                }
+            }>
+                <div class="modal-container modal-sm">
+                    <div class="modal-header">
+                        <h3 class="modal-title">{title.clone()}</h3>
+                        <button type="button" class="modal-close-btn" on:click=move |_| on_cancel.call(())>
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="modal-msg">{message.clone()}</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn-secondary" on:click=move |_| on_cancel.call(())>
                             "Cancel"
                         </button>
-                        <button
-                            on:click=move |_| on_confirm.call(())
-                            class="px-4 py-2 text-sm bg-red-600 text-white hover:bg-red-700 rounded-lg"
-                        >
+                        <button type="button" class="btn-danger" on:click=move |_| on_confirm.call(())>
                             "Confirm"
                         </button>
                     </div>

@@ -1,36 +1,36 @@
 /**
  * MULTIPRINTS Theme - Modern Minimal
- * Clean, minimal design with blue accent
+ * Clean, minimal design with black/neutral accent
  * Sharp structural elements, subtle interactive rounding
  */
 
 :root {
   /* ==================== COLORS ==================== */
   
-  /* Primary - Blue */
-  --color-primary: #2563EB;
-  --color-primary-dark: #1D4ED8;
-  --color-primary-light: #3B82F6;
-  --color-primary-50: #EFF6FF;
-  --color-primary-100: #DBEAFE;
-  --color-primary-200: #BFDBFE;
+  /* Primary - indigo accent (#6565EC) */
+  --color-primary: #6565EC;
+  --color-primary-dark: #5252D4;
+  --color-primary-light: #7B7BF0;
+  --color-primary-50: rgba(101, 101, 236, 0.1);
+  --color-primary-100: rgba(101, 101, 236, 0.16);
+  --color-primary-200: rgba(101, 101, 236, 0.28);
   
   /* Backgrounds */
-  --color-bg-base: #FAFAFA;
+  --color-bg-base: #FFFFFF;
   --color-bg-elevated: #FFFFFF;
   --color-bg-muted: #F5F5F5;
   --color-bg-subtle: #F0F0F0;
   --color-bg-dark: #0F0F0F;
-  --color-bg-sidebar: #0F0F0F;
+  --color-bg-sidebar: #FFFFFF;
   
   /* Text */
-  --color-text-primary: #0A0A0A;
+  --color-text-primary: #171717;
   --color-text-secondary: #525252;
-  --color-text-muted: #A3A3A3;
+  --color-text-muted: #8A8A8A;
   --color-text-inverse: #FFFFFF;
   
   /* Borders */
-  --color-border: #E5E5E5;
+  --color-border: #E8E8E8;
   --color-border-light: #F0F0F0;
   --color-border-dark: #D4D4D4;
   
@@ -47,9 +47,9 @@
   --color-error-bg: #FEF2F2;
   --color-error-border: #FECACA;
   
-  --color-info: #3B82F6;
-  --color-info-bg: #EFF6FF;
-  --color-info-border: #BFDBFE;
+  --color-info: #404040;
+  --color-info-bg: #f5f5f5;
+  --color-info-border: #e5e5e5;
   
   /* ==================== SHADOWS ==================== */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.03);
@@ -59,23 +59,37 @@
   --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.04);
   
   /* ==================== RADIUS ==================== */
+  /* Slight rounding only — avoid pill / overly soft corners */
   --radius-none: 0;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
   --radius-full: 9999px;
   
   /* ==================== TYPOGRAPHY ==================== */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: 'Open Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   
-  --text-xs: 0.6875rem;
-  --text-sm: 0.8125rem;
-  --text-base: 0.875rem;
-  --text-lg: 1rem;
-  --text-xl: 1.125rem;
-  --text-2xl: 1.375rem;
-  --text-3xl: 1.75rem;
+  /* Readable product scale (bumped for desktop app legibility) */
+  --text-xs: 0.75rem;     /* 12px */
+  --text-sm: 0.8125rem;   /* 13px */
+  --text-base: 0.875rem;  /* 14px */
+  --text-lg: 0.9375rem;   /* 15px */
+  --text-xl: 1.0625rem;   /* 17px */
+  --text-2xl: 1.1875rem;  /* 19px */
+  --text-3xl: 1.375rem;   /* 22px */
+
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  --leading-tight: 1.3;
+  --leading-snug: 1.4;
+  --leading-normal: 1.5;
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
   
   /* ==================== TRANSITIONS ==================== */
   --transition-fast: 100ms ease;
@@ -85,31 +99,156 @@
   /* ==================== Z-INDEX ==================== */
   --z-dropdown: 50;
   --z-sticky: 100;
-  --z-modal: 200;
-  --z-tooltip: 300;
-  --z-toast: 400;
+  /* Modal must sit above titlebar (z-index: 1000) so chrome is dimmed too */
+  --z-modal: 1100;
+  --z-tooltip: 1200;
+  --z-toast: 1300;
   
   /* ==================== SIZING ==================== */
   --sidebar-width: 220px;
-  --header-height: 56px;
+  --sidebar-width-collapsed: 68px;
+  --header-height: 44px;
+  --titlebar-height: 40px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+  /* Chrome / soft surfaces */
+  --color-chrome: #ffffff;
+  --color-surface-soft: #ececee;
+  --color-overlay: rgba(15, 15, 15, 0.42);
+  --color-titlebar-fg: rgba(17, 24, 39, 0.65);
+  --color-titlebar-fg-strong: rgba(17, 24, 39, 0.85);
+  --color-titlebar-hover: rgba(17, 24, 39, 0.1);
+  --color-frame-border: rgba(17, 24, 39, 0.1);
+}
+
+/* ==================== DARK THEME (Turso-like deep black) ==================== */
+[data-theme="dark"] {
+  /* Indigo accent on deep black */
+  --color-primary: #6565EC;
+  --color-primary-dark: #7B7BF0;
+  --color-primary-light: #8B8BF5;
+  --color-primary-50: rgba(101, 101, 236, 0.16);
+  --color-primary-100: rgba(101, 101, 236, 0.22);
+  --color-primary-200: rgba(101, 101, 236, 0.35);
+
+  /* Near-black canvas + slightly lifted panels */
+  --color-bg-base: #050505;
+  --color-bg-elevated: #0c0c0c;
+  --color-bg-muted: #111111;
+  --color-bg-subtle: #161616;
+  --color-bg-dark: #000000;
+  --color-bg-sidebar: #0a0a0a;
+
+  --color-text-primary: #ececee;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted: #71717a;
+  --color-text-inverse: #0a0a0a;
+
+  /* Hairline borders like Turso */
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-light: rgba(255, 255, 255, 0.05);
+  --color-border-dark: rgba(255, 255, 255, 0.14);
+
+  --color-success: #2dd4bf;
+  --color-success-bg: rgba(45, 212, 191, 0.1);
+  --color-success-border: rgba(45, 212, 191, 0.25);
+
+  --color-warning: #fbbf24;
+  --color-warning-bg: rgba(251, 191, 36, 0.1);
+  --color-warning-border: rgba(251, 191, 36, 0.25);
+
+  --color-error: #f87171;
+  --color-error-bg: rgba(248, 113, 113, 0.1);
+  --color-error-border: rgba(248, 113, 113, 0.25);
+
+  --color-info: #a1a1aa;
+  --color-info-bg: rgba(255, 255, 255, 0.06);
+  --color-info-border: rgba(255, 255, 255, 0.1);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.6);
+
+  --color-chrome: #050505;
+  --color-surface-soft: rgba(255, 255, 255, 0.06);
+  --color-overlay: rgba(0, 0, 0, 0.72);
+  --color-titlebar-fg: rgba(236, 236, 238, 0.62);
+  --color-titlebar-fg-strong: rgba(236, 236, 238, 0.95);
+  --color-titlebar-hover: rgba(255, 255, 255, 0.08);
+  --color-frame-border: rgba(255, 255, 255, 0.08);
 }
 
 /* ==================== GLOBAL STYLES ==================== */
+/* Transparent host so ApexShot-style rounded window corners clip correctly */
+html {
+  font-size: 16px;
+  text-size-adjust: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
 body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: 1.5;
+  font-weight: var(--font-normal);
+  line-height: var(--leading-normal);
+  letter-spacing: var(--tracking-normal);
   color: var(--color-text-primary);
-  background-color: var(--color-bg-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01", "ss03", "tnum" 0;
+  font-variant-numeric: proportional-nums;
+}
+
+/* Leptos mounts App as a direct body child */
+body > div {
+  height: 100%;
 }
 
 *, *::before, *::after {
   box-sizing: border-box;
 }
 
+h1, h2, h3, h4, h5, h6 {
+  font-family: inherit;
+  font-weight: var(--font-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  color: var(--color-text-primary);
+}
+
+p {
+  margin: 0;
+}
+
 input, select, textarea, button {
   font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+
+/* Numbers in UI (money, counts) sit cleaner with tabular figures when needed */
+.tnum,
+[data-tnum],
+.data-table td:has([data-amount]),
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 

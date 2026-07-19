@@ -4,7 +4,6 @@
 
 use crate::api::{self, LoginResponse, UserInfo};
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
-use chrono::Timelike;
 use gloo_storage::{LocalStorage, Storage};
 use gloo_timers::callback::Interval;
 use js_sys::{Array, Function, Object, Reflect};
@@ -28,6 +27,9 @@ use debts_page::DebtsPage as DebtsPageView;
 #[path = "pages/settings.rs"]
 mod settings_page;
 use settings_page::SettingsPage as SettingsPageView;
+#[path = "components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -173,139 +175,245 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    let show_notifications = Signal::derive(move || user.get().is_some());
+    let show_debt_notifications =
+        Signal::derive(move || user.get().map(|u| u.role == "admin").unwrap_or(false));
+
     view! {
-        {move || {
-            if loading.get() {
-                view! { <p>"Loading..."</p> }.into_any()
-            } else if user.get().is_some() {
-                let role = user_role();
-                let p = page;
-                let sp = set_page;
-                let tok = token.get().unwrap_or_default();
-                let tok2 = tok.clone();
-                let logout = {
-                    let su = set_user;
-                    let st = set_token;
-                    move |_| {
-                        let t = tok2.clone();
-                        leptos::task::spawn_local(async move { let _ = api::logout(&t).await; });
-                        LocalStorage::delete("sessionToken");
-                        LocalStorage::delete("currentUser");
-                        su.set(None);
-                        st.set(None);
-                    }
-                };
-                view! {
-                    <div class="flex h-screen" style="background:var(--color-bg-base);font-family:var(--font-sans)">
-                        <Sidebar user_role=role.clone() current_page=p set_page=sp on_logout=logout />
-                        <div class="flex-1 flex flex-col overflow-hidden">
-                            <Header
-                                overdue_debts=Signal::derive(move || overdue_debts.get())
-                                available_update=Signal::derive(move || available_update.get())
-                                show_debt_notifications=role == "admin"
-                                set_page=sp
-                            />
-                            <main class="flex-1 overflow-y-auto p-6">
-                                {move || match p.get() {
-                                    Page::Dashboard => {
-                                        if role == "admin" {
-                                            view! { <DashboardPage set_page=sp /> }.into_any()
-                                        } else {
-                                            view! { <SalesPageView show_revenue_stats=false /> }.into_any()
-                                        }
-                                    },
-                                    Page::Products => view! { <ProductsPageView /> }.into_any(),
-                                    Page::Stock => view! { <StockPageView /> }.into_any(),
-                                    Page::Sales => view! { <SalesPageView show_revenue_stats=role == "admin" /> }.into_any(),
-                                    Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
-                                    Page::Debts => view! { <DebtsPageView /> }.into_any(),
-                                    Page::Settings => view! { <SettingsPageView user=user set_user=set_user /> }.into_any(),
-                                }}
-                            </main>
+        <div class="app-frame">
+            {move || {
+                if loading.get() {
+                    view! {
+                        <div class="app-shell app-shell--full">
+                            <div class="app-main">
+                                <TitleBar
+                                    overdue_debts=Signal::derive(move || overdue_debts.get())
+                                    available_update=Signal::derive(move || available_update.get())
+                                    show_notifications=show_notifications
+                                    show_debt_notifications=show_debt_notifications
+                                    set_page=set_page
+                                />
+                                <div class="app-main-body">
+                                    <PageLoading message="Starting MULTIPRINTS..."/>
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                }.into_any()
-            } else {
-                view! { <LoginPage set_user=set_user set_token=set_token set_page=set_page /> }.into_any()
+                    }.into_any()
+                } else if user.get().is_some() {
+                    let role = user_role();
+                    let p = page;
+                    let sp = set_page;
+                    let tok = token.get().unwrap_or_default();
+                    let tok2 = tok.clone();
+                    let logout = {
+                        let su = set_user;
+                        let st = set_token;
+                        move |_| {
+                            let t = tok2.clone();
+                            leptos::task::spawn_local(async move { let _ = api::logout(&t).await; });
+                            LocalStorage::delete("sessionToken");
+                            LocalStorage::delete("currentUser");
+                            su.set(None);
+                            st.set(None);
+                        }
+                    };
+                    let username = user
+                        .get()
+                        .map(|u| u.username.clone())
+                        .unwrap_or_else(|| "User".to_string());
+                    // Sidebar is full-height; titlebar only spans the main column
+                    view! {
+                        <div class="app-shell">
+                            <Sidebar
+                                user_role=role.clone()
+                                current_page=p
+                                set_page=sp
+                                on_logout=logout
+                            />
+                            <div class="app-main">
+                                <TitleBar
+                                    overdue_debts=Signal::derive(move || overdue_debts.get())
+                                    available_update=Signal::derive(move || available_update.get())
+                                    show_notifications=show_notifications
+                                    show_debt_notifications=show_debt_notifications
+                                    set_page=set_page
+                                />
+                                <div class="app-main-body">
+                                    <main class="app-page">
+                                        {move || match p.get() {
+                                            Page::Dashboard => {
+                                                if role == "admin" {
+                                                    view! { <DashboardPage set_page=sp username=username.clone() /> }.into_any()
+                                                } else {
+                                                    view! { <SalesPageView show_revenue_stats=false /> }.into_any()
+                                                }
+                                            },
+                                            Page::Products => view! { <ProductsPageView /> }.into_any(),
+                                            Page::Stock => view! { <StockPageView /> }.into_any(),
+                                            Page::Sales => view! { <SalesPageView show_revenue_stats=role == "admin" /> }.into_any(),
+                                            Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
+                                            Page::Debts => view! { <DebtsPageView /> }.into_any(),
+                                            Page::Settings => view! { <SettingsPageView user=user set_user=set_user /> }.into_any(),
+                                        }}
+                                    </main>
+                                </div>
+                            </div>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div class="app-shell app-shell--full">
+                            <div class="app-main">
+                                <TitleBar
+                                    overdue_debts=Signal::derive(move || overdue_debts.get())
+                                    available_update=Signal::derive(move || available_update.get())
+                                    show_notifications=show_notifications
+                                    show_debt_notifications=show_debt_notifications
+                                    set_page=set_page
+                                />
+                                <div class="app-main-body">
+                                    <LoginPage set_user=set_user set_token=set_token set_page=set_page />
+                                </div>
+                            </div>
+                        </div>
+                    }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+fn window_control(action: &str) {
+    let global = js_sys::global();
+    let Ok(api) = Reflect::get(&global, &JsValue::from_str("multiprintsWindow")) else {
+        return;
+    };
+    let Ok(func) =
+        Reflect::get(&api, &JsValue::from_str(action)).and_then(|v| v.dyn_into::<Function>())
+    else {
+        return;
+    };
+    let _ = func.call0(&api);
+}
+
+const THEME_STORAGE_KEY: &str = "multiprints-theme";
+
+fn read_stored_theme() -> String {
+    // Prefer raw localStorage so the early HTML boot script can share the same key/value.
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        if let Ok(Some(raw)) = storage.get_item(THEME_STORAGE_KEY) {
+            let cleaned = raw.trim().trim_matches('"');
+            if cleaned == "dark" || cleaned == "light" {
+                return cleaned.to_string();
             }
-        }}
+        }
+    }
+    LocalStorage::get::<String>(THEME_STORAGE_KEY)
+        .ok()
+        .filter(|t| t == "dark" || t == "light")
+        .unwrap_or_else(|| "light".to_string())
+}
+
+fn apply_theme(theme: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        let _ = el.set_attribute("data-theme", theme);
+    }
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(THEME_STORAGE_KEY, theme);
     }
 }
 
-#[component]
-fn Sidebar(
-    user_role: String,
-    current_page: ReadSignal<Page>,
-    set_page: WriteSignal<Page>,
-    on_logout: impl Fn(leptos::ev::MouseEvent) + 'static,
-) -> impl IntoView {
-    let nav_class = move |p: Page| -> &'static str {
-        if current_page.get() == p {
-            "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium bg-[#2563EB] text-white cursor-pointer transition-all duration-100"
-        } else {
-            "flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium text-[#737373] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#E5E5E5] cursor-pointer transition-all duration-100"
+/// Sync `html.is-maximized` so CSS can drop border-radius when maximized.
+fn sync_maximized_class() {
+    leptos::task::spawn_local(async {
+        let global = js_sys::global();
+        let Ok(api) = Reflect::get(&global, &JsValue::from_str("multiprintsWindow")) else {
+            return;
+        };
+        let Ok(func) = Reflect::get(&api, &JsValue::from_str("isMaximized"))
+            .and_then(|v| v.dyn_into::<Function>())
+        else {
+            return;
+        };
+        let Ok(ret) = func.call0(&api) else {
+            return;
+        };
+        let Ok(val) = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&ret)).await
+        else {
+            return;
+        };
+        let maximized = val.is_truthy();
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+        {
+            let classes = el.class_list();
+            let _ = if maximized {
+                classes.add_1("is-maximized")
+            } else {
+                classes.remove_1("is-maximized")
+            };
         }
-    };
-    let nav_item = |p: Page, label: &'static str, icon: &'static str| {
-        view! {
-            <span class=move || nav_class(p) on:click=move |_| set_page.set(p)>
-                <svg class="w-[18px] h-[18px] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d=icon/>
-                </svg>
-                <span>{label}</span>
-            </span>
-        }
-    };
-    view! {
-        <aside class="w-[var(--sidebar-width,220px)] bg-[#0F0F0F] flex flex-col shrink-0 h-screen">
-            <div class="px-4 py-5 border-b border-[rgba(255,255,255,0.06)]">
-                <div class="flex items-center gap-2.5">
-                    <svg class="w-7 h-7 text-[#2563EB] shrink-0" viewBox="0 0 32 32" fill="none">
-                        <rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" stroke-width="1.5"/>
-                        <path d="M9 11h14M9 16h10M9 21h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                    <span class="text-sm font-semibold text-white tracking-wide">"MULTIPRINTS"</span>
-                </div>
-            </div>
-            <nav class="flex-1 flex flex-col px-2 py-3">
-                <div class="flex-1">
-                    {if user_role == "admin" { view! {
-                        {nav_item(Page::Dashboard, "Dashboard", "M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z")}
-                        {nav_item(Page::Products, "Products", "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4")}
-                        {nav_item(Page::Stock, "Stock", "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10")}
-                    }.into_any()} else { ().into_any() }}
-                    {nav_item(Page::Sales, "Sales", "M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z")}
-                    {nav_item(Page::Printing, "Printing", "M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z")}
-                    {nav_item(Page::Debts, "Debts", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z")}
-                </div>
-                <div class="pt-3 mt-auto border-t border-[rgba(255,255,255,0.06)]">
-                    {nav_item(Page::Settings, "Settings", "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z")}
-                    <span class="flex items-center gap-2.5 px-3 py-2.5 mx-0.5 my-0.5 rounded text-[13px] font-medium text-[#737373] hover:bg-[rgba(239,68,68,0.1)] hover:text-[#F87171] cursor-pointer transition-all duration-100" on:click=on_logout>
-                        <svg class="w-[18px] h-[18px] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
-                        </svg>
-                        <span>"Log out"</span>
-                    </span>
-                </div>
-            </nav>
-        </aside>
-    }
+    });
 }
 
+/// Custom undecorated titlebar — drag region + theme + notifications + window controls only.
+/// Brand / sidebar toggle live in the sidebar so they move with collapse.
 #[component]
-fn Header(
+fn TitleBar(
     overdue_debts: Signal<Vec<crate::api::Debt>>,
     available_update: Signal<Option<api::UpdateResult>>,
-    show_debt_notifications: bool,
+    show_notifications: Signal<bool>,
+    show_debt_notifications: Signal<bool>,
     set_page: WriteSignal<Page>,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (initial_notified, set_initial_notified) = signal(false);
     let (update_notified, set_update_notified) = signal(false);
     let (installing_update, set_installing_update) = signal(false);
+    let (theme, set_theme) = signal(read_stored_theme());
+
+    // Apply theme on mount and whenever it changes
+    Effect::new(move |_| {
+        let t = theme.get();
+        apply_theme(&t);
+    });
+
+    Effect::new(move |_| {
+        sync_maximized_class();
+        if let Some(window) = web_sys::window() {
+            let listener = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_| {
+                gloo_timers::callback::Timeout::new(50, || {
+                    sync_maximized_class();
+                })
+                .forget();
+            }));
+            let _ = window
+                .add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
+            listener.forget();
+        }
+    });
+
+    Effect::new(move |_| {
+        if let Some(window) = web_sys::window() {
+            let set_open = set_open;
+            let listener = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_| {
+                set_open.set(false);
+            }));
+            let _ =
+                window.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+            listener.forget();
+        }
+    });
 
     let notification_count = move || {
-        let debt_count = if show_debt_notifications {
+        if !show_notifications.get() {
+            return 0;
+        }
+        let debt_count = if show_debt_notifications.get() {
             overdue_debts.get().len()
         } else {
             0
@@ -314,7 +422,7 @@ fn Header(
     };
 
     let overdue_total = move || {
-        if !show_debt_notifications {
+        if !show_debt_notifications.get() {
             return 0.0;
         }
         overdue_debts
@@ -342,22 +450,9 @@ fn Header(
     };
 
     Effect::new(move |_| {
-        if let Some(window) = web_sys::window() {
-            let set_open = set_open;
-            let listener = Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(move |_| {
-                set_open.set(false);
-            }));
-            let _ =
-                window.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
-            listener.forget();
-        }
-    });
-
-    Effect::new(move |_| {
-        if !show_debt_notifications {
+        if !show_debt_notifications.get() {
             return;
         }
-
         let overdue = overdue_debts.get();
         if !initial_notified.get() && !overdue.is_empty() {
             let total: f64 = overdue.iter().map(|d| d.remaining_amount).sum();
@@ -382,13 +477,15 @@ fn Header(
     });
 
     Effect::new(move |_| {
+        if !show_notifications.get() {
+            return;
+        }
         let Some(update) = available_update.get() else {
             return;
         };
         if update_notified.get() {
             return;
         }
-
         match notification_permission().as_deref() {
             Some("granted") => {
                 show_desktop_notification(
@@ -403,191 +500,475 @@ fn Header(
         }
     });
 
+    let on_minimize = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        window_control("minimize");
+    };
+    let on_maximize = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        window_control("toggleMaximize");
+        gloo_timers::callback::Timeout::new(80, || {
+            sync_maximized_class();
+        })
+        .forget();
+    };
+    let on_close = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        window_control("close");
+    };
+    let on_drag_dblclick = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        window_control("toggleMaximize");
+        gloo_timers::callback::Timeout::new(80, || {
+            sync_maximized_class();
+        })
+        .forget();
+    };
+
+    let toggle_theme = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        set_theme.update(|t| {
+            *t = if *t == "dark" {
+                "light".to_string()
+            } else {
+                "dark".to_string()
+            };
+        });
+    };
+
     view! {
-        <header class="h-14 bg-white border-b border-[#E5E5E5] flex items-center justify-between px-5 shrink-0">
-            <div class="flex items-center gap-2"></div>
-            <div class="flex items-center gap-2">
-                {move || if notification_count() > 0 || show_debt_notifications { view! {
-                    <div class="relative" on:click=move |e| e.stop_propagation()>
-                        <button
-                            type="button"
-                            class=move || if open.get() { "notif-bell is-open" } else { "notif-bell" }
-                            aria-label="Notifications"
-                            aria-expanded=move || open.get().to_string()
-                            on:click=move |_| set_open.update(|v| *v = !*v)
-                        >
+        <header class="titlebar">
+            <div
+                class="titlebar-drag"
+                attr:data-tauri-drag-region=""
+                on:dblclick=on_drag_dblclick
+            ></div>
+
+            <div class="titlebar-controls">
+                <button
+                    type="button"
+                    class="titlebar-theme-btn titlebar-theme"
+                    aria-label=move || {
+                        if theme.get() == "dark" {
+                            "Switch to light mode"
+                        } else {
+                            "Switch to dark mode"
+                        }
+                    }
+                    title=move || {
+                        if theme.get() == "dark" {
+                            "Light mode"
+                        } else {
+                            "Dark mode"
+                        }
+                    }
+                    on:mousedown=|ev| ev.stop_propagation()
+                    on:click=toggle_theme
+                >
+                    {move || if theme.get() == "dark" {
+                        // Sun icon — click to go light
+                        view! {
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                    d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z"/>
                             </svg>
-                            {move || if notification_count() > 0 { view! {
-                                <span class="notification-badge">
-                                    {move || {
-                                        let count = notification_count();
-                                        if count > 99 { "99+".to_string() } else { count.to_string() }
-                                    }}
-                                </span>
-                            }.into_any() } else { ().into_any() }}
-                        </button>
-                        {move || if open.get() { view! {
-                            <div class="notification-dropdown" role="menu" aria-label="Notifications">
-                                <div class="notification-dropdown-header">
-                                    <h3>"Notifications"</h3>
-                                    <span class=move || {
-                                        if notification_count() > 0 {
-                                            "notif-count-pill has-items".to_string()
-                                        } else {
-                                            "notif-count-pill".to_string()
-                                        }
-                                    }>
+                        }.into_any()
+                    } else {
+                        // Moon icon — click to go dark
+                        view! {
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                    d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"/>
+                            </svg>
+                        }.into_any()
+                    }}
+                </button>
+                {move || if show_notifications.get() {
+                    view! {
+                        <div class="titlebar-notif" on:click=move |e| e.stop_propagation()>
+                            <button
+                                type="button"
+                                class=move || if open.get() { "notif-bell is-open" } else { "notif-bell" }
+                                aria-label="Notifications"
+                                aria-expanded=move || open.get().to_string()
+                                title="Notifications"
+                                on:mousedown=|ev| ev.stop_propagation()
+                                on:click=move |_| set_open.update(|v| *v = !*v)
+                            >
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                                </svg>
+                                {move || if notification_count() > 0 {
+                                    view! {
+                                        <span class="notification-badge">
+                                            {move || {
+                                                let count = notification_count();
+                                                if count > 99 { "99+".to_string() } else { count.to_string() }
+                                            }}
+                                        </span>
+                                    }.into_any()
+                                } else {
+                                    ().into_any()
+                                }}
+                            </button>
+                            {move || if open.get() {
+                                view! {
+                                    <div class="notification-dropdown" role="menu" aria-label="Notifications">
+                                        <div class="notification-dropdown-header">
+                                            <h3>"Notifications"</h3>
+                                            <span class=move || {
+                                                if notification_count() > 0 {
+                                                    "notif-count-pill has-items".to_string()
+                                                } else {
+                                                    "notif-count-pill".to_string()
+                                                }
+                                            }>
+                                                {move || {
+                                                    let count = notification_count();
+                                                    if count == 0 {
+                                                        "All clear".to_string()
+                                                    } else if count == 1 {
+                                                        "1 new".to_string()
+                                                    } else {
+                                                        format!("{} new", count)
+                                                    }
+                                                }}
+                                            </span>
+                                        </div>
+                                        <div class="notification-dropdown-list">
+                                            {move || {
+                                                let items = if show_debt_notifications.get() {
+                                                    overdue_debts.get()
+                                                } else {
+                                                    Vec::new()
+                                                };
+                                                let has_update = available_update.get().is_some();
+                                                if items.is_empty() && !has_update {
+                                                    view! {
+                                                        <div class="notification-empty">
+                                                            <div class="notification-empty-icon">
+                                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                                                                </svg>
+                                                            </div>
+                                                            <p class="notification-empty-title">"You're all caught up"</p>
+                                                            <p class="notification-empty-sub">"Overdue debts and app updates will show up here."</p>
+                                                        </div>
+                                                    }.into_any()
+                                                } else {
+                                                    let mut views = Vec::new();
+
+                                                    if show_debt_notifications.get() && !items.is_empty() {
+                                                        let total = overdue_total();
+                                                        views.push(view! {
+                                                            <div class="notif-summary">
+                                                                <span class="notif-summary-label">"Overdue total"</span>
+                                                                <span class="notif-summary-value">{format!("KSh {:.0}", total)}</span>
+                                                            </div>
+                                                        }.into_any());
+                                                    }
+
+                                                    if let Some(update) = available_update.get() {
+                                                        let version_text = update
+                                                            .version
+                                                            .clone()
+                                                            .map(|version| format!("Version {} is ready to install", version))
+                                                            .unwrap_or_else(|| update.message.clone());
+                                                        views.push(view! {
+                                                            <button
+                                                                type="button"
+                                                                class="notif-item is-action"
+                                                                prop:disabled=move || installing_update.get()
+                                                                on:click=install_update
+                                                            >
+                                                                <div class="notif-item-icon update">
+                                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                                                    </svg>
+                                                                </div>
+                                                                <div class="notif-item-body">
+                                                                    <div class="notif-item-top">
+                                                                        <p class="notif-item-title">"Update available"</p>
+                                                                    </div>
+                                                                    <p class="notif-item-meta">{version_text}</p>
+                                                                    <p class="notif-item-cta">
+                                                                        {move || if installing_update.get() {
+                                                                            "Installing…"
+                                                                        } else {
+                                                                            "Install now"
+                                                                        }}
+                                                                    </p>
+                                                                </div>
+                                                            </button>
+                                                        }.into_any());
+                                                    }
+
+                                                    views.extend(items.into_iter().map(|debt| {
+                                                        let due = debt.due_date.clone().unwrap_or_default();
+                                                        let days_overdue = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
+                                                            .ok()
+                                                            .map(|d| (chrono::Local::now().date_naive() - d).num_days().max(0))
+                                                            .unwrap_or(0);
+                                                        let pill_cls = if days_overdue > 7 {
+                                                            "notif-pill hot"
+                                                        } else {
+                                                            "notif-pill mild"
+                                                        };
+                                                        let due_label = if due.is_empty() {
+                                                            "No due date".to_string()
+                                                        } else {
+                                                            format!("Due {}", due)
+                                                        };
+                                                        let overdue_label = if days_overdue == 0 {
+                                                            "Due today".to_string()
+                                                        } else if days_overdue == 1 {
+                                                            "1 day".to_string()
+                                                        } else {
+                                                            format!("{} days", days_overdue)
+                                                        };
+                                                        view! {
+                                                            <div class="notif-item">
+                                                                <div class="notif-item-icon debt">
+                                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                                    </svg>
+                                                                </div>
+                                                                <div class="notif-item-body">
+                                                                    <div class="notif-item-top">
+                                                                        <p class="notif-item-title">{debt.customer_name.clone()}</p>
+                                                                        <span class=pill_cls.to_string()>{overdue_label}</span>
+                                                                    </div>
+                                                                    <p class="notif-item-amount">{format!("KSh {:.0}", debt.remaining_amount)}</p>
+                                                                    <p class="notif-item-meta">{due_label}</p>
+                                                                    {debt.description.clone().filter(|d| !d.trim().is_empty()).map(|desc| view! {
+                                                                        <p class="notif-item-desc">{desc}</p>
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        }
+                                                        .into_any()
+                                                    }));
+                                                    views.into_any()
+                                                }
+                                            }}
+                                        </div>
                                         {move || {
-                                            let count = notification_count();
-                                            if count == 0 {
-                                                "All clear".to_string()
-                                            } else if count == 1 {
-                                                "1 new".to_string()
+                                            let has_debts = show_debt_notifications.get() && !overdue_debts.get().is_empty();
+                                            if has_debts {
+                                                view! {
+                                                    <div class="notification-dropdown-footer">
+                                                        <button type="button" on:click=go_to_debts>
+                                                            "View all debts"
+                                                        </button>
+                                                    </div>
+                                                }.into_any()
                                             } else {
-                                                format!("{} new", count)
+                                                ().into_any()
                                             }
                                         }}
-                                    </span>
-                                </div>
-                                <div class="notification-dropdown-list">
-                                    {move || {
-                                        let items = if show_debt_notifications {
-                                            overdue_debts.get()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        let has_update = available_update.get().is_some();
-                                        if items.is_empty() && !has_update {
-                                            view! {
-                                                <div class="notification-empty">
-                                                    <div class="notification-empty-icon">
-                                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                                                        </svg>
-                                                    </div>
-                                                    <p class="notification-empty-title">"You're all caught up"</p>
-                                                    <p class="notification-empty-sub">"Overdue debts and app updates will show up here."</p>
-                                                </div>
-                                            }.into_any()
-                                        } else {
-                                            let mut views = Vec::new();
+                                    </div>
+                                }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
 
-                                            if show_debt_notifications && !items.is_empty() {
-                                                let total = overdue_total();
-                                                views.push(view! {
-                                                    <div class="notif-summary">
-                                                        <span class="notif-summary-label">"Overdue total"</span>
-                                                        <span class="notif-summary-value">{format!("KSh {:.0}", total)}</span>
-                                                    </div>
-                                                }.into_any());
-                                            }
-
-                                            if let Some(update) = available_update.get() {
-                                                let version_text = update
-                                                    .version
-                                                    .clone()
-                                                    .map(|version| format!("Version {} is ready to install", version))
-                                                    .unwrap_or_else(|| update.message.clone());
-                                                views.push(view! {
-                                                    <button
-                                                        type="button"
-                                                        class="notif-item is-action"
-                                                        prop:disabled=move || installing_update.get()
-                                                        on:click=install_update
-                                                    >
-                                                        <div class="notif-item-icon update">
-                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                                                            </svg>
-                                                        </div>
-                                                        <div class="notif-item-body">
-                                                            <div class="notif-item-top">
-                                                                <p class="notif-item-title">"Update available"</p>
-                                                            </div>
-                                                            <p class="notif-item-meta">{version_text}</p>
-                                                            <p class="notif-item-cta">
-                                                                {move || if installing_update.get() {
-                                                                    "Installing…"
-                                                                } else {
-                                                                    "Install now"
-                                                                }}
-                                                            </p>
-                                                        </div>
-                                                    </button>
-                                                }.into_any());
-                                            }
-
-                                            views.extend(items.into_iter().map(|debt| {
-                                                let due = debt.due_date.clone().unwrap_or_default();
-                                                let days_overdue = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d")
-                                                    .ok()
-                                                    .map(|d| (chrono::Local::now().date_naive() - d).num_days().max(0))
-                                                    .unwrap_or(0);
-                                                let pill_cls = if days_overdue > 7 {
-                                                    "notif-pill hot"
-                                                } else {
-                                                    "notif-pill mild"
-                                                };
-                                                let due_label = if due.is_empty() {
-                                                    "No due date".to_string()
-                                                } else {
-                                                    format!("Due {}", due)
-                                                };
-                                                let overdue_label = if days_overdue == 0 {
-                                                    "Due today".to_string()
-                                                } else if days_overdue == 1 {
-                                                    "1 day".to_string()
-                                                } else {
-                                                    format!("{} days", days_overdue)
-                                                };
-                                                view! {
-                                                    <div class="notif-item">
-                                                        <div class="notif-item-icon debt">
-                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                                            </svg>
-                                                        </div>
-                                                        <div class="notif-item-body">
-                                                            <div class="notif-item-top">
-                                                                <p class="notif-item-title">{debt.customer_name.clone()}</p>
-                                                                <span class=pill_cls.to_string()>{overdue_label}</span>
-                                                            </div>
-                                                            <p class="notif-item-amount">{format!("KSh {:.0}", debt.remaining_amount)}</p>
-                                                            <p class="notif-item-meta">{due_label}</p>
-                                                            {debt.description.clone().filter(|d| !d.trim().is_empty()).map(|desc| view! {
-                                                                <p class="notif-item-desc">{desc}</p>
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                }
-                                                .into_any()
-                                            }));
-                                            views.into_any()
-                                        }
-                                    }}
-                                </div>
-                                {move || {
-                                    let has_debts = show_debt_notifications && !overdue_debts.get().is_empty();
-                                    if has_debts {
-                                        view! {
-                                            <div class="notification-dropdown-footer">
-                                                <button type="button" on:click=go_to_debts>
-                                                    "View all debts"
-                                                </button>
-                                            </div>
-                                        }.into_any()
-                                    } else {
-                                        ().into_any()
-                                    }
-                                }}
-                            </div>
-                        }.into_any() } else { ().into_any() }}
-                    </div>
-                }.into_any() } else { ().into_any() }}
+                <button
+                    type="button"
+                    class="titlebar-btn"
+                    aria-label="Minimize"
+                    title="Minimize"
+                    on:mousedown=|ev| ev.stop_propagation()
+                    on:click=on_minimize
+                >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path stroke-linecap="round" d="M3.5 8h9"/>
+                    </svg>
+                </button>
+                <button
+                    type="button"
+                    class="titlebar-btn"
+                    aria-label="Maximize"
+                    title="Maximize"
+                    on:mousedown=|ev| ev.stop_propagation()
+                    on:click=on_maximize
+                >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <rect x="3.75" y="3.75" width="8.5" height="8.5" rx="1.25"/>
+                    </svg>
+                </button>
+                <button
+                    type="button"
+                    class="titlebar-btn titlebar-btn--close"
+                    aria-label="Close"
+                    title="Close"
+                    on:mousedown=|ev| ev.stop_propagation()
+                    on:click=on_close
+                >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path stroke-linecap="round" d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>
+                    </svg>
+                </button>
             </div>
         </header>
+    }
+}
+
+#[component]
+fn Sidebar(
+    user_role: String,
+    current_page: ReadSignal<Page>,
+    set_page: WriteSignal<Page>,
+    on_logout: impl Fn(leptos::ev::MouseEvent) + 'static,
+) -> impl IntoView {
+    let is_admin = user_role == "admin";
+    let (collapsed, set_collapsed) = signal(false);
+
+    let nav_item = move |p: Page, label: &'static str, icon: &'static str| {
+        view! {
+            <button
+                type="button"
+                title=label
+                class=move || {
+                    if current_page.get() == p {
+                        "sidebar-nav-item active"
+                    } else {
+                        "sidebar-nav-item"
+                    }
+                }
+                on:click=move |_| set_page.set(p)
+            >
+                <svg class="sidebar-nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d=icon/>
+                </svg>
+                <span class="sidebar-nav-label">{label}</span>
+            </button>
+        }
+    };
+
+    view! {
+        <aside
+            class=move || {
+                if collapsed.get() {
+                    "sidebar is-collapsed"
+                } else {
+                    "sidebar"
+                }
+            }
+            aria-label="Main navigation"
+            aria-expanded=move || (!collapsed.get()).to_string()
+        >
+            <div class="sidebar-top">
+                <div class="sidebar-brand">
+                    <div class="sidebar-logo">
+                        <span class="sidebar-logo-text">"MULTIPRINTS"</span>
+                    </div>
+                    <button
+                        type="button"
+                        class="sidebar-collapse-btn"
+                        aria-label=move || {
+                            if collapsed.get() {
+                                "Expand sidebar"
+                            } else {
+                                "Collapse sidebar"
+                            }
+                        }
+                        title=move || {
+                            if collapsed.get() {
+                                "Expand"
+                            } else {
+                                "Collapse"
+                            }
+                        }
+                        on:click=move |ev| {
+                            ev.stop_propagation();
+                            set_collapsed.update(|v| *v = !*v);
+                        }
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <rect
+                                x="3"
+                                y="3"
+                                width="18"
+                                height="18"
+                                rx="2.5"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                            />
+                            <path
+                                d="M3 5.5C3 4.12 4.12 3 5.5 3H9v18H5.5C4.12 21 3 19.88 3 18.5V5.5z"
+                                fill="currentColor"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                {if is_admin {
+                    view! {
+                        <div class="sidebar-section">
+                            {nav_item(
+                                Page::Dashboard,
+                                "Dashboard",
+                                "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4",
+                            )}
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+
+                <div class="sidebar-section">
+                    <div class="sidebar-section-label">"Work"</div>
+                    {if is_admin {
+                        view! {
+                            <>
+                                {nav_item(Page::Products, "Products", "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4")}
+                                {nav_item(Page::Stock, "Stock", "M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10")}
+                            </>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
+                    {nav_item(Page::Sales, "Sales", "M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z")}
+                    {nav_item(Page::Printing, "Printing", "M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z")}
+                    {nav_item(Page::Debts, "Debts", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z")}
+                </div>
+
+                <div class="sidebar-section">
+                    <div class="sidebar-section-label">"Others"</div>
+                    {nav_item(
+                        Page::Settings,
+                        "Settings",
+                        "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z",
+                    )}
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button
+                    type="button"
+                    class="sidebar-signout"
+                    title="Sign out"
+                    on:click=on_logout
+                >
+                    <svg class="sidebar-nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                    </svg>
+                    <span class="sidebar-nav-label">"Sign out"</span>
+                </button>
+            </div>
+        </aside>
     }
 }
 
@@ -602,12 +983,12 @@ fn LoginPage(
     let (error, set_error) = signal(String::new());
     let (loading, set_loading) = signal(false);
     let (show_pw, set_show_pw) = signal(false);
-    let (_pw_focused, set_pw_focused) = signal(false);
-    let (_user_focused, set_user_focused) = signal(false);
-    let (_pw_has_val, set_pw_has_val) = signal(false);
 
-    let do_login = move |_| {
-        let u = username.get();
+    let do_login = move || {
+        if loading.get() {
+            return;
+        }
+        let u = username.get().trim().to_string();
         let p = password.get();
         if u.is_empty() || p.is_empty() {
             set_error.set("Please enter username and password".into());
@@ -641,110 +1022,266 @@ fn LoginPage(
         });
     };
 
+    let on_submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        do_login();
+    };
+
     view! {
-    <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#FAFAFA;font-family:var(--font-sans);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale">
-        <div style="width:100%;max-width:400px;padding:24px">
-            <div style="background:white;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-xl,12px);padding:40px;box-shadow:var(--shadow-sm,0 1px 3px rgba(0,0,0,0.04),0 1px 2px rgba(0,0,0,0.03))">
-                <div style="text-align:center;margin-bottom:32px">
-                    <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:8px">
-                        <svg style="width:32px;height:32px;color:#2563EB" viewBox="0 0 32 32" fill="none">
-                            <rect x="2" y="2" width="28" height="28" rx="6" stroke="currentColor" stroke-width="2"/>
-                            <path d="M9 11h14M9 16h10M9 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                        </svg>
-                        <h1 style="font-size:22px;font-weight:600;color:#0A0A0A;letter-spacing:-0.02em;margin:0">"MULTIPRINTS"</h1>
+        <div class="login-page">
+            <div class="login-shell">
+                <div class="login-card">
+                    <div class="login-brand">
+                        <h1 class="login-title">"Sign in to your account"</h1>
                     </div>
-                    <p style="font-size:14px;color:#525252;margin:6px 0 0 0">"Sign in to your account"</p>
-                </div>
 
-                <div style="margin-bottom:20px">
-                    <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Username"</label>
-                    <input type="text" placeholder="Enter username"
-                        autocomplete="username" required
-                        style="width:100%;padding:10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
-                        on:focus=move |_| set_user_focused.set(true)
-                        on:blur=move |_| set_user_focused.set(false)
-                        on:input=move |e| set_username.set(event_target_value(&e)) />
-                </div>
+                    <form class="login-form" on:submit=on_submit>
+                        <Show when=move || !error.get().is_empty()>
+                            <div class="login-error" role="alert">{move || error.get()}</div>
+                        </Show>
 
-                <div style="margin-bottom:20px">
-                    <label style="display:block;font-size:14px;font-weight:500;color:#0A0A0A;margin-bottom:6px">"Password"</label>
-                    <div style="position:relative;display:flex;align-items:center">
-                        <input type={move || if show_pw.get() { "text" } else { "password" }}
-                            placeholder="Enter password" autocomplete="current-password" required
-                            style="width:100%;padding:10px 40px 10px 12px;border:1px solid var(--color-border,#E5E5E5);border-radius:var(--radius-md,6px);font-size:14px;font-family:var(--font-sans);transition:all 150ms ease;background:white;color:#0A0A0A;outline:none"
-                            on:focus=move |_| set_pw_focused.set(true)
-                            on:blur=move |_| set_pw_focused.set(false)
-                            on:input=move |e| { set_password.set(event_target_value(&e)); set_pw_has_val.set(!event_target_value(&e).is_empty()); } />
-                        <button type="button"
-                            style="position:absolute;right:10px;background:none;border:none;cursor:pointer;color:var(--color-text-muted,#A3A3A3);padding:4px;display:flex;align-items:center;justify-content:center;transition:color 150ms ease;border-radius:4px"
-                            on:click=move |_| set_show_pw.update(|v| *v = !*v)>
-                            {move || if show_pw.get() {
+                        <div class="login-fields">
+                            <div class="login-field">
+                                <label class="login-label" for="login-username">"Username"</label>
+                                <input
+                                    id="login-username"
+                                    type="text"
+                                    class="login-input"
+                                    placeholder="Username"
+                                    autocomplete="username"
+                                    prop:value=move || username.get()
+                                    on:input=move |e| set_username.set(event_target_value(&e))
+                                />
+                            </div>
+
+                            <div class="login-field">
+                                <label class="login-label" for="login-password">"Password"</label>
+                                <div class="login-password-wrap">
+                                    <input
+                                        id="login-password"
+                                        type=move || if show_pw.get() { "text" } else { "password" }
+                                        class="login-input login-input--password"
+                                        placeholder="Password"
+                                        autocomplete="current-password"
+                                        prop:value=move || password.get()
+                                        on:input=move |e| set_password.set(event_target_value(&e))
+                                    />
+                                    <button
+                                        type="button"
+                                        class="login-pw-toggle"
+                                        aria-label=move || if show_pw.get() { "Hide password" } else { "Show password" }
+                                        on:click=move |_| set_show_pw.update(|v| *v = !*v)
+                                    >
+                                        {move || if show_pw.get() {
+                                            view! {
+                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                        d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                                                </svg>
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                        d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                                                </svg>
+                                            }.into_any()
+                                        }}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button
+                            type="submit"
+                            class="login-submit"
+                            prop:disabled=move || loading.get()
+                        >
+                            {move || if loading.get() {
                                 view! {
-                                    <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
-                                    </svg>
+                                    <span class="login-submit-inner">
+                                        <span class="login-spinner" aria-hidden="true"></span>
+                                        "Signing in..."
+                                    </span>
                                 }.into_any()
                             } else {
-                                view! {
-                                    <svg style="width:18px;height:18px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
-                                    </svg>
-                                }.into_any()
+                                view! { <span>"Sign In"</span> }.into_any()
                             }}
                         </button>
-                    </div>
-                </div>
+                    </form>
 
-                <Show when=move || !error.get().is_empty()>
-                    <div style="color:var(--color-error,#EF4444);font-size:13px;margin-bottom:16px;padding:8px 12px;background:var(--color-error-bg,#FEF2F2);border:1px solid var(--color-error-border,#FECACA);border-radius:var(--radius-md,6px)">
-                        {move || error.get()}
-                    </div>
-                </Show>
-
-                <button
-                    style="width:100%;padding:10px 16px;background:#2563EB;color:white;border:none;border-radius:var(--radius-md,6px);font-size:14px;font-weight:500;cursor:pointer;transition:all 150ms ease;margin-top:8px;display:flex;align-items:center;justify-content:center"
-                    disabled=move || loading.get()
-                    on:click=do_login>
-                    {move || if loading.get() {
-                        view! {
-                            <div style="display:flex;align-items:center;gap:8px">
-                                <div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top:2px solid white;border-radius:50%" class="animate-spin"></div>
-                                <span>"Signing in..."</span>
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! { <span>"Sign in"</span> }.into_any()
-                    }}
-                </button>
-
-                <div style="text-align:center;margin-top:24px;font-size:12px;color:var(--color-text-muted,#A3A3A3)">
-                    "© 2026 MULTIPRINTS"
+                    <p class="login-footer">"© 2026 MULTIPRINTS"</p>
                 </div>
             </div>
         </div>
-    </div>
+    }
+}
+
+fn short_chart_label(raw: &str, period: &str) -> String {
+    let s = raw.trim();
+    match period {
+        "week" => s.chars().take(3).collect(),
+        "year" => s.chars().take(3).collect(),
+        "month" => {
+            // Backend: "22–28 Jun" or "22-28 Jun" → keep month token + last day
+            if let Some(month) = s.split_whitespace().last() {
+                if let Some(range) = s.split_whitespace().next() {
+                    let end = range
+                        .split(['–', '-', '—'])
+                        .next_back()
+                        .unwrap_or(range)
+                        .trim();
+                    return format!("{} {}", month, end);
+                }
+            }
+            s.to_string()
         }
+        _ => s.to_string(),
+    }
+}
+
+/// Catmull–Rom → cubic Bézier smooth path through the points.
+fn smooth_line_through(pts: &[(f64, f64)]) -> String {
+    if pts.is_empty() {
+        return String::new();
+    }
+    if pts.len() == 1 {
+        return format!("M{:.2},{:.2}", pts[0].0, pts[0].1);
+    }
+    if pts.len() == 2 {
+        return format!(
+            "M{:.2},{:.2} L{:.2},{:.2}",
+            pts[0].0, pts[0].1, pts[1].0, pts[1].1
+        );
+    }
+
+    // Tension: smaller = tighter to points, larger = rounder (1/6 ≈ classic Catmull–Rom)
+    let t = 0.22;
+    let mut d = format!("M{:.2},{:.2}", pts[0].0, pts[0].1);
+
+    for i in 0..pts.len() - 1 {
+        let p0 = if i == 0 { pts[0] } else { pts[i - 1] };
+        let p1 = pts[i];
+        let p2 = pts[i + 1];
+        let p3 = if i + 2 < pts.len() {
+            pts[i + 2]
+        } else {
+            pts[i + 1]
+        };
+
+        let cp1x = p1.0 + (p2.0 - p0.0) * t;
+        let cp1y = p1.1 + (p2.1 - p0.1) * t;
+        let cp2x = p2.0 - (p3.0 - p1.0) * t;
+        let cp2y = p2.1 - (p3.1 - p1.1) * t;
+
+        d.push_str(&format!(
+            " C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
+            cp1x, cp1y, cp2x, cp2y, p2.0, p2.1
+        ));
+    }
+    d
+}
+
+/// Build SVG line + area paths for a compact metric sparkline (smooth curves).
+fn sparkline_paths(values: &[f64], width: f64, height: f64) -> Option<(String, String)> {
+    if values.len() < 2 {
+        return None;
+    }
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // Soft floor so a single spike doesn't pin everything to the bottom edge
+    let range = (max - min).max(1.0);
+    let pad = 3.0;
+    let plot_h = (height - pad * 2.0).max(1.0);
+    let n = values.len();
+    let step = width / (n - 1) as f64;
+
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n);
+    for (i, v) in values.iter().enumerate() {
+        let x = i as f64 * step;
+        let t = ((v - min) / range).clamp(0.0, 1.0);
+        let y = pad + plot_h * (1.0 - t);
+        pts.push((x, y));
+    }
+
+    let line = smooth_line_through(&pts);
+    let last = pts.last()?;
+    let first = pts.first()?;
+    let fill = format!(
+        "{} L{:.2},{:.2} L{:.2},{:.2} Z",
+        line, last.0, height, first.0, height
+    );
+    Some((line, fill))
 }
 
 #[component]
-fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
+fn MetricSparkline(
+    /// Series values (time order).
+    values: Vec<f64>,
+    /// CSS color for the stroke (and gradient).
+    color: &'static str,
+    /// Unique gradient id so multiple sparklines don't clash.
+    #[prop(into)]
+    grad_id: String,
+) -> impl IntoView {
+    const W: f64 = 96.0;
+    const H: f64 = 40.0;
+    let paths = sparkline_paths(&values, W, H);
+    view! {
+        <div class="dash-metric-spark" aria-hidden="true">
+            {match paths {
+                Some((line, fill)) => view! {
+                    <svg
+                        class="dash-spark-svg"
+                        viewBox=format!("0 0 {} {}", W, H)
+                        preserveAspectRatio="none"
+                    >
+                        <defs>
+                            <linearGradient id=grad_id.clone() x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stop-color=color stop-opacity="0.32"/>
+                                <stop offset="100%" stop-color=color stop-opacity="0"/>
+                            </linearGradient>
+                        </defs>
+                        <path d=fill fill=format!("url(#{})", grad_id) stroke="none"/>
+                        <path
+                            class="dash-spark-line"
+                            d=line
+                            fill="none"
+                            stroke=color
+                            stroke-width="2.25"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                }.into_any(),
+                None => ().into_any(),
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView {
     let (summary, set_summary) = signal(None::<crate::api::DashboardSummary>);
     let (chart_data, set_chart_data) = signal(Vec::<crate::api::DashboardChartPoint>::new());
-    let (chart_period, set_chart_period) = signal("week".to_string());
+    let (chart_period, set_chart_period) = signal("year".to_string());
     let (hovered_bar, set_hovered_bar) = signal(None::<usize>);
+    let (txn_query, set_txn_query) = signal(String::new());
     let (loading, set_loading) = signal(true);
 
-    let hour = chrono::Local::now().hour();
-    let greeting = if hour < 12 {
-        "Good morning"
-    } else if hour < 18 {
-        "Good afternoon"
-    } else {
-        "Good evening"
+    let display_name = {
+        let n = username.trim();
+        if n.is_empty() {
+            "Admin".to_string()
+        } else {
+            let mut chars = n.chars();
+            match chars.next() {
+                Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                None => "Admin".to_string(),
+            }
+        }
     };
 
     let load_summary = {
@@ -758,22 +1295,16 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
         }
     };
 
-    let load_chart = {
-        move || {
-            let period = chart_period.get();
-            leptos::task::spawn_local(async move {
-                if let Ok(points) = api::get_dashboard_chart(&period).await {
-                    set_chart_data.set(points);
-                }
-            });
-        }
-    };
-
-    // Initial load + period change for chart; live poll only refreshes summary cards
     load_summary();
+    // Period change always reloads chart (tracks chart_period)
     create_effect(move |_| {
-        let _ = chart_period.get();
-        load_chart();
+        let period = chart_period.get();
+        set_hovered_bar.set(None);
+        leptos::task::spawn_local(async move {
+            if let Ok(points) = api::get_dashboard_chart(&period).await {
+                set_chart_data.set(points);
+            }
+        });
     });
     let (live_tick, set_live_tick) = signal(0u64);
     create_effect(move |_| {
@@ -787,23 +1318,7 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
         set_live_tick.update(|t| *t = t.wrapping_add(1));
     });
 
-    let fmt_f = |a: f64| format!("KSh {:.0}", a);
-
-    let chart_meta = move || match chart_period.get().as_str() {
-        "month" => (
-            "Last 4 weeks",
-            "Highest Week",
-            "Week",
-            "Weekly Revenue (KSh)",
-        ),
-        "year" => (
-            "Last 12 months",
-            "Highest Month",
-            "Month",
-            "Monthly Revenue (KSh)",
-        ),
-        _ => ("Last 7 days", "Highest Day", "Day", "Daily Revenue (KSh)"),
-    };
+    let fmt_money = |a: f64| format!("KSh {:.0}", a);
 
     let chart_y_ticks = move || {
         let data = chart_data.get();
@@ -832,291 +1347,357 @@ fn DashboardPage(set_page: WriteSignal<Page>) -> impl IntoView {
             ticks.push(val);
             val += step;
         }
+        if ticks.len() < 2 {
+            ticks = vec![0.0, max_val];
+        }
         ticks
     };
 
-    // ---- recent transactions (combined) ----
-    let recent_txns = move || {
-        summary
+    let filtered_txns = move || {
+        let q = txn_query.get().trim().to_lowercase();
+        let items = summary
             .get()
             .map(|s| s.recent_transactions)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if q.is_empty() {
+            return items;
+        }
+        items
+            .into_iter()
+            .filter(|t| {
+                t.name.to_lowercase().contains(&q)
+                    || t.type_label.to_lowercase().contains(&q)
+                    || t.date.to_lowercase().contains(&q)
+            })
+            .collect::<Vec<_>>()
     };
 
-    // ---- activity feed ----
-    let activity_items = move || summary.get().map(|s| s.activity_items).unwrap_or_default();
-
-    // ---- top products ----
-    let top_products = move || summary.get().map(|s| s.top_products).unwrap_or_default();
-
-    // ---- chart SVG constants ----
-    let chart_w = 640.0_f64;
-    let chart_h = 260.0_f64;
-    let pad_l = 60.0;
-    let pad_r = 20.0;
-    let pad_t = 20.0;
-    let pad_b = 36.0;
-
     view! {
-        <Show when=move || !loading.get() fallback=|| view! { <div class="page-content"><p class="text-gray-500">"Loading dashboard..."</p></div> }>
-        <div class="page-content">
-            <div class="mb-6">
-                <h1 class="text-[22px] font-semibold text-[#0A0A0A] tracking-[-0.02em] mb-1">{greeting} ", Admin"</h1>
-                <p class="text-sm text-[#525252]">"Here's what's happening today."</p>
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div class="dash">
+                <PageLoading message="Loading dashboard..."/>
             </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="bg-white border border-[#E5E5E5] p-5">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <p class="text-xs text-gray-500 font-medium mb-1">"Total Revenue"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || fmt_f(summary.get().map(|s| s.total_revenue).unwrap_or(0.0))}</h3>
-                            <div class="flex items-center gap-1 mt-2 text-xs font-medium text-green-600">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
-                                <span>"All time"</span>
-                            </div>
-                        </div>
-                        <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        </div>
-                    </div>
-                </div>
-                <div class="bg-white border border-[#E5E5E5] p-5">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p>
-                            <h3 class="text-xl font-semibold text-[#0A0A0A]">{move || summary.get().map(|s| s.today_sales_count).unwrap_or(0)}</h3>
-                            <div class="flex items-center gap-1 mt-2 text-xs font-medium text-gray-500">
-                                <span>{move || format!("Today: KSh {:.0}", summary.get().map(|s| s.today_revenue).unwrap_or(0.0))}</span>
-                            </div>
-                        </div>
-                        <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
-                        </div>
-                    </div>
-                </div>
-                <div class="bg-white border border-[#E5E5E5] p-5">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <p class="text-xs text-gray-500 font-medium mb-1">"Outstanding Debts"</p>
-                            <h3 class="text-xl font-semibold text-[#EF4444]">{move || fmt_f(summary.get().map(|s| s.outstanding_debts).unwrap_or(0.0))}</h3>
-                            <div class="flex items-center gap-1 mt-2 text-xs font-medium text-red-500">
-                                <span>{move || format!("{} pending", summary.get().map(|s| s.pending_debts_count).unwrap_or(0))}</span>
-                            </div>
-                        </div>
-                        <div class="w-9 h-9 flex items-center justify-center bg-[#EFF6FF] text-[#2563EB]">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-3 gap-6">
-                <div class="col-span-2 space-y-6">
-                    // ---- Revenue Chart ----
-                    <div class="bg-white border border-[#E5E5E5] p-5">
-                        <div class="flex items-center justify-between mb-5">
-                            <div>
-                                <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em]">"Revenue"</h3>
-                                <p class="text-xs text-gray-500 mt-0.5">{move || chart_meta().0}</p>
-                            </div>
-                            <div class="flex border border-gray-200 rounded overflow-hidden">
-                                {let cp_rd = chart_period;
-                                let cp_wr = set_chart_period;
-                                let periods = [("week", "Week"), ("month", "Month"), ("year", "Year")];
-                                periods.iter().map(|(val, label)| {
-                                    let v = *val;
-                                    view! {
-                                        <button
-                                            on:click=move |_| cp_wr.set(v.to_string())
-                                            class={move || if cp_rd.get() == v { "px-3 py-1.5 text-xs font-medium bg-[#2563EB] text-white" } else { "px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50" }}
-                                        >{*label}</button>
-                                    }
-                                }).collect::<Vec<_>>()}
-                            </div>
-                        </div>
-                        <div class="relative w-full" style="overflow-x:auto">
-                            <svg viewBox=move || format!("0 0 {} {}", chart_w, chart_h) class="w-full" style="min-height:260px;max-height:320px">
-                                // Y-axis title
-                                <text x="6" y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif" transform=move || format!("rotate(-90 6 {})", chart_h/2.0)>{move || chart_meta().3}</text>
-                                // Y-axis gridlines + labels
-                                {move || {
-                                    let ticks = chart_y_ticks();
-                                    let max_tick = ticks.last().copied().unwrap_or(1.0).max(1.0);
-                                    let plot_h = chart_h - pad_t - pad_b;
-                                    ticks.into_iter().map(|val| {
-                                        let y = pad_t + plot_h - (val / max_tick) * plot_h;
-                                        let label = if val >= 1_000_000.0 {
-                                            format!("{:.1}M", val / 1_000_000.0)
-                                        } else if val >= 1000.0 {
-                                            format!("{}k", (val / 1000.0) as i64)
+        }>
+        <div class="dash">
+            <div class="dash-top">
+                <h2 class="dash-welcome">"Welcome back, " {display_name.clone()} "!"</h2>
+                <div class="dash-period" role="group" aria-label="Chart period">
+                    {let cp = chart_period;
+                    let set_cp = set_chart_period;
+                    [("week", "This Week"), ("month", "This Month"), ("year", "This Year")]
+                        .into_iter()
+                        .map(|(val, label)| {
+                            let v = val;
+                            view! {
+                                <button
+                                    type="button"
+                                    class=move || {
+                                        if cp.get() == v {
+                                            "dash-period-btn is-active"
                                         } else {
-                                            format!("{:.0}", val)
-                                        };
-                                        view! {
-                                            <g>
-                                                <line x1=pad_l y1=y x2=chart_w-pad_r y2=y stroke="#f3f4f6" stroke-width="1"/>
-                                                <text x=pad_l-8.0 y=y+4.0 text-anchor="end" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">"KSh " {label}</text>
-                                            </g>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>().into_any()
-                                }}
-                                // Bars
-                                {move || {
-                                    let data = chart_data.get();
-                                    if data.is_empty() { return view! { <text x=chart_w/2.0 y=chart_h/2.0 text-anchor="middle" fill="#9ca3af" font-size="13">"No data"</text> }.into_any(); }
-                                    let max_tick = chart_y_ticks().last().copied().unwrap_or(1.0).max(1.0);
-                                    let plot_h = chart_h - pad_t - pad_b;
-                                    let plot_w = chart_w - pad_l - pad_r;
-                                    let bar_gap = 8.0;
-                                    let bar_w = ((plot_w - bar_gap * (data.len().saturating_sub(1)) as f64) / data.len() as f64).max(18.0);
-                                    let hovered = hovered_bar;
-                                    data.into_iter().enumerate().map(|(i, point)| {
-                                        let val = point.amount;
-                                        let point_label = point.label.clone();
-                                        let bar_h = (val / max_tick * plot_h).max(if val > 0.0 { 3.0 } else { 0.0 });
-                                        let x = pad_l + i as f64 * (bar_w + bar_gap);
-                                        let y = pad_t + plot_h - bar_h;
-                                        let tooltip_w = 92.0;
-                                        let tooltip_x = (x + bar_w / 2.0 - tooltip_w / 2.0).max(pad_l).min(chart_w - pad_r - tooltip_w);
-                                        let is_hovered = move || hovered.get() == Some(i);
-                                        view! {
-                                            <g>
-                                                <rect
-                                                    x=x y=y width=bar_w height=bar_h
-                                                    rx="4" ry="4"
-                                                    fill={move || if is_hovered() { "#374151" } else { "#111827" }}
-                                                    style="cursor:pointer;transition:fill 0.15s"
-                                                    on:mouseenter=move |_| set_hovered_bar.set(Some(i))
-                                                    on:mouseleave=move |_| set_hovered_bar.set(None)
-                                                ></rect>
-                                                {move || if hovered.get() == Some(i) {
-                                                    view! {
-                                                        <g>
-                                                            <rect x=tooltip_x y=(y-42.0).max(4.0) width=tooltip_w height="34" rx="8" fill="#111827"></rect>
-                                                            <text x=tooltip_x+tooltip_w/2.0 y=(y-28.0).max(18.0) text-anchor="middle" fill="white" font-size="12" font-weight="bold" font-family="Inter,system-ui,sans-serif">{fmt_f(val)}</text>
-                                                            <text x=tooltip_x+tooltip_w/2.0 y=(y-15.0).max(30.0) text-anchor="middle" fill="#d1d5db" font-size="10" font-family="Inter,system-ui,sans-serif">{point_label.clone()}</text>
-                                                        </g>
-                                                    }.into_any()
-                                                } else { ().into_any() }}
-                                            </g>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>().into_any()
-                                }}
-                                // X-axis line
-                                <line x1=pad_l y1=chart_h-pad_b x2=chart_w-pad_r y2=chart_h-pad_b stroke="#e5e7eb" stroke-width="1"/>
-                                // X-axis labels
-                                {move || {
-                                    let data = chart_data.get();
-                                    if data.is_empty() { return ().into_any(); }
-                                    let plot_w = chart_w - pad_l - pad_r;
-                                    let bar_gap = 8.0;
-                                    let bar_w = ((plot_w - bar_gap * (data.len().saturating_sub(1)) as f64) / data.len() as f64).max(18.0);
-                                    data.iter().enumerate().map(|(i, point)| {
-                                        let x = pad_l + i as f64 * (bar_w + bar_gap) + bar_w / 2.0;
-                                        view! {
-                                            <text x=x y=chart_h-14.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{point.label.clone()}</text>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>().into_any()
-                                }}
-                                // X-axis title
-                                <text x=(pad_l + chart_w - pad_r) / 2.0 y=chart_h - 2.0 text-anchor="middle" fill="#9ca3af" font-size="11" font-family="Inter,system-ui,sans-serif">{move || chart_meta().2}</text>
-                            </svg>
-                        </div>
-                    </div>
-
-                    // ---- Recent Transactions ----
-                    <div class="bg-white border border-[#E5E5E5] p-5">
-                        <div class="flex items-center justify-between mb-4">
-                            <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em]">"Recent Transactions"</h3>
-                            <span class="text-xs font-medium text-[#2563EB] cursor-pointer" on:click=move |_| set_page.set(Page::Sales)>"View all"</span>
-                        </div>
-                        <table class="w-full text-left">
-                            <thead>
-                                <tr>
-                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Item"</th>
-                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Date"</th>
-                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Amount"</th>
-                                    <th class="px-4 py-3 text-[11px] font-medium text-[#A3A3A3] uppercase tracking-[0.05em] bg-[#F0F0F0] border-b border-[#E5E5E5]">"Status"</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {move || {
-                                    let items = recent_txns();
-                                    if items.is_empty() {
-                                        return view! { <tr><td colspan="4" class="px-6 py-8 text-center text-gray-400 italic">"No transactions yet"</td></tr> }.into_any();
-                                    }
-                                    items.into_iter().map(|item| {
-                                        let status = if item.is_debt { ("Debt", "bg-[#FFFBEB] text-[#F59E0B]") } else { ("Completed", "bg-[#ECFDF5] text-[#10B981]") };
-                                        view! {
-                                            <tr class="border-b border-[#F0F0F0] hover:bg-[#F5F5F5] transition-all duration-100">
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{item.name} <span class="text-xs text-gray-400 ml-1">"(" {item.type_label} ")"</span></td>
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">{item.date}</td>
-                                                <td class="px-4 py-[14px] text-sm text-[#0A0A0A]">"KSh " {item.amount}</td>
-                                                <td class="px-4 py-[14px]"><span class={format!("inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded {}", status.1)}>{status.0}</span></td>
-                                            </tr>
+                                            "dash-period-btn"
                                         }
-                                    }).collect::<Vec<_>>().into_any()
-                                }}
-                            </tbody>
-                        </table>
+                                    }
+                                    on:click=move |_| set_cp.set(v.to_string())
+                                >{label}</button>
+                            }
+                        })
+                        .collect::<Vec<_>>()}
+                </div>
+            </div>
+
+            <div class="dash-hero">
+                <div class="dash-card dash-chart-card">
+                    <div class="dash-chart-head">
+                        <h3 class="dash-chart-title">"Revenue"</h3>
+                        <span class="dash-chart-sub">
+                            {move || match chart_period.get().as_str() {
+                                "week" => "Last 7 days",
+                                "month" => "Last 4 weeks",
+                                _ => "Last 12 months",
+                            }}
+                        </span>
+                    </div>
+                    // CSS bars fill 100% width — no SVG letterboxing / side gaps
+                    <div class="dash-chart-body">
+                        {move || {
+                            let data = chart_data.get();
+                            if data.is_empty() {
+                                return view! {
+                                    <p class="dash-chart-empty">"No data for this period"</p>
+                                }.into_any();
+                            }
+                            let period = chart_period.get();
+                            let ticks = chart_y_ticks();
+                            let max_tick = ticks.last().copied().unwrap_or(1.0).max(1.0);
+                            // Only highlight / tip while actually hovering — never sticky peak
+                            let hot = hovered_bar.get();
+
+                            // Y labels top → bottom
+                            let y_labels: Vec<String> = ticks
+                                .iter()
+                                .rev()
+                                .map(|val| {
+                                    if *val >= 1_000_000.0 {
+                                        format!("{:.1}M", val / 1_000_000.0)
+                                    } else if *val >= 1000.0 {
+                                        format!("{}k", (*val / 1000.0) as i64)
+                                    } else {
+                                        format!("{:.0}", val)
+                                    }
+                                })
+                                .collect();
+
+                            view! {
+                                <div class="dash-bars-layout">
+                                    <div class="dash-y-axis" aria-hidden="true">
+                                        {y_labels.into_iter().map(|lab| view! {
+                                            <span class="dash-y-tick">{lab}</span>
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                    <div class="dash-plot">
+                                        <div class="dash-plot-grid" aria-hidden="true">
+                                            {(0..ticks.len()).map(|_| view! {
+                                                <span class="dash-plot-grid-line"></span>
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                        <div class="dash-bars">
+                                            {data.into_iter().enumerate().map(|(i, point)| {
+                                                let val = point.amount;
+                                                let label = short_chart_label(&point.label, &period);
+                                                let pct = if max_tick > 0.0 {
+                                                    ((val / max_tick) * 100.0).clamp(0.0, 100.0)
+                                                } else {
+                                                    0.0
+                                                };
+                                                // Tiny visible stub for zeros so columns still read
+                                                let height_pct = if val > 0.0 { pct.max(2.0) } else { 1.5 };
+                                                let active = hot == Some(i);
+                                                let zero = val <= 0.0;
+                                                let tip_money = fmt_money(val);
+                                                let tip_label = label.clone();
+                                                view! {
+                                                    <div
+                                                        class=if active { "dash-bar-col is-active" } else { "dash-bar-col" }
+                                                        on:mouseenter=move |_| set_hovered_bar.set(Some(i))
+                                                        on:mouseleave=move |_| set_hovered_bar.set(None)
+                                                    >
+                                                        <div class="dash-bar-track">
+                                                            <div
+                                                                class=if zero {
+                                                                    "dash-bar-fill is-zero"
+                                                                } else if active {
+                                                                    "dash-bar-fill is-active"
+                                                                } else {
+                                                                    "dash-bar-fill"
+                                                                }
+                                                                style=format!("height:{:.2}%", height_pct)
+                                                            >
+                                                                {if active && !zero {
+                                                                    view! {
+                                                                        <div class="dash-bar-tip">
+                                                                            <span class="dash-bar-tip-label">{tip_label.clone()}</span>
+                                                                            <span class="dash-bar-tip-value">{tip_money}</span>
+                                                                        </div>
+                                                                    }.into_any()
+                                                                } else {
+                                                                    ().into_any()
+                                                                }}
+                                                            </div>
+                                                        </div>
+                                                        <span class="dash-bar-x">{label}</span>
+                                                    </div>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    </div>
+                                </div>
+                            }.into_any()
+                        }}
                     </div>
                 </div>
 
-                // ---- Right Column ----
-                <div class="space-y-6">
-                    // Activity Feed
-                    <div class="bg-white border border-[#E5E5E5] p-5">
-                        <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em] mb-5">"Activity"</h3>
-                        <div class="relative">
-                            {move || {
-                                let items = activity_items();
-                                if items.is_empty() {
-                                    return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No recent activity"</p> }.into_any();
-                                }
-                                let len = items.len();
-                                items.into_iter().enumerate().map(|(i, item)| {
-                                    let is_last = i == len - 1;
-                                    let dot_color = if item.item_type == "debt" { "bg-[#F59E0B]" } else { "bg-[#2563EB]" };
-                                    view! {
-                                        <div class="relative pl-5 pb-5">
-                                            {if !is_last { view! { <div class="absolute top-1.5 left-[5px] bottom-[-4px] w-px bg-[#E5E5E5]"></div> }.into_any() } else { ().into_any() }}
-                                            <div class={format!("absolute top-1 left-0 w-2.5 h-2.5 rounded-full {}", dot_color)}></div>
-                                            <p class="text-sm font-medium text-[#0A0A0A]">{item.text}</p>
-                                            <p class="text-xs text-[#525252] mt-0.5">{item.time}</p>
-                                        </div>
-                                    }
-                                }).collect::<Vec<_>>().into_any()
-                            }}
+                <div class="dash-card dash-metrics">
+                    <div class="dash-metric">
+                        <div class="dash-metric-main">
+                            <div class="dash-metric-icon" aria-hidden="true">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </div>
+                            <div class="dash-metric-body">
+                                <p class="dash-metric-label">"Total Revenue"</p>
+                                <p class="dash-metric-value">
+                                    {move || fmt_money(summary.get().map(|s| s.total_revenue).unwrap_or(0.0))}
+                                </p>
+                                <p class="dash-metric-hint is-muted">"All time"</p>
+                            </div>
                         </div>
+                        {move || {
+                            let vals: Vec<f64> = chart_data.get().into_iter().map(|p| p.amount).collect();
+                            view! {
+                                <MetricSparkline values=vals color="#6565EC" grad_id="spark-rev"/>
+                            }
+                        }}
                     </div>
+                    <div class="dash-metric">
+                        <div class="dash-metric-main">
+                            <div class="dash-metric-icon" aria-hidden="true">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </div>
+                            <div class="dash-metric-body">
+                                <p class="dash-metric-label">"Outstanding Debts"</p>
+                                <p class=move || {
+                                    let amt = summary.get().map(|s| s.outstanding_debts).unwrap_or(0.0);
+                                    if amt > 0.0 { "dash-metric-value is-danger" } else { "dash-metric-value" }
+                                }>
+                                    {move || fmt_money(summary.get().map(|s| s.outstanding_debts).unwrap_or(0.0))}
+                                </p>
+                                <p class=move || {
+                                    let n = summary.get().map(|s| s.pending_debts_count).unwrap_or(0);
+                                    if n > 0 { "dash-metric-hint is-warn" } else { "dash-metric-hint is-muted" }
+                                }>
+                                    {move || format!("{} pending", summary.get().map(|s| s.pending_debts_count).unwrap_or(0))}
+                                </p>
+                            </div>
+                        </div>
+                        // No historical debt series yet — omit sparkline
+                    </div>
+                    <div class="dash-metric">
+                        <div class="dash-metric-main">
+                            <div class="dash-metric-icon" aria-hidden="true">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
+                            </div>
+                            <div class="dash-metric-body">
+                                <p class="dash-metric-label">"Today's Sales"</p>
+                                <p class="dash-metric-value">
+                                    {move || summary.get().map(|s| s.today_sales_count).unwrap_or(0)}
+                                </p>
+                                <p class="dash-metric-hint is-ok">
+                                    {move || format!("KSh {:.0} today", summary.get().map(|s| s.today_revenue).unwrap_or(0.0))}
+                                </p>
+                            </div>
+                        </div>
+                        {move || {
+                            // Same period revenue series as activity proxy for sales trend
+                            let vals: Vec<f64> = chart_data.get().into_iter().map(|p| p.amount).collect();
+                            view! {
+                                <MetricSparkline values=vals color="#F59E0B" grad_id="spark-sales"/>
+                            }
+                        }}
+                    </div>
+                    <div class="dash-metric">
+                        <div class="dash-metric-main">
+                            <div class="dash-metric-icon" aria-hidden="true">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                            </div>
+                            <div class="dash-metric-body">
+                                <p class="dash-metric-label">"Top Product"</p>
+                                <p class="dash-metric-value dash-metric-value--sm">
+                                    {move || {
+                                        summary.get()
+                                            .and_then(|s| s.top_products.first().map(|p| p.name.clone()))
+                                            .unwrap_or_else(|| "—".to_string())
+                                    }}
+                                </p>
+                                <p class="dash-metric-hint is-muted">
+                                    {move || {
+                                        summary.get()
+                                            .and_then(|s| s.top_products.first().map(|p| format!("{} sold", p.quantity)))
+                                            .unwrap_or_else(|| "No sales yet".to_string())
+                                    }}
+                                </p>
+                            </div>
+                        </div>
+                        // Categorical metric — sparkline not applicable
+                    </div>
+                </div>
+            </div>
 
-                    // Top Products
-                    <div class="bg-white border border-[#E5E5E5] p-5">
-                        <h3 class="text-base font-semibold text-[#0A0A0A] tracking-[-0.01em] mb-5">"Top Products"</h3>
-                        <div class="space-y-4">
+            // ---- Transactions ----
+            <div class="dash-table-section">
+                <div class="dash-table-head">
+                    <h3 class="dash-section-title">"Recent Transactions"</h3>
+                    <div class="dash-table-actions">
+                        <label class="dash-search">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/>
+                            </svg>
+                            <input
+                                type="search"
+                                placeholder="Search..."
+                                prop:value=move || txn_query.get()
+                                on:input=move |ev| set_txn_query.set(event_target_value(&ev))
+                                aria-label="Search transactions"
+                            />
+                        </label>
+                        <button
+                            type="button"
+                            class="dash-btn-primary"
+                            on:click=move |_| set_page.set(Page::Sales)
+                        >
+                            <span aria-hidden="true">"+"</span>
+                            " New Sale"
+                        </button>
+                    </div>
+                </div>
+
+                <div class="dash-card dash-table-card">
+                    <table class="dash-table">
+                        <thead>
+                            <tr>
+                                <th>"Item"</th>
+                                <th>"Type"</th>
+                                <th>"Date"</th>
+                                <th>"Amount"</th>
+                                <th>"Status"</th>
+                            </tr>
+                        </thead>
+                        <tbody>
                             {move || {
-                                let items = top_products();
+                                let items = filtered_txns();
                                 if items.is_empty() {
-                                    return view! { <p class="text-sm text-[#A3A3A3] text-center py-8">"No sales data available"</p> }.into_any();
+                                    return view! {
+                                        <tr>
+                                            <td colspan="5" class="dash-table-empty">"No transactions found"</td>
+                                        </tr>
+                                    }.into_any();
                                 }
-                                let max_qty = items.first().map(|item| item.quantity as f64).unwrap_or(1.0);
                                 items.into_iter().map(|item| {
-                                    let pct = (item.quantity as f64 / max_qty * 100.0).min(100.0);
+                                    let (status_label, status_cls) = if item.is_debt {
+                                        ("Debt", "dash-status is-warn")
+                                    } else {
+                                        ("Completed", "dash-status is-ok")
+                                    };
                                     view! {
-                                        <div>
-                                            <div class="flex justify-between text-sm mb-1">
-                                                <span class="font-medium text-[#0A0A0A]">{item.name}</span>
-                                                <span class="text-gray-500">{item.quantity} " sold"</span>
-                                            </div>
-                                            <div class="w-full bg-gray-100 rounded-full h-1.5">
-                                                <div class="bg-[#111827] h-1.5 rounded-full" style=move || format!("width:{}%", pct)></div>
-                                            </div>
-                                        </div>
+                                        <tr>
+                                            <td class="dash-td-strong">{item.name}</td>
+                                            <td class="dash-td-muted">{item.type_label}</td>
+                                            <td class="dash-td-muted">{item.date}</td>
+                                            <td class="dash-td-strong tnum">{format!("KSh {:.0}", item.amount)}</td>
+                                            <td><span class=status_cls>{status_label}</span></td>
+                                        </tr>
                                     }
                                 }).collect::<Vec<_>>().into_any()
                             }}
-                        </div>
+                        </tbody>
+                    </table>
+                    <div class="dash-table-foot">
+                        <span class="dash-table-count">
+                            {move || {
+                                let n = filtered_txns().len();
+                                if n == 0 {
+                                    "No rows".to_string()
+                                } else if n == 1 {
+                                    "Showing 1 transaction".to_string()
+                                } else {
+                                    format!("Showing {} transactions", n)
+                                }
+                            }}
+                        </span>
+                        <button
+                            type="button"
+                            class="dash-link"
+                            on:click=move |_| set_page.set(Page::Sales)
+                        >"View all sales"</button>
                     </div>
                 </div>
             </div>

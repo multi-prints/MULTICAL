@@ -8,6 +8,9 @@ use dropdown_comp::{CustomDropdown, DropdownItem};
 #[path = "../components/calendar.rs"]
 mod calendar_comp;
 use calendar_comp::{CalendarModal, MiniCalendar};
+#[path = "../components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
 
 fn format_debt_datetime(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -62,6 +65,7 @@ pub fn DebtsPage() -> impl IntoView {
     let (pay_notes, set_pay_notes) = signal(String::new());
     // Payment history
     let (payments, set_payments) = signal(Vec::<DebtPayment>::new());
+    let (loading, set_loading) = signal(true);
 
     let reload = {
         let sd = set_debts;
@@ -70,6 +74,7 @@ pub fn DebtsPage() -> impl IntoView {
         let spm = set_paid_month;
         let soc = set_overdue_count;
         let stc = set_total_count;
+        let sl = set_loading;
         let search_r = search;
         let sort_r = sort_by;
         let page_r = current_page;
@@ -81,6 +86,7 @@ pub fn DebtsPage() -> impl IntoView {
                 let spm = spm;
                 let soc = soc;
                 let stc = stc;
+                let sl = sl;
                 let query = DebtsPageQuery {
                     search: Some(search_r.get()),
                     sort_by: Some(sort_r.get()),
@@ -96,6 +102,7 @@ pub fn DebtsPage() -> impl IntoView {
                         soc.set(page.overdue_count as u32);
                         stc.set(page.total_count as u32);
                     }
+                    sl.set(false);
                 }
             })
         }
@@ -215,41 +222,80 @@ pub fn DebtsPage() -> impl IntoView {
         });
     };
 
-    view! { <div id="page-debts" class="page-content">
-        <div class="flex items-center justify-between mb-6">
-            <div><h1 class="page-title">"Debts Management"</h1><p class="page-subtitle">"Track customer debts and payments"</p></div>
-            <div class="flex gap-3">
-                <button class="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 text-sm font-medium hover:bg-gray-50 transition-all"
-                    on:click=move |_| set_show_calendar.set(true)>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    "Calendar View"</button>
-                <button class="flex items-center gap-2 bg-brand-500 text-white px-4 py-2 text-sm font-medium hover:bg-brand-600 transition-all"
-                    on:click=move |_| { set_cust.set(String::new()); set_phone.set(String::new()); set_amt.set(String::new()); set_due.set(String::new()); set_due_label.set(String::new()); set_desc.set(String::new()); set_show_add.set(true); }>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    "Add Debt"</button>
+    view! {
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div id="page-debts" class="dash">
+                <PageLoading message="Loading debts..."/>
             </div>
-        </div>
+        }>
+        <div id="page-debts" class="dash">
+            <div class="dash-table-head">
+                <div>
+                    <h2 class="dash-section-title">"Debt records"</h2>
+                    <p class="prod-sub">"Customer balances and payment tracking"</p>
+                </div>
+                <div class="dash-table-actions">
+                    <button
+                        type="button"
+                        class="sales-btn-secondary"
+                        on:click=move |_| set_show_calendar.set(true)
+                    >"Calendar"</button>
+                    <button
+                        type="button"
+                        class="dash-btn-primary"
+                        on:click=move |_| {
+                            set_cust.set(String::new());
+                            set_phone.set(String::new());
+                            set_amt.set(String::new());
+                            set_due.set(String::new());
+                            set_due_label.set(String::new());
+                            set_desc.set(String::new());
+                            set_show_add.set(true);
+                        }
+                    >
+                        <span aria-hidden="true">"+"</span>
+                        " Add Debt"
+                    </button>
+                </div>
+            </div>
 
-        // Stats
-        <div class="grid grid-cols-3 gap-4 mb-6">
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Total Outstanding"</p><p class="text-xl font-bold text-red-600">{move || format!("KSh {:.2}", total_outstanding.get())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Paid This Month"</p><p class="text-xl font-bold text-green-600">{move || format!("KSh {:.2}", paid_month.get())}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">"Overdue Debts"</p><p class="text-xl font-bold text-gray-900">{move || overdue_count.get()}</p></div>
-        </div>
+            <div class="prod-metrics dash-card sales-metrics sales-metrics--3">
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Total outstanding"</p>
+                    <p class=move || {
+                        let v = total_outstanding.get();
+                        if v > 0.0 { "dash-metric-value is-danger" } else { "dash-metric-value" }
+                    }>
+                        {move || format!("KSh {:.0}", total_outstanding.get())}
+                    </p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Paid this month"</p>
+                    <p class="dash-metric-value" style="color:#059669">
+                        {move || format!("KSh {:.0}", paid_month.get())}
+                    </p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Overdue debts"</p>
+                    <p class="dash-metric-value">{move || overdue_count.get()}</p>
+                </div>
+            </div>
 
-        // Table
-        <div class="dashboard-panel overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <h2 class="text-sm font-semibold">"Debt Records"</h2>
-                <div class="flex flex-col sm:flex-row gap-2">
-                    <input
-                        type="text"
-                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
-                        placeholder="Search customer, phone, note..."
-                        prop:value=move || search.get()
-                        on:input=move |e| set_search.set(event_target_value(&e))
-                    />
-                    <div class="min-w-[220px]">
+            <div class="dash-card dash-table-card">
+                <div class="sales-toolbar">
+                    <label class="dash-search sales-search">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/>
+                        </svg>
+                        <input
+                            type="search"
+                            placeholder="Search customer, phone, note..."
+                            prop:value=move || search.get()
+                            on:input=move |e| set_search.set(event_target_value(&e))
+                            aria-label="Search debts"
+                        />
+                    </label>
+                    <div class="sales-sort">
                         <CustomDropdown
                             items=sort_items
                             placeholder="Newest First".to_string()
@@ -257,62 +303,177 @@ pub fn DebtsPage() -> impl IntoView {
                         />
                     </div>
                 </div>
-            </div>
-            <table class="w-full data-table">
-                <thead><tr><th>"Customer"</th><th>"Phone"</th><th>"Total Amount"</th><th>"Paid"</th><th>"Remaining"</th><th>"Due Date"</th><th>"Status"</th><th>"Actions"</th></tr></thead>
-                <tbody>
-                    {move || {
-                        let items = paginated();
-                        if items.is_empty() {
-                            view!{<tr><td colspan="8" class="px-5 py-8 text-center text-gray-500">"No debts recorded."</td></tr>}.into_any()
-                        } else {
+                <table class="dash-table debts-table">
+                    <thead>
+                        <tr>
+                            <th>"Customer"</th>
+                            <th>"Phone"</th>
+                            <th>"Total"</th>
+                            <th>"Paid"</th>
+                            <th>"Remaining"</th>
+                            <th>"Due"</th>
+                            <th>"Status"</th>
+                            <th>"Actions"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {move || {
+                            let items = paginated();
+                            if items.is_empty() {
+                                return view! {
+                                    <tr>
+                                        <td colspan="8" class="dash-table-empty">"No debts recorded."</td>
+                                    </tr>
+                                }.into_any();
+                            }
                             items.into_iter().map(|d| {
-                                let id = d.id; let is_pending = d.status == "pending";
+                                let id = d.id;
+                                let is_pending = d.status == "pending";
                                 let name = d.customer_name.clone();
-                                let ph = d.phone.clone().unwrap_or_default();
-                                let dd = d.due_date.clone().unwrap_or_default();
-                                let debt_clone = d.clone(); let debt_clone2 = d.clone();
-                                view!{
-                                    <tr class="hover:bg-gray-50 transition-colors">
-                                        <td class="px-5 py-4"><span class="text-sm font-medium text-gray-900">{name}</span></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{ph}</td>
-                                        <td class="px-5 py-4 text-sm text-gray-900">{format!("KSh {:.2}", d.amount)}</td>
-                                        <td class="px-5 py-4 text-sm text-green-600">{format!("KSh {:.2}", d.paid_amount)}</td>
-                                        <td class="px-5 py-4 text-sm font-medium text-red-600">{format!("KSh {:.2}", d.remaining_amount)}</td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{dd}</td>
-                                        <td class="px-5 py-4"><span class=format!("status-badge {}", if is_pending {"status-badge--warning"} else {"status-badge--success"})>{if is_pending {"Pending"} else {"Paid"}}</span></td>
-                                        <td class="px-5 py-4"><div class="flex items-center gap-2">
-                                            {if is_pending { view!{<>
-                                                <button on:click=move |_| { set_pay_amt.set(String::new()); set_pay_notes.set(String::new()); set_pay_method.set("cash".into()); set_show_pay.set(Some(debt_clone.clone())); } class="px-3 py-1 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors">"Pay"</button>
-                                                <button on:click={let did=id;let l=reload;move|_|{leptos::task::spawn_local(async move{let _=api::mark_debt_paid(did).await;l();});}} class="btn-primary px-3 py-1 text-xs font-medium rounded-md">"Mark Paid"</button>
-                                            </>}.into_any() } else { ().into_any() }}
-                                            <button on:click=move |_| open_history(&debt_clone2) class="text-gray-400 hover:text-gray-600 transition-colors" title="Payment history">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                            </button>
-                                            <button on:click={let did=id;let l=reload;move|_|{leptos::task::spawn_local(async move{let _=api::delete_debt(did).await;l();});}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                            </button>
-                                        </div></td>
+                                let ph = d.phone.clone().unwrap_or_else(|| "—".into());
+                                let dd = d.due_date.clone().unwrap_or_else(|| "—".into());
+                                let debt_pay = d.clone();
+                                let debt_hist = d.clone();
+                                let amount = d.amount;
+                                let paid = d.paid_amount;
+                                let remaining = d.remaining_amount;
+                                let status_cls = if is_pending {
+                                    "dash-status is-warn"
+                                } else {
+                                    "dash-status is-ok"
+                                };
+                                let status_label = if is_pending { "Pending" } else { "Paid" };
+                                let remaining_cls = if is_pending && remaining > 0.0 {
+                                    "dash-td-strong tnum is-danger-text"
+                                } else {
+                                    "dash-td-strong tnum"
+                                };
+                                view! {
+                                    <tr class="sales-row">
+                                        <td class="dash-td-strong">{name}</td>
+                                        <td class="dash-td-muted tnum">{ph}</td>
+                                        <td class="dash-td-muted tnum">{format!("KSh {:.0}", amount)}</td>
+                                        <td class="dash-td-muted tnum" style="color:#059669">{format!("KSh {:.0}", paid)}</td>
+                                        <td class=remaining_cls>{format!("KSh {:.0}", remaining)}</td>
+                                        <td class="dash-td-muted tnum">{dd}</td>
+                                        <td><span class=status_cls>{status_label}</span></td>
+                                        <td>
+                                            <div class="prod-actions">
+                                                {if is_pending {
+                                                    view! {
+                                                        <>
+                                                            <button
+                                                                type="button"
+                                                                class="prod-btn-add"
+                                                                on:click=move |_| {
+                                                                    set_pay_amt.set(String::new());
+                                                                    set_pay_notes.set(String::new());
+                                                                    set_pay_method.set("cash".into());
+                                                                    set_show_pay.set(Some(debt_pay.clone()));
+                                                                }
+                                                            >"Pay"</button>
+                                                            <button
+                                                                type="button"
+                                                                class="sales-btn-secondary debts-btn-sm"
+                                                                on:click={
+                                                                    let did = id;
+                                                                    let l = reload;
+                                                                    move |_| {
+                                                                        leptos::task::spawn_local(async move {
+                                                                            let _ = api::mark_debt_paid(did).await;
+                                                                            l();
+                                                                        });
+                                                                    }
+                                                                }
+                                                            >"Mark Paid"</button>
+                                                        </>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon"
+                                                    title="Payment history"
+                                                    aria-label="Payment history"
+                                                    on:click=move |_| open_history(&debt_hist)
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon is-danger"
+                                                    title="Delete"
+                                                    aria-label="Delete debt"
+                                                    on:click={
+                                                        let did = id;
+                                                        let l = reload;
+                                                        move |_| {
+                                                            leptos::task::spawn_local(async move {
+                                                                let _ = api::delete_debt(did).await;
+                                                                l();
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 }
                             }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </tbody>
-            </table>
-            {move || { let n = total_items(); if n == 0 { ().into_any() } else {
-                let cp = current_page.get(); let tp = total_pages();
-                let si = (cp-1)*items_per_page+1; let ei = (cp*items_per_page).min(n);
-                view!{<div class="flex items-center justify-between px-5 py-3 bg-gray-50 border-t border-gray-200">
-                    <div class="text-sm text-gray-600">"Showing "<span class="font-medium">{si}</span>" to "<span class="font-medium">{ei}</span>" of "<span class="font-medium">{n}</span>" debts"</div>
-                    <div class="flex gap-2">
-                        <button on:click=move |_| { if cp>1 {set_current_page.set(cp-1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
-                        <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
-                        <button on:click=move |_| { if cp<tp {set_current_page.set(cp+1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button>
-                    </div>
-                </div>}.into_any()
-            }}}
-        </div>
+                        }}
+                    </tbody>
+                </table>
+                {move || {
+                    let n = total_items();
+                    if n == 0 {
+                        return ().into_any();
+                    }
+                    let cp = current_page.get();
+                    let tp = total_pages();
+                    let si = (cp - 1) * items_per_page + 1;
+                    let ei = (cp * items_per_page).min(n);
+                    let count_label = format!("Showing {}–{} of {}", si, ei, n);
+                    let page_label = format!("Page {} of {}", cp, tp);
+                    let prev_disabled = cp <= 1;
+                    let next_disabled = cp >= tp;
+                    let go_prev = move |_| {
+                        set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
+                    };
+                    let go_next = move |_| {
+                        set_current_page.update(move |p| {
+                            let next = *p + 1;
+                            *p = if next > tp { tp } else { next };
+                        });
+                    };
+                    view! {
+                        <div class="dash-table-foot">
+                            <span class="dash-table-count">{count_label}</span>
+                            <div class="prod-pager">
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=prev_disabled
+                                    on:click=go_prev
+                                >"Previous"</button>
+                                <span class="prod-pager-meta">{page_label}</span>
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=next_disabled
+                                    on:click=go_next
+                                >"Next"</button>
+                            </div>
+                        </div>
+                    }.into_any()
+                }}
+            </div>
 
         // Add Debt Modal
         {move || if show_add.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add New Debt"</h3><button class="modal-close-btn" on:click=move |_| set_show_add.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
@@ -372,5 +533,7 @@ pub fn DebtsPage() -> impl IntoView {
 
         // Calendar Modal
         <CalendarModal show=Signal::derive(move || show_calendar.get()) set_show=set_show_calendar debts=Signal::derive(move || all_debts.get())/>
-    </div> }
+    </div>
+        </Show>
+    }
 }

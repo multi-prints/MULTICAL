@@ -4,6 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MULTIPRINTS</title>
+  <script>
+    // Apply theme before paint to avoid flash
+    (function () {
+      try {
+        var t = localStorage.getItem('multiprints-theme') || 'light';
+        t = String(t).replace(/^"|"$/g, '');
+        if (t !== 'dark' && t !== 'light') t = 'light';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
   <link data-trunk rel="css" href="assets/css/fonts.css">
   <link data-trunk rel="css" href="assets/css/theme.css">
   <link data-trunk rel="css" href="assets/css/components.css">
@@ -22,13 +35,63 @@
       return JSON.stringify({ err: (e.message || e) });
     }
   };
+
+  /** Custom titlebar helpers (ApexShot-style undecorated window). */
+  window.multiprintsWindow = {
+    _win: function () {
+      try {
+        if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow) {
+          return window.__TAURI__.window.getCurrentWindow();
+        }
+      } catch (e) {
+        console.warn('multiprintsWindow: getCurrentWindow failed', e);
+      }
+      return null;
+    },
+    _invoke: async function (cmd) {
+      try {
+        if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+          return await window.__TAURI_INTERNALS__.invoke(cmd);
+        }
+      } catch (e) {
+        console.warn('multiprintsWindow invoke failed', cmd, e);
+      }
+    },
+    minimize: async function () {
+      var w = this._win();
+      if (w) return w.minimize();
+      return this._invoke('plugin:window|minimize');
+    },
+    toggleMaximize: async function () {
+      var w = this._win();
+      if (w) return w.toggleMaximize();
+      return this._invoke('plugin:window|toggle_maximize');
+    },
+    close: async function () {
+      var w = this._win();
+      if (w) return w.close();
+      return this._invoke('plugin:window|close');
+    },
+    startDragging: async function () {
+      var w = this._win();
+      if (w) return w.startDragging();
+      return this._invoke('plugin:window|start_dragging');
+    },
+    isMaximized: async function () {
+      var w = this._win();
+      if (w) return w.isMaximized();
+      return false;
+    }
+  };
   </script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
-          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
-          colors: { brand: { 50: '#EFF6FF', 100: '#DBEAFE', 200: '#BFDBFE', 300: '#93C5FD', 400: '#60A5FA', 500: '#2563EB', 600: '#1D4ED8', 700: '#1E40AF' } }
+          fontFamily: {
+            sans: ['Open Sans', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif']
+          },
+          colors: { brand: { 50: 'rgba(101,101,236,0.1)', 100: 'rgba(101,101,236,0.16)', 200: 'rgba(101,101,236,0.28)', 300: '#8B8BF5', 400: '#7B7BF0', 500: '#6565EC', 600: '#5252D4', 700: '#4444C0' } }
         }
       }
     }

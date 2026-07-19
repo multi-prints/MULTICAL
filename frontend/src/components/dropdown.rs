@@ -65,7 +65,7 @@ impl DropdownItem {
 fn get_color_hex(name: &str) -> &'static str {
     match name.to_lowercase().as_str() {
         "red" => "#ef4444",
-        "blue" => "#3b82f6",
+        "blue" => "#171717",
         "green" => "#22c55e",
         "yellow" => "#eab308",
         "orange" => "#f97316",
@@ -192,7 +192,7 @@ pub fn CustomDropdown(
                     {move || sel_preview.get().map(|p| render_dropdown_preview(&p, true))}
                     <span class="dropdown-selected-label">{move || sel_label.get()}</span>
                 </span>
-                <svg class="dropdown-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg class="dropdown-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
             </button>
@@ -217,7 +217,7 @@ pub fn CustomDropdown(
                                 {preview.clone().map(|p| render_dropdown_preview(&p, false))}
                                 <div class="flex-1 min-w-0">
                                     <div class="dropdown-item-label">{item.label.clone()}</div>
-                                    {desc.map(|d| view! { <div class="text-xs text-gray-500 truncate">{d}</div> })}
+                                    {desc.map(|d| view! { <div class="dropdown-item-desc">{d}</div> })}
                                 </div>
                                 {item.badge.map(|b| view!{<span class="dropdown-item-badge">{b}</span>})}
                             </li>}

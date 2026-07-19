@@ -166,7 +166,7 @@ pub fn CalendarModal(
                                 ("border-amber-200 bg-amber-50", "bg-amber-100 text-amber-700",
                                     if diff==0 {"Due Today".into()} else if diff==1 {"Due Tomorrow".into()} else {format!("Due in {} days", diff)})
                             } else {
-                                ("border-blue-200 bg-blue-50", "bg-blue-100 text-blue-700", format!("Due in {} days", diff))
+                                ("border-neutral-200 bg-neutral-50", "bg-neutral-100 text-neutral-800", format!("Due in {} days", diff))
                             };
                             view!{<div class=format!("p-4 rounded-lg border {}", border)>
                                 <div class="flex items-start justify-between"><div class="flex-1">

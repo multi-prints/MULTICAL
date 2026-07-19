@@ -13,6 +13,9 @@ use calendar_comp::MiniCalendar;
 #[path = "../components/receipt.rs"]
 mod receipt_comp;
 use receipt_comp::{open_multi_sale_receipt, open_sale_receipt, ReceiptModal};
+#[path = "../components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
 
 #[derive(Clone, Copy, PartialEq)]
 enum SaleTab {
@@ -205,7 +208,7 @@ fn render_sale_item_cell(
                 .unwrap_or_else(|| "Service".to_string());
             view! {
                 <div class="flex items-center gap-2">
-                    <span class="status-badge bg-blue-500 text-white">"Service"</span>
+                    <span class="status-badge bg-neutral-800 text-white">"Service"</span>
                     <span class="text-sm font-medium text-gray-900">{name}</span>
                 </div>
             }
@@ -269,6 +272,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (product_cust, set_product_cust) = signal("Walk-in".to_string());
     let (product_submit_error, set_product_submit_error) = signal(None::<String>);
     let (product_submitting, set_product_submitting) = signal(false);
+    let (loading, set_loading) = signal(true);
 
     // Service tab state
     let (svc_name, set_svc_name) = signal(String::new());
@@ -287,6 +291,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         let ar = set_all_revenue;
         let psc = set_product_sales_count;
         let tc = set_total_count;
+        let sl = set_loading;
         let search_r = search;
         let sort_r = sort_by;
         let page_r = current_page;
@@ -299,6 +304,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                 let ar = ar;
                 let psc = psc;
                 let tc = tc;
+                let sl = sl;
                 let query = SalesPageQuery {
                     search: Some(search_r.get()),
                     sort_by: Some(sort_r.get()),
@@ -319,6 +325,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     if let Ok(sk_) = api::get_all_stock().await {
                         sk.set(sk_);
                     }
+                    sl.set(false);
                 }
             })
         }
@@ -812,64 +819,141 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     };
     let paginated = move || sales.get();
 
-    view! { <div id="page-sales" class="page-content">
-        // Header
-        <div class="flex items-center justify-between mb-6">
-            <div><h1 class="page-title">"Sales"</h1><p class="page-subtitle">"Track all transactions"</p></div>
-            <div class="flex items-center gap-2">
-                {move || if selected.get() > 0 { view!{<button id="btn-print-selected-sales" class="btn-secondary flex items-center gap-2 px-4 py-2 text-sm" on:click=print_selected><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>"Print (" {selected.get()} ")"</button>}.into_any() } else { ().into_any() }}
-                <button id="btn-record-sale" class="flex items-center gap-2 btn-primary px-4 py-2 text-sm" on:click=move |_| set_show_modal.set(true)>
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Record Sale"</button>
+    view! {
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div id="page-sales" class="dash">
+                <PageLoading message="Loading sales..."/>
             </div>
-        </div>
+        }>
+        <div id="page-sales" class="dash">
+            <div class="dash-table-head">
+                <div>
+                    <h2 class="dash-section-title">"Transactions"</h2>
+                    <p class="prod-sub">"Product, sticker, and service sales"</p>
+                </div>
+                <div class="dash-table-actions">
+                    {move || if selected.get() > 0 {
+                        view! {
+                            <button
+                                type="button"
+                                id="btn-print-selected-sales"
+                                class="sales-btn-secondary"
+                                on:click=print_selected
+                            >
+                                {move || format!("Print ({})", selected.get())}
+                            </button>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
+                    <button
+                        type="button"
+                        id="btn-record-sale"
+                        class="dash-btn-primary"
+                        on:click=move |_| set_show_modal.set(true)
+                    >
+                        <span aria-hidden="true">"+"</span>
+                        " Record Sale"
+                    </button>
+                </div>
+            </div>
 
-        // Stats
-        <div class=move || format!("grid gap-4 mb-6 {}", if show_revenue_stats { "grid-cols-4" } else { "grid-cols-3" })>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Today's Sales"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", today_total.get())}</h3></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Transactions"</p><h3 class="text-xl font-semibold">{move || total_items()}</h3></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Product Sales"</p><h3 class="text-xl font-semibold">{move || product_sales_count.get()}</h3></div>
-            {move || if show_revenue_stats { view! {
-                <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"All Time Revenue"</p><h3 class="text-xl font-semibold">{move || format!("KSh {:.0}", all_revenue.get())}</h3></div>
-            }.into_any() } else { ().into_any() }}
-        </div>
+            <div class=move || {
+                if show_revenue_stats {
+                    "prod-metrics dash-card sales-metrics sales-metrics--4"
+                } else {
+                    "prod-metrics dash-card sales-metrics sales-metrics--3"
+                }
+            }>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Today's sales"</p>
+                    <p class="dash-metric-value">{move || format!("KSh {:.0}", today_total.get())}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Transactions"</p>
+                    <p class="dash-metric-value">{move || total_items()}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Product sales"</p>
+                    <p class="dash-metric-value">{move || product_sales_count.get()}</p>
+                </div>
+                {move || if show_revenue_stats {
+                    view! {
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"All-time revenue"</p>
+                            <p class="dash-metric-value dash-metric-value--sm">
+                                {move || format!("KSh {:.0}", all_revenue.get())}
+                            </p>
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+            </div>
 
-        // Table
-        <div class="dashboard-panel overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <h2 class="text-sm font-semibold">"Sales Transactions"</h2>
-                <div class="flex flex-col sm:flex-row gap-2">
+            <div class="sales-toolbar">
+                <label class="dash-search sales-search">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/>
+                    </svg>
                     <input
-                        type="text"
-                        class="min-w-[260px] border border-gray-200 rounded px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:shadow-[0_0_0_2px_#EFF6FF]"
+                        type="search"
                         placeholder="Search item, customer, payment..."
                         prop:value=move || search.get()
                         on:input=move |e| set_search.set(event_target_value(&e))
+                        aria-label="Search sales"
                     />
-                    <div class="min-w-[220px]">
-                        <CustomDropdown
-                            items=sort_items
-                            placeholder="Newest First".to_string()
-                            on_select=Callback::new(move |v: String| set_sort_by.set(v))
-                        />
-                    </div>
+                </label>
+                <div class="sales-sort">
+                    <CustomDropdown
+                        items=sort_items
+                        placeholder="Newest First".to_string()
+                        on_select=Callback::new(move |v: String| set_sort_by.set(v))
+                    />
                 </div>
             </div>
-            <table class="w-full data-table">
-                <thead><tr>
-                    <th class="w-10"><label class="custom-checkbox"><input type="checkbox" prop:checked=move || { let s = selected.get(); let t = total_items(); s > 0 && s == t } on:change=move |e| select_all(event_target_checked(&e)) /><span class="checkmark"></span></label></th>
-                    <th>"Date / Time"</th><th>"Item"</th><th>"Qty"</th><th>"Amount"</th><th>"Payment"</th><th>"Customer"</th><th>"Actions"</th>
-                </tr></thead>
-                <tbody>
-                    {move || {
-                        let items = paginated();
-                        if items.is_empty() {
-                            view!{<tr class="text-center"><td colspan="8" class="px-5 py-8 text-gray-500"><div class="flex flex-col items-center justify-center"><svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg><p>"No sales recorded."</p></div></td></tr>}.into_any()
-                        } else {
+            <div class="dash-card dash-table-card">
+                <table class="dash-table sales-table">
+                    <thead>
+                        <tr>
+                            <th class="sales-col-check">
+                                <label class="custom-checkbox">
+                                    <input
+                                        type="checkbox"
+                                        prop:checked=move || {
+                                            let s = selected.get();
+                                            let t = total_items();
+                                            s > 0 && s == t
+                                        }
+                                        on:change=move |e| select_all(event_target_checked(&e))
+                                    />
+                                    <span class="checkmark"></span>
+                                </label>
+                            </th>
+                            <th>"Date"</th>
+                            <th>"Item"</th>
+                            <th>"Qty"</th>
+                            <th>"Amount"</th>
+                            <th>"Payment"</th>
+                            <th>"Customer"</th>
+                            <th>"Actions"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {move || {
+                            let items = paginated();
+                            if items.is_empty() {
+                                return view! {
+                                    <tr>
+                                        <td colspan="8" class="dash-table-empty">"No sales recorded."</td>
+                                    </tr>
+                                }.into_any();
+                            }
                             items.into_iter().map(|sale| {
                                 let id = sale.id;
                                 let tm = format_sale_timestamp(&sale.timestamp);
                                 let is_sel = move || selected_sales.get().contains(&id);
-                                let qty_display = sale.quantity.clone().unwrap_or_else(|| "-".into());
+                                let qty_display = sale.quantity.clone().unwrap_or_else(|| "—".into());
                                 let pm_display = sale.payment_method.clone();
                                 let cust_display = sale.customer_name.clone();
                                 let product_match = if sale.r#type == "product" {
@@ -883,94 +967,190 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                     None
                                 };
                                 let item_cell = render_sale_item_cell(&sale, product_match.as_ref(), stock_match.as_ref());
-                                let sale_clone = sale.clone();
-                                view!{
-                                    <tr class=move || format!("hover:bg-gray-50 transition-colors {}", if is_sel() {"bg-green-50"} else {""})>
-                                        <td class="px-5 py-4"><label class="custom-checkbox"><input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/><span class="checkmark"></span></label></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600 whitespace-nowrap">{tm}</td>
-                                        <td class="px-5 py-4">{item_cell}</td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{qty_display}</td>
-                                        <td class="px-5 py-4 text-sm font-medium text-gray-900">{format!("KSh {:.2}", sale.amount)}</td>
-                                        <td class="px-5 py-4"><span class="status-badge status-badge--success capitalize">{pm_display}</span></td>
-                                        <td class="px-5 py-4 text-sm text-gray-600">{cust_display}</td>
-                                        <td class="px-5 py-4"><div class="flex items-center gap-2">
-                                            <button on:click={let s=sale_clone.clone(); move |_| open_sale_receipt(&s, set_show_receipt, set_receipt_html, set_receipt_title)} class="text-gray-400 hover:text-gray-700 transition-colors" title="Print receipt">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
-                                            </button>
-                                            <button on:click=move |_| { let s=sale_clone.clone(); open_convert(Some(&s)); } class="text-gray-400 hover:text-blue-600 transition-colors" title="Convert to debt">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-                                            </button>
-                                            <button on:click={ let l=reload; move |_| { let i=id; leptos::task::spawn_local(async move { let _=api::delete_sale(i).await; l(); });}} class="text-gray-400 hover:text-red-600 transition-colors" title="Delete">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                            </button>
-                                        </div></td>
+                                let sale_for_debt = sale.clone();
+                                let sale_for_receipt = sale.clone();
+                                let amount = sale.amount;
+                                view! {
+                                    <tr class=move || if is_sel() { "sales-row is-selected" } else { "sales-row" }>
+                                        <td class="sales-col-check">
+                                            <label class="custom-checkbox">
+                                                <input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/>
+                                                <span class="checkmark"></span>
+                                            </label>
+                                        </td>
+                                        <td class="dash-td-muted tnum">{tm}</td>
+                                        <td>{item_cell}</td>
+                                        <td class="dash-td-muted tnum">{qty_display}</td>
+                                        <td class="dash-td-strong tnum">{format!("KSh {:.0}", amount)}</td>
+                                        <td>
+                                            <span class="dash-status is-ok capitalize">{pm_display}</span>
+                                        </td>
+                                        <td class="dash-td-muted">{cust_display}</td>
+                                        <td>
+                                            <div class="prod-actions">
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon"
+                                                    title="Print receipt"
+                                                    aria-label="Print receipt"
+                                                    on:click=move |_| open_sale_receipt(
+                                                        &sale_for_receipt,
+                                                        set_show_receipt,
+                                                        set_receipt_html,
+                                                        set_receipt_title,
+                                                    )
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon"
+                                                    title="Convert to debt"
+                                                    aria-label="Convert to debt"
+                                                    on:click=move |_| open_convert(Some(&sale_for_debt))
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon is-danger"
+                                                    title="Delete"
+                                                    aria-label="Delete sale"
+                                                    on:click={
+                                                        let l = reload;
+                                                        move |_| {
+                                                            let i = id;
+                                                            leptos::task::spawn_local(async move {
+                                                                let _ = api::delete_sale(i).await;
+                                                                l();
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </td>
                                     </tr>
                                 }
                             }).collect::<Vec<_>>().into_any()
-                        }
-                    }}
-                </tbody>
-            </table>
-            // Pagination
-            {move || { let n = total_items(); if n == 0 { ().into_any() } else {
-                let cp = current_page.get(); let tp = total_pages();
-                let si = (cp - 1) * items_per_page + 1; let ei = (cp * items_per_page).min(n);
-                view!{<div class="flex items-center justify-between px-5 py-3 bg-gray-50 border-t border-gray-200">
-                    <div class="text-sm text-gray-600">"Showing "<span class="font-medium">{si}</span>" to "<span class="font-medium">{ei}</span>" of "<span class="font-medium">{n}</span>" sales"</div>
-                    <div class="flex gap-2">
-                        <button on:click=move |_| { if cp > 1 { set_current_page.set(cp - 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button>
-                        <span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span>
-                        <button on:click=move |_| { if cp < tp { set_current_page.set(cp + 1) } } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if tp <= cp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button>
-                    </div>
-                </div>}.into_any()
-            }}}
-        </div>
+                        }}
+                    </tbody>
+                </table>
+                {move || {
+                    let n = total_items();
+                    if n == 0 {
+                        return ().into_any();
+                    }
+                    let cp = current_page.get();
+                    let tp = total_pages();
+                    let si = (cp - 1) * items_per_page + 1;
+                    let ei = (cp * items_per_page).min(n);
+                    let count_label = format!("Showing {}–{} of {}", si, ei, n);
+                    let page_label = format!("Page {} of {}", cp, tp);
+                    let prev_disabled = cp <= 1;
+                    let next_disabled = cp >= tp;
+                    let go_prev = move |_| {
+                        set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
+                    };
+                    let go_next = move |_| {
+                        set_current_page.update(move |p| {
+                            let next = *p + 1;
+                            *p = if next > tp { tp } else { next };
+                        });
+                    };
+                    view! {
+                        <div class="dash-table-foot">
+                            <span class="dash-table-count">{count_label}</span>
+                            <div class="prod-pager">
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=prev_disabled
+                                    on:click=go_prev
+                                >"Previous"</button>
+                                <span class="prod-pager-meta">{page_label}</span>
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=next_disabled
+                                    on:click=go_next
+                                >"Next"</button>
+                            </div>
+                        </div>
+                    }.into_any()
+                }}
+            </div>
 
         // Record Sale Modal
         {move || if show_modal.get() { view!{<div id="modal-record-sale" class="modal-overlay open">
-            <div class="modal-container" style="max-width: 760px;">
-                <div class="modal-header"><h3 class="modal-title">"Record New Sale"</h3><button class="modal-close-btn" on:click=move |_| close_modal()><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div>
+            <div class="modal-container" style="max-width: 640px;">
+                <div class="modal-header">
+                    <h3 class="modal-title">"Record New Sale"</h3>
+                    <button type="button" class="modal-close-btn" on:click=move |_| close_modal()>
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
                 <div class="modal-body">
-                    // Tabs
-                    <div class="flex gap-1 mb-5 p-1 bg-gray-100 w-fit mx-auto">
-                        <button on:click=move |_| set_active_tab.set(SaleTab::Stock) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Stock {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Stock Sale"</button>
-                        <button on:click=move |_| set_active_tab.set(SaleTab::Product) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Product {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Products"</button>
-                        <button on:click=move |_| set_active_tab.set(SaleTab::Service) class=move || format!("px-4 py-2 font-medium text-sm shadow-sm transition-all {}", if active_tab.get()==SaleTab::Service {"bg-white text-gray-900"} else {"text-gray-500 hover:bg-gray-200"})>"Service"</button>
+                    <div class="modal-tabs">
+                        <button type="button" on:click=move |_| set_active_tab.set(SaleTab::Stock) class=move || if active_tab.get()==SaleTab::Stock {"is-active"} else {""}>"Stock Sale"</button>
+                        <button type="button" on:click=move |_| set_active_tab.set(SaleTab::Product) class=move || if active_tab.get()==SaleTab::Product {"is-active"} else {""}>"Products"</button>
+                        <button type="button" on:click=move |_| set_active_tab.set(SaleTab::Service) class=move || if active_tab.get()==SaleTab::Service {"is-active"} else {""}>"Service"</button>
                     </div>
 
                     // Stock Sale Tab
                     {move || if active_tab.get() == SaleTab::Stock { view!{<div>
                         <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4">
-                                <div><label>"Stock Item"</label><div class="mt-1">
+                                <div>
+                                    <label>"Stock Item"</label>
                                     <CustomDropdown items=stock_dropdown_items placeholder="Choose sticker".to_string()
                                         on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_stock_id.set(Some(id)); } })/>
-                                </div></div>
-                                <div><label>"Sale Type"</label><div class="mt-1">
+                                </div>
+                                <div>
+                                    <label>"Sale Type"</label>
                                     <CustomDropdown items=sale_type_items placeholder="Metres".to_string()
                                         on_select=Callback::new(move |v: String| set_sale_unit.set(v))/>
-                                </div></div>
+                                </div>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
-                                <div><label>{move || if sale_unit.get()=="rolls" {"Rolls Sold"} else {"Metres"}}</label>
-                                    <input type="number" step="0.1" min="0.1" class="w-full mt-1" placeholder="0" prop:value=move || stock_qty.get() on:input=move |e| set_stock_qty.set(event_target_value(&e))/></div>
-                                <div><label>"Payment Method"</label><div class="mt-1">
+                                <div>
+                                    <label>{move || if sale_unit.get()=="rolls" {"Rolls Sold"} else {"Metres"}}</label>
+                                    <input type="number" step="0.1" min="0.1" class="w-full" placeholder="0" prop:value=move || stock_qty.get() on:input=move |e| set_stock_qty.set(event_target_value(&e))/>
+                                </div>
+                                <div>
+                                    <label>"Payment Method"</label>
                                     <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
                                         on_select=Callback::new(move |v: String| set_stock_payment.set(v))/>
-                                </div></div>
+                                </div>
                             </div>
-                            <div><label>"Total Price (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || stock_price.get() on:input=move |e| set_stock_price.set(event_target_value(&e))/></div>
-                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let p:f64=stock_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</div></div>
-                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || stock_cust.get() on:input=move |e| set_stock_cust.set(event_target_value(&e))/></div>
+                            <div>
+                                <label>"Total Price (KSh)"</label>
+                                <input type="number" step="1" min="1" class="w-full" placeholder="0" prop:value=move || stock_price.get() on:input=move |e| set_stock_price.set(event_target_value(&e))/>
+                            </div>
+                            <div class="modal-total">
+                                <span class="modal-total-label">"Due now"</span>
+                                <span>{move || {let p:f64=stock_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</span>
+                            </div>
+                            <div>
+                                <label>"Customer Name (Optional)"</label>
+                                <input type="text" class="w-full" placeholder="Walk-in Customer" prop:value=move || stock_cust.get() on:input=move |e| set_stock_cust.set(event_target_value(&e))/>
+                            </div>
                             {move || stock_submit_error.get().map(|msg| view! {
                                 <div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                                     {msg}
                                 </div>
                             })}
                         </div>
-                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary px-4 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed" on:click=submit_stock disabled=move || stock_submitting.get()>
+                        <div class="modal-footer">
+                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_stock disabled=move || stock_submitting.get()>
                                 {move || if stock_submitting.get() { "Recording..." } else { "Record Stock Sale" }}
                             </button>
                         </div>
@@ -979,29 +1159,43 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     // Product Sale Tab
                     {move || if active_tab.get() == SaleTab::Product { view!{<div>
                         <div class="space-y-4">
-                            <div><label>"Product"</label><div class="mt-1">
+                            <div>
+                                <label>"Product"</label>
                                 <CustomDropdown items=product_dropdown_items placeholder="Choose product".to_string()
                                     on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_product_id.set(Some(id)); } })/>
-                            </div></div>
+                            </div>
                             <div class="grid grid-cols-2 gap-4">
-                                <div><label>"Quantity"</label><input type="number" min="1" class="w-full mt-1" placeholder="1" prop:value=move || product_qty.get() on:input=move |e| set_product_qty.set(event_target_value(&e))/></div>
-                                <div><label>"Payment Method"</label><div class="mt-1">
+                                <div>
+                                    <label>"Quantity"</label>
+                                    <input type="number" min="1" class="w-full" placeholder="1" prop:value=move || product_qty.get() on:input=move |e| set_product_qty.set(event_target_value(&e))/>
+                                </div>
+                                <div>
+                                    <label>"Payment Method"</label>
                                     <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
                                         on_select=Callback::new(move |v: String| set_product_payment.set(v))/>
-                                </div></div>
+                                </div>
                             </div>
-                            <div><label>"Sale Amount (KSh)"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/></div>
-                            <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || { let p = product_price.get(); format!("KSh {:.2}", p) }}</div></div>
-                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || product_cust.get() on:input=move |e| set_product_cust.set(event_target_value(&e))/></div>
+                            <div>
+                                <label>"Sale Amount (KSh)"</label>
+                                <input type="number" step="1" min="1" class="w-full" placeholder="0" prop:value=move || product_price.get().to_string() on:input=move |e| set_product_price.set(event_target_value(&e).parse().unwrap_or(0.0))/>
+                            </div>
+                            <div class="modal-total">
+                                <span class="modal-total-label">"Due now"</span>
+                                <span>{move || { let p = product_price.get(); format!("KSh {:.2}", p) }}</span>
+                            </div>
+                            <div>
+                                <label>"Customer Name (Optional)"</label>
+                                <input type="text" class="w-full" placeholder="Walk-in Customer" prop:value=move || product_cust.get() on:input=move |e| set_product_cust.set(event_target_value(&e))/>
+                            </div>
                             {move || product_submit_error.get().map(|msg| view! {
                                 <div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                                     {msg}
                                 </div>
                             })}
                         </div>
-                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary px-4 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed" on:click=submit_product disabled=move || product_submitting.get()>
+                        <div class="modal-footer">
+                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_product disabled=move || product_submitting.get()>
                                 {move || if product_submitting.get() { "Recording..." } else { "Record Product Sale" }}
                             </button>
                         </div>
@@ -1010,22 +1204,33 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     // Service Sale Tab
                     {move || if active_tab.get() == SaleTab::Service { view!{<div>
                         <div class="space-y-4">
-                            <div><label>"Service Name *"</label><input type="text" class="w-full mt-1" placeholder="e.g., Design, Lamination" prop:value=move || svc_name.get() on:input=move |e| set_svc_name.set(event_target_value(&e))/></div>
-                            <div class="grid grid-cols-2 gap-4">
-                                <div><label>"Price (KSh) *"</label><input type="number" step="1" min="1" class="w-full mt-1" placeholder="0" prop:value=move || svc_price.get() on:input=move |e| set_svc_price.set(event_target_value(&e))/></div>
-                                <div><label>"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || {let p:f64=svc_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</div></div>
+                            <div>
+                                <label>"Service Name *"</label>
+                                <input type="text" class="w-full" placeholder="e.g., Design, Lamination" prop:value=move || svc_name.get() on:input=move |e| set_svc_name.set(event_target_value(&e))/>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
-                                <div><label>"Payment Method"</label><div class="mt-1">
+                                <div>
+                                    <label>"Price (KSh) *"</label>
+                                    <input type="number" step="1" min="1" class="w-full" placeholder="0" prop:value=move || svc_price.get() on:input=move |e| set_svc_price.set(event_target_value(&e))/>
+                                </div>
+                                <div>
+                                    <label>"Payment Method"</label>
                                     <CustomDropdown items=payment_method_items placeholder="Cash".to_string()
                                         on_select=Callback::new(move |v: String| set_svc_payment.set(v))/>
-                                </div></div>
+                                </div>
                             </div>
-                            <div><label>"Customer Name (Optional)"</label><input type="text" class="w-full mt-1" placeholder="Walk-in Customer" prop:value=move || svc_cust.get() on:input=move |e| set_svc_cust.set(event_target_value(&e))/></div>
+                            <div class="modal-total">
+                                <span class="modal-total-label">"Due now"</span>
+                                <span>{move || {let p:f64=svc_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p)}}</span>
+                            </div>
+                            <div>
+                                <label>"Customer Name (Optional)"</label>
+                                <input type="text" class="w-full" placeholder="Walk-in Customer" prop:value=move || svc_cust.get() on:input=move |e| set_svc_cust.set(event_target_value(&e))/>
+                            </div>
                         </div>
-                        <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                            <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_service>"Record Service Sale"</button>
+                        <div class="modal-footer">
+                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_service>"Record Service Sale"</button>
                         </div>
                     </div>}.into_any() } else { ().into_any() }}
                 </div>
@@ -1056,12 +1261,14 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_convert.set(None)>"Cancel"</button>
-                    <button type="button" class="btn-primary px-4 py-2" on:click=submit_convert>"Create Debt"</button>
+                    <button type="button" class="btn-secondary" on:click=move |_| set_show_convert.set(None)>"Cancel"</button>
+                    <button type="button" class="btn-primary" on:click=submit_convert>"Create Debt"</button>
                 </div>
             </div></div>}
         }).map(|v| v.into_any()).unwrap_or_else(|| ().into_any())}
 
         <ReceiptModal show=Signal::derive(move || show_receipt.get()) set_show=set_show_receipt receipt_html=Signal::derive(move || receipt_html.get()) title=Signal::derive(move || receipt_title.get())/>
-    </div> }
+    </div>
+        </Show>
+    }
 }

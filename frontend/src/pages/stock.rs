@@ -3,6 +3,10 @@ use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 use log::error;
 
+#[path = "../components/loading.rs"]
+mod loading_comp;
+use loading_comp::PageLoading;
+
 #[derive(Clone, Debug, PartialEq)]
 struct SizeRow {
     id: u32,
@@ -1046,6 +1050,9 @@ pub fn StockPage() -> impl IntoView {
     let (current_page, set_current_page) = signal(1u32);
     let (add_rolls_item, set_add_rolls_item) = signal(None::<StockItem>);
     let (add_rolls_value, set_add_rolls_value) = signal(String::new());
+    let (del_id, set_del_id) = signal(None::<i64>);
+    let (del_label, set_del_label) = signal(String::new());
+    let (loading, set_loading) = signal(true);
     let items_per_page = 10u32;
 
     let reload = move || {
@@ -1065,6 +1072,7 @@ pub fn StockPage() -> impl IntoView {
                 }
                 Err(e) => error!("get_stock_page failed: {}", e),
             }
+            set_loading.set(false);
         })
     };
 
@@ -1124,7 +1132,6 @@ pub fn StockPage() -> impl IntoView {
             n.div_ceil(items_per_page)
         }
     };
-    let paginated = move || stock.get();
     let remaining = |i: &StockItem| {
         i.total_metres
             - if i.metres_used.is_nan() {
@@ -1213,6 +1220,8 @@ pub fn StockPage() -> impl IntoView {
         move |id: i64| {
             leptos::task::spawn_local(async move {
                 let _ = api::delete_stock(id).await;
+                set_del_id.set(None);
+                set_del_label.set(String::new());
                 reload();
             });
         }
@@ -1228,21 +1237,316 @@ pub fn StockPage() -> impl IntoView {
         }
     };
 
-    view! { <div id="page-stock" class="page-content">
-        <div class="flex items-center justify-between mb-6"><div><h1 class="page-title">"Stock"</h1><p class="page-subtitle">"Manage your sticker inventory"</p></div>
-            <button id="btn-add-stock" class="flex items-center gap-2 btn-primary px-4 py-2 text-sm" on:click=move |_| { reset_add_modal(); set_show_add.set(true); }><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Add Stock"</button></div>
-        <div class="grid grid-cols-4 gap-4 mb-6">
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Total Colors"</p><p class="text-xl font-semibold">{move || total_items()}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Total Rolls"</p><p class="text-xl font-semibold">{move || total_rolls.get()}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Total Metres"</p><p class="text-xl font-semibold">{move || format!("{}m", total_metres.get() as u64)}</p></div>
-            <div class="stat-card-modern"><p class="text-xs text-gray-500 font-medium mb-1">"Remaining"</p><p class="text-xl font-semibold">{move || format!("{}m", remaining_metres.get() as u64)}</p></div>
-        </div>
-        <div class="dashboard-panel overflow-hidden"><table class="w-full data-table"><thead><tr><th>"Type"</th><th>"Color"</th><th>"Width"</th><th>"Rolls"</th><th>"Total m"</th><th>"Used"</th><th>"Remaining"</th><th>"Left"</th><th>"Status"</th><th>"Actions"</th></tr></thead><tbody>
-            {move || { let items = paginated(); if items.is_empty() { view!{<tr class="text-center"><td colspan="10" class="px-5 py-8 text-gray-500"><div class="flex flex-col items-center justify-center"><svg class="w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg><p>"No stock added yet"</p><button on:click=move |_| { reset_add_modal(); set_show_add.set(true); } class="text-black font-semibold hover:underline text-sm mt-2">"Add your first stock"</button></div></td></tr>}.into_any() } else { items.into_iter().map(|item| { let id=item.id; let rem=remaining(&item); let left=rolls_left(&item); let (sl,sc)=status(&item); let typ=item.sticker_type.clone(); let is_reflective = typ == "reflective"; let type_badge = if is_reflective { "bg-orange-100 text-orange-800" } else { "bg-blue-100 text-blue-800" }; let swatch_style = if is_reflective { format!("background: repeating-linear-gradient(135deg, rgba(255,255,255,0.85) 0 4px, rgba(255,255,255,0.25) 4px 8px), {}; border-color: #a855f7;", get_hex(&item.color)) } else { format!("background-color: {};", get_hex(&item.color)) }; view!{<tr class="hover:bg-gray-50 transition-colors"><td class="px-6 py-4"><span class=move || format!("inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium {}", type_badge)>{if is_reflective {"Reflective"} else {"Colored"}}</span></td><td class="px-6 py-4"><div class="flex items-center gap-3"><div class="w-8 h-8 rounded-lg border shadow-sm" style=swatch_style></div><div><span class="text-sm font-medium text-gray-900">{item.color.clone()}</span><p class="text-[11px] text-gray-400 uppercase tracking-wide">{if is_reflective {"Reflective film"} else {"Colored film"}}</p></div></div></td><td class="px-6 py-4 text-sm text-gray-600">{item.size.clone()}"in"</td><td class="px-6 py-4 text-sm text-gray-600">{item.rolls}</td><td class="px-6 py-4 text-sm text-gray-600">{format!("{}m", item.total_metres as u64)}</td><td class="px-6 py-4 text-sm text-gray-600">{format!("{}m", item.metres_used as u64)}</td><td class="px-6 py-4 text-sm font-medium text-gray-900">{format!("{}m", rem as u64)}</td><td class="px-6 py-4 text-sm text-gray-900">{left}</td><td class="px-6 py-4"><span class=format!("status-badge {}", sc)>{sl}</span></td><td class="px-6 py-4"><div class="flex gap-2"><button on:click=move |_| { set_add_rolls_value.set(String::new()); set_add_rolls_item.set(Some(item.clone())); } class="px-3 py-1 text-xs font-medium bg-black text-white rounded-md hover:bg-gray-800 transition-colors">"Add Rolls"</button><button on:click=move |_| { delete_stock_action(id); } class="text-gray-400 hover:text-red-600 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button></div></td></tr>}}).collect::<Vec<_>>().into_any() } }}
-        </tbody></table>{move || { let n=total_items(); if n==0 {().into_any()} else { let cp=current_page.get(); let tp=total_pages(); let si=(cp-1)*items_per_page+1; let ei=(cp*items_per_page).min(n); view!{<div id="stock-pagination" class="flex items-center justify-between px-5 py-3 bg-gray-50 border-t border-gray-200"><div class="text-sm text-gray-600">"Showing "<span class="font-medium">{si}</span>" to "<span class="font-medium">{ei}</span>" of "<span class="font-medium">{n}</span>" stock items"</div><div class="flex gap-2"><button on:click=move |_| { if cp>1 {set_current_page.set(cp-1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp==1 {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || cp==1>"Previous"</button><span class="px-3 py-1 text-sm font-medium text-gray-700">{format!("Page {} of {}", cp, tp)}</span><button on:click=move |_| { if cp<tp {set_current_page.set(cp+1)} } class=format!("px-3 py-1 text-sm font-medium rounded-md {}", if cp>=tp {"bg-gray-200 text-gray-400 cursor-not-allowed"} else {"bg-black text-white hover:bg-gray-800"}) disabled=move || tp <= cp>"Next"</button></div></div>}.into_any() } }}</div>
-        {move || if show_add.get() { view!{<div id="modal-add-stock" class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add New Stock"</h3><button class="modal-close-btn" on:click=move |_| set_show_add.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><form action="javascript:void(0);"><div class="modal-body"><div class="space-y-5"><div><label>"Sticker Type"</label><div class="flex gap-2 mt-1"><button type="button" on:click=move |_| set_sticker_type.set("colored".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="colored" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Colored"</button><button type="button" on:click=move |_| set_sticker_type.set("reflective".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="reflective" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Reflective"</button></div></div><div><label>"Color"</label><div class="relative mt-1"><input type="text" class="w-full pr-12" placeholder=move || if sticker_type.get()=="reflective" {"e.g. Red, White, Yellow"} else {"e.g. Red Dark, Black Matte"} autocomplete="off" prop:value=move || color.get() on:input=move |e| set_color.set(event_target_value(&e)) /><div class="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 border border-gray-200" style=move || format!("background-color: {};", get_hex(&color.get()))></div></div><p class="text-xs text-gray-400 mt-1">{move || if sticker_type.get()=="reflective" {"Enter reflective color"} else {"Enter color with variant (dark, light, matte, gloss)"}}</p></div><div><label>"Size Variants"</label><div class="space-y-3 mt-2"><For each=move || rows.get() key=|r| r.id children=move |r| { let id=r.id; view!{<div class="grid grid-cols-2 gap-3" data-row-id=id><div><label>{if id==0 {"Width (inches) *"} else {"Width (inches)"}}</label><input type="number" class="w-full size-input" step="1" min="1" placeholder="e.g. 24" prop:value=r.size on:input=move |e| update_row(id,"size",event_target_value(&e))/></div><div><label>{if id==0 {"Rolls *"} else {"Rolls"}}</label><input type="number" class="w-full rolls-input" min="1" placeholder="e.g. 5" prop:value=r.rolls on:input=move |e| update_row(id,"rolls",event_target_value(&e))/></div>{move || if sticker_type.get()=="reflective" { view!{<div><label>{if id==0 {"Metres per Roll *"} else {"Metres per Roll"}}</label><input type="number" class="w-full metres-per-roll-input" step="0.1" min="1" prop:value=r.metres_per_roll.clone() on:input=move |e| update_row(id,"mpr",event_target_value(&e))/></div>}.into_any() } else {().into_any()} }<div><label>"Total Metres"</label><div class="px-3 py-2 bg-gray-50 border border-gray-200 text-gray-600 text-sm"><span class="metres-display font-medium">{move || rows.get().iter().find(|x| x.id==id).map(row_total).unwrap_or(0.0) as u64}</span>"m"</div></div>{if id!=0 {view!{<div class="col-span-2 flex justify-end"><button type="button" class="remove-row-btn text-xs text-gray-400 hover:text-red-500 font-medium" on:click=move |_| set_rows.update(|rs| rs.retain(|x| x.id!=id))>"Remove"</button></div>}.into_any()} else {().into_any()}}</div>}}/></div><button type="button" class="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium flex items-center gap-1" on:click=move |_| add_row()><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Add size"</button></div><div class="bg-gray-50 border border-gray-100 p-4"><div class="flex justify-between items-center text-sm"><span class="font-medium text-gray-600">"Total"</span><div class="flex gap-6"><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_rolls_modal()}</span>" rolls"</span><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_metres_modal() as u64}</span>"m"</span></div></div></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| set_show_add.set(false)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2 text-sm" on:click=move |_| { add_stock_action(color.get(), sticker_type.get(), rows.get()); } >"Add Stock"</button></div></form></div></div>}.into_any()} else {().into_any()} }
-        {move || add_rolls_item.get().map(|item| { let added=move || add_rolls_value.get().parse::<i64>().unwrap_or(0); let new_rolls=move || item.rolls + added(); let new_metres=move || item.total_metres + added() as f64 * item.metres_per_roll; view!{<div id="modal-add-rolls" class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Stock"</h3><button class="modal-close-btn" on:click=move |_| set_add_rolls_item.set(None)>"×"</button></div><div class="modal-body"><div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Stock Item"</p><p class="font-semibold text-gray-900">{format!("{} - {}\" {}", item.color, item.size, if item.sticker_type=="reflective" {"Reflective"} else {"Colored"})}</p><p class="text-sm text-gray-600 mt-1">{format!("Current: {}m remaining ({} rolls)", remaining(&item) as u64, rolls_left(&item))}</p></div><div class="space-y-4"><div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Number of Rolls to Add *"</label><input type="number" min="1" step="1" class="w-full" placeholder="Enter rolls to add" prop:value=move || add_rolls_value.get() on:input=move |e| set_add_rolls_value.set(event_target_value(&e))/><p class="text-xs text-gray-500 mt-1">{format!("Each roll = {}m", item.metres_per_roll as u64)}</p></div><div class="bg-blue-50 border border-blue-200 p-3"><p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || format!("{} rolls ({}m)", new_rolls(), new_metres() as u64)}</p></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_add_rolls_item.set(None)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=move |_| { let id=item.id; let rolls=added(); if rolls>0 { add_rolls_action(id, rolls); } }>"Add Rolls"</button></div></div></div>}.into_any() }).unwrap_or_else(|| ().into_any())}
-    </div> }
+    let (query, set_query) = signal(String::new());
+    let filtered = move || {
+        let q = query.get().trim().to_lowercase();
+        let items = stock.get();
+        if q.is_empty() {
+            return items;
+        }
+        items
+            .into_iter()
+            .filter(|item| {
+                item.color.to_lowercase().contains(&q)
+                    || item.size.to_lowercase().contains(&q)
+                    || item.sticker_type.to_lowercase().contains(&q)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    view! {
+        <Show when=move || !loading.get() fallback=|| view! {
+            <div id="page-stock" class="dash">
+                <PageLoading message="Loading stock..."/>
+            </div>
+        }>
+        <div id="page-stock" class="dash">
+            <div class="dash-table-head">
+                <div>
+                    <h2 class="dash-section-title">"Sticker stock"</h2>
+                    <p class="prod-sub">"Colored and reflective film inventory"</p>
+                </div>
+                <div class="dash-table-actions">
+                    <label class="dash-search">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/>
+                        </svg>
+                        <input
+                            type="search"
+                            placeholder="Search..."
+                            prop:value=move || query.get()
+                            on:input=move |ev| set_query.set(event_target_value(&ev))
+                            aria-label="Search stock"
+                        />
+                    </label>
+                    <button
+                        type="button"
+                        id="btn-add-stock"
+                        class="dash-btn-primary"
+                        on:click=move |_| {
+                            reset_add_modal();
+                            set_show_add.set(true);
+                        }
+                    >
+                        <span aria-hidden="true">"+"</span>
+                        " Add Stock"
+                    </button>
+                </div>
+            </div>
+
+            <div class="prod-metrics dash-card stock-metrics">
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Colors / SKUs"</p>
+                    <p class="dash-metric-value">{move || total_items()}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Total rolls"</p>
+                    <p class="dash-metric-value">{move || total_rolls.get()}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Total metres"</p>
+                    <p class="dash-metric-value">{move || format!("{}m", total_metres.get() as u64)}</p>
+                </div>
+                <div class="prod-metric">
+                    <p class="dash-metric-label">"Remaining"</p>
+                    <p class="dash-metric-value">{move || format!("{}m", remaining_metres.get() as u64)}</p>
+                </div>
+            </div>
+
+            <div class="dash-card dash-table-card">
+                <table class="dash-table stock-table">
+                    <thead>
+                        <tr>
+                            <th>"Type"</th>
+                            <th>"Color"</th>
+                            <th>"Width"</th>
+                            <th>"Rolls"</th>
+                            <th>"Total"</th>
+                            <th>"Used"</th>
+                            <th>"Remaining"</th>
+                            <th>"Rolls left"</th>
+                            <th>"Status"</th>
+                            <th>"Actions"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {move || {
+                            let items = filtered();
+                            if items.is_empty() {
+                                return view! {
+                                    <tr>
+                                        <td colspan="10" class="dash-table-empty">
+                                            {if query.get().trim().is_empty() {
+                                                "No stock yet — add your first rolls."
+                                            } else {
+                                                "No stock matches your search."
+                                            }}
+                                        </td>
+                                    </tr>
+                                }.into_any();
+                            }
+                            items.into_iter().map(|item| {
+                                let id = item.id;
+                                let rem = remaining(&item);
+                                let left = rolls_left(&item);
+                                let (sl, sc) = status(&item);
+                                let typ = item.sticker_type.clone();
+                                let is_reflective = typ == "reflective";
+                                let type_cls = if is_reflective {
+                                    "dash-status is-warn"
+                                } else {
+                                    "dash-status is-info"
+                                };
+                                let type_label = if is_reflective { "Reflective" } else { "Colored" };
+                                let swatch_style = if is_reflective {
+                                    format!(
+                                        "background: repeating-linear-gradient(135deg, rgba(255,255,255,0.85) 0 4px, rgba(255,255,255,0.25) 4px 8px), {}; border: 1px solid #ddd6fe;",
+                                        get_hex(&item.color)
+                                    )
+                                } else {
+                                    format!(
+                                        "background-color: {}; border: 1px solid rgba(0,0,0,0.08);",
+                                        get_hex(&item.color)
+                                    )
+                                };
+                                let color_name = item.color.clone();
+                                let color_display = color_name.clone();
+                                let size = item.size.clone();
+                                let size_display = size.clone();
+                                let item_for_add = item.clone();
+                                let status_cls = match sc {
+                                    "status-badge--error" => "dash-status is-danger",
+                                    "status-badge--warning" => "dash-status is-warn",
+                                    _ => "dash-status is-ok",
+                                };
+                                view! {
+                                    <tr>
+                                        <td><span class=type_cls>{type_label}</span></td>
+                                        <td>
+                                            <div class="prod-color-cell">
+                                                <span class="prod-swatch" style=swatch_style></span>
+                                                <span class="dash-td-strong">{color_display}</span>
+                                            </div>
+                                        </td>
+                                        <td class="dash-td-muted tnum">{format!("{}\"", size_display)}</td>
+                                        <td class="dash-td-muted tnum">{item.rolls}</td>
+                                        <td class="dash-td-muted tnum">{format!("{}m", item.total_metres as u64)}</td>
+                                        <td class="dash-td-muted tnum">{format!("{}m", item.metres_used as u64)}</td>
+                                        <td class="dash-td-strong tnum">{format!("{}m", rem as u64)}</td>
+                                        <td class="dash-td-muted tnum">{left}</td>
+                                        <td><span class=status_cls>{sl}</span></td>
+                                        <td>
+                                            <div class="prod-actions">
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-add"
+                                                    on:click=move |_| {
+                                                        set_add_rolls_value.set(String::new());
+                                                        set_add_rolls_item.set(Some(item_for_add.clone()));
+                                                    }
+                                                >"Add Rolls"</button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon is-danger"
+                                                    aria-label="Delete stock"
+                                                    on:click=move |_| {
+                                                        set_del_label.set(format!(
+                                                            "{} · {}\" {}",
+                                                            color_name,
+                                                            size,
+                                                            if is_reflective { "Reflective" } else { "Colored" }
+                                                        ));
+                                                        set_del_id.set(Some(id));
+                                                    }
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            }).collect::<Vec<_>>().into_any()
+                        }}
+                    </tbody>
+                </table>
+                {move || {
+                    let n = total_items();
+                    if n == 0 && query.get().trim().is_empty() {
+                        return ().into_any();
+                    }
+                    let cp = current_page.get();
+                    let tp = total_pages();
+                    let si = if n == 0 { 0 } else { (cp - 1) * items_per_page + 1 };
+                    let ei = (cp * items_per_page).min(n);
+                    let showing = filtered().len();
+                    let count_label = if query.get().trim().is_empty() {
+                        if n == 0 {
+                            "No stock".to_string()
+                        } else {
+                            format!("Showing {}–{} of {}", si, ei, n)
+                        }
+                    } else {
+                        format!("{} match{}", showing, if showing == 1 { "" } else { "es" })
+                    };
+                    let page_label = format!("Page {} of {}", cp, tp);
+                    // Avoid `>` / `>=` inside view! attributes (breaks the macro)
+                    let prev_disabled = cp <= 1;
+                    let next_disabled = cp >= tp;
+                    let go_prev = move |_| {
+                        set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
+                    };
+                    let go_next = move |_| {
+                        set_current_page.update(move |p| {
+                            let next = *p + 1;
+                            *p = if next > tp { tp } else { next };
+                        });
+                    };
+                    view! {
+                        <div class="dash-table-foot">
+                            <span class="dash-table-count">{count_label}</span>
+                            <div class="prod-pager">
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=prev_disabled
+                                    on:click=go_prev
+                                >"Previous"</button>
+                                <span class="prod-pager-meta">{page_label}</span>
+                                <button
+                                    type="button"
+                                    class="prod-pager-btn"
+                                    prop:disabled=next_disabled
+                                    on:click=go_next
+                                >"Next"</button>
+                            </div>
+                        </div>
+                    }.into_any()
+                }}
+            </div>
+
+        {move || if show_add.get() { view!{<div id="modal-add-stock" class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add New Stock"</h3><button class="modal-close-btn" on:click=move |_| set_show_add.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><form action="javascript:void(0);"><div class="modal-body"><div class="space-y-5"><div><label>"Sticker Type"</label><div class="flex gap-2 mt-1"><button type="button" on:click=move |_| set_sticker_type.set("colored".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="colored" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Colored"</button><button type="button" on:click=move |_| set_sticker_type.set("reflective".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="reflective" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Reflective"</button></div></div><div><label>"Color"</label><div class="relative mt-1"><input type="text" class="w-full pr-12" placeholder=move || if sticker_type.get()=="reflective" {"e.g. Red, White, Yellow"} else {"e.g. Red Dark, Black Matte"} autocomplete="off" prop:value=move || color.get() on:input=move |e| set_color.set(event_target_value(&e)) /><div class="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 border border-gray-200" style=move || format!("background-color: {};", get_hex(&color.get()))></div></div><p class="text-xs text-gray-400 mt-1">{move || if sticker_type.get()=="reflective" {"Enter reflective color"} else {"Enter color with variant (dark, light, matte, gloss)"}}</p></div><div><label>"Size Variants"</label><div class="space-y-3 mt-2"><For each=move || rows.get() key=|r| r.id children=move |r| { let id=r.id; view!{<div class="grid grid-cols-2 gap-3" data-row-id=id><div><label>{if id==0 {"Width (inches) *"} else {"Width (inches)"}}</label><input type="number" class="w-full size-input" step="1" min="1" placeholder="e.g. 24" prop:value=r.size on:input=move |e| update_row(id,"size",event_target_value(&e))/></div><div><label>{if id==0 {"Rolls *"} else {"Rolls"}}</label><input type="number" class="w-full rolls-input" min="1" placeholder="e.g. 5" prop:value=r.rolls on:input=move |e| update_row(id,"rolls",event_target_value(&e))/></div>{move || if sticker_type.get()=="reflective" { view!{<div><label>{if id==0 {"Metres per Roll *"} else {"Metres per Roll"}}</label><input type="number" class="w-full metres-per-roll-input" step="0.1" min="1" prop:value=r.metres_per_roll.clone() on:input=move |e| update_row(id,"mpr",event_target_value(&e))/></div>}.into_any() } else {().into_any()} }<div><label>"Total Metres"</label><div class="px-3 py-2 bg-gray-50 border border-gray-200 text-gray-600 text-sm"><span class="metres-display font-medium">{move || rows.get().iter().find(|x| x.id==id).map(row_total).unwrap_or(0.0) as u64}</span>"m"</div></div>{if id!=0 {view!{<div class="col-span-2 flex justify-end"><button type="button" class="remove-row-btn text-xs text-gray-400 hover:text-red-500 font-medium" on:click=move |_| set_rows.update(|rs| rs.retain(|x| x.id!=id))>"Remove"</button></div>}.into_any()} else {().into_any()}}</div>}}/></div><button type="button" class="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium flex items-center gap-1" on:click=move |_| add_row()><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Add size"</button></div><div class="bg-gray-50 border border-gray-100 p-4"><div class="flex justify-between items-center text-sm"><span class="font-medium text-gray-600">"Total"</span><div class="flex gap-6"><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_rolls_modal()}</span>" rolls"</span><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_metres_modal() as u64}</span>"m"</span></div></div></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary" on:click=move |_| set_show_add.set(false)>"Cancel"</button><button type="button" class="btn-primary" on:click=move |_| { add_stock_action(color.get(), sticker_type.get(), rows.get()); } >"Add Stock"</button></div></form></div></div>}.into_any()} else {().into_any()} }
+        {move || add_rolls_item.get().map(|item| { let added=move || add_rolls_value.get().parse::<i64>().unwrap_or(0); let new_rolls=move || item.rolls + added(); let new_metres=move || item.total_metres + added() as f64 * item.metres_per_roll; view!{<div id="modal-add-rolls" class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Stock"</h3><button type="button" class="modal-close-btn" on:click=move |_| set_add_rolls_item.set(None)><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Stock Item"</p><p class="font-semibold text-gray-900">{format!("{} - {}\" {}", item.color, item.size, if item.sticker_type=="reflective" {"Reflective"} else {"Colored"})}</p><p class="text-sm text-gray-600 mt-1">{format!("Current: {}m remaining ({} rolls)", remaining(&item) as u64, rolls_left(&item))}</p></div><div class="space-y-4"><div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Number of Rolls to Add *"</label><input type="number" min="1" step="1" class="w-full" placeholder="Enter rolls to add" prop:value=move || add_rolls_value.get() on:input=move |e| set_add_rolls_value.set(event_target_value(&e))/><p class="text-xs text-gray-500 mt-1">{format!("Each roll = {}m", item.metres_per_roll as u64)}</p></div><div class="bg-neutral-50 border border-neutral-200 p-3"><p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || format!("{} rolls ({}m)", new_rolls(), new_metres() as u64)}</p></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary" on:click=move |_| set_add_rolls_item.set(None)>"Cancel"</button><button type="button" class="btn-primary" on:click=move |_| { let id=item.id; let rolls=added(); if rolls>0 { add_rolls_action(id, rolls); } }>"Add Rolls"</button></div></div></div>}.into_any() }).unwrap_or_else(|| ().into_any())}
+
+        <Show when=move || del_id.get().is_some()>
+            <div
+                class="modal-overlay open"
+                on:click=move |e| {
+                    if e.target() == e.current_target() {
+                        set_del_id.set(None);
+                        set_del_label.set(String::new());
+                    }
+                }
+            >
+                <div class="modal-container modal-sm">
+                    <div class="modal-header">
+                        <h3 class="modal-title">"Delete Stock?"</h3>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            on:click=move |_| {
+                                set_del_id.set(None);
+                                set_del_label.set(String::new());
+                            }
+                        >
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="modal-msg">
+                            "Are you sure you want to delete "
+                            <span class="modal-entity">{move || del_label.get()}</span>
+                            "? This action cannot be undone."
+                        </p>
+                    </div>
+                    <div class="modal-footer">
+                        <button
+                            type="button"
+                            class="btn-secondary"
+                            on:click=move |_| {
+                                set_del_id.set(None);
+                                set_del_label.set(String::new());
+                            }
+                        >"Cancel"</button>
+                        <button
+                            type="button"
+                            class="btn-danger"
+                            on:click=move |_| {
+                                if let Some(id) = del_id.get() {
+                                    delete_stock_action(id);
+                                }
+                            }
+                        >"Delete"</button>
+                    </div>
+                </div>
+            </div>
+        </Show>
+    </div>
+        </Show>
+    }
 }
 
 fn resolve_synonym(input: &str) -> &str {
