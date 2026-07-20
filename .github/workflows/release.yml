@@ -135,26 +135,26 @@ jobs:
           fi
 
           # Prefer Python byte search — `strings` is unreliable/missing on Windows runners.
-          python3 - "$BIN" "$HOST" <<'PY'
+          PY=python3
+          command -v python3 >/dev/null 2>&1 || PY=python
+          "$PY" -c "
           import sys
           from pathlib import Path
-
           bin_path = Path(sys.argv[1])
-          host = sys.argv[2].encode("utf-8")
+          host = sys.argv[2].encode('utf-8')
           data = bin_path.read_bytes()
-          print(f"Checking binary: {bin_path} ({len(data)} bytes)")
+          print(f'Checking binary: {bin_path} ({len(data)} bytes)')
           if host not in data:
-              print(f"::error::Turso host {host!r} not found in binary — embed failed")
-              # Dump embed module status for diagnosis
-              for p in Path("target").rglob("embedded_turso.rs"):
-                  print(f"---- {p} ----")
+              print(f'::error::Turso host {host!r} not found in binary — embed failed')
+              for p in Path('target').rglob('embedded_turso.rs'):
+                  print(f'---- {p} ----')
                   try:
                       print(p.read_text()[:400])
                   except Exception as e:
                       print(e)
               sys.exit(1)
-          print(f"OK: Turso host is embedded in {bin_path}")
-          PY
+          print(f'OK: Turso host is embedded in {bin_path}')
+          " "$BIN" "$HOST"
 
       - name: List build artifacts
         run: |
