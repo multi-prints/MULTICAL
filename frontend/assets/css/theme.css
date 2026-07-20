@@ -121,6 +121,12 @@
   --color-titlebar-fg-strong: rgba(17, 24, 39, 0.85);
   --color-titlebar-hover: rgba(17, 24, 39, 0.1);
   --color-frame-border: rgba(17, 24, 39, 0.1);
+
+  /* ApexShot light scrollbar (settings/ui_support.rs) */
+  --scrollbar-size: 12px;
+  --scrollbar-thumb: rgba(17, 24, 39, 0.18);
+  --scrollbar-thumb-hover: rgba(17, 24, 39, 0.30);
+  --scrollbar-thumb-active: rgba(17, 24, 39, 0.40);
 }
 
 /* ==================== DARK THEME (Turso-like deep black) ==================== */
@@ -180,6 +186,15 @@
   --color-titlebar-fg-strong: rgba(236, 236, 238, 0.95);
   --color-titlebar-hover: rgba(255, 255, 255, 0.08);
   --color-frame-border: rgba(255, 255, 255, 0.08);
+
+  /*
+   * Dark scrollbar: solid soft greys (not translucent white).
+   * Translucent white on #050505 anti-aliases into a visible “border” fringe.
+   * These solids ≈ ApexShot alpha(white, 0.18/0.28/0.35) without the edge.
+   */
+  --scrollbar-thumb: #2e2e30;
+  --scrollbar-thumb-hover: #3c3c40;
+  --scrollbar-thumb-active: #4a4a50;
 }
 
 /* ==================== GLOBAL STYLES ==================== */
@@ -223,6 +238,162 @@ body > div {
 
 *, *::before, *::after {
   box-sizing: border-box;
+}
+
+/* ==================== Scrollbar (ApexShot look) ==================== */
+/* Light: translucent slate. Dark: solid soft greys (no fringe borders). */
+/* Size always 12px — hover only changes color. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  background-image: none;
+  border: 0;
+  border-radius: 999px;
+  min-width: 12px;
+  min-height: 12px;
+  box-shadow: none;
+  outline: none;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+  background-image: none;
+  border: 0;
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scrollbar-thumb-active);
+  background-image: none;
+  border: 0;
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+  border: 0;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+  border: 0;
+  background: transparent;
+}
+
+/*
+ * Dark: paint the trough/gutter the same as the page so the “outline”
+ * (visible on black, invisible on white) disappears. Only the soft thumb shows.
+ */
+[data-theme="dark"] {
+  --scrollbar-track: #050505;
+}
+
+[data-theme="dark"] * {
+  scrollbar-color: #2e2e30 #050505;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar {
+  background: #050505;
+  background-color: #050505;
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-track,
+[data-theme="dark"] ::-webkit-scrollbar-track-piece {
+  background: #050505;
+  background-color: #050505;
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-corner {
+  background: #050505;
+  border: 0;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background-color: #2e2e30;
+  background-image: none;
+  border: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background-color: #3c3c40;
+  border: 0;
+  box-shadow: none;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:active {
+  background-color: #4a4a50;
+  border: 0;
+  box-shadow: none;
+}
+
+/* Elevated panels (cards, modals) — match their surface so gutter line vanishes */
+[data-theme="dark"] .app-main,
+[data-theme="dark"] .app-main-body,
+[data-theme="dark"] .app-page,
+[data-theme="dark"] .login-page {
+  scrollbar-color: #2e2e30 #050505;
+}
+
+[data-theme="dark"] .modal-body,
+[data-theme="dark"] .dash-table-card,
+[data-theme="dark"] .dash-card {
+  scrollbar-color: #2e2e30 #0c0c0c;
+}
+
+[data-theme="dark"] .modal-body::-webkit-scrollbar,
+[data-theme="dark"] .modal-body::-webkit-scrollbar-track,
+[data-theme="dark"] .modal-body::-webkit-scrollbar-track-piece,
+[data-theme="dark"] .dash-table-card::-webkit-scrollbar,
+[data-theme="dark"] .dash-table-card::-webkit-scrollbar-track,
+[data-theme="dark"] .dash-table-card::-webkit-scrollbar-track-piece,
+[data-theme="dark"] .dash-card::-webkit-scrollbar,
+[data-theme="dark"] .dash-card::-webkit-scrollbar-track {
+  background: #0c0c0c;
+  background-color: #0c0c0c;
+  border: 0;
+}
+
+[data-theme="dark"] .sidebar-nav {
+  scrollbar-color: #2e2e30 #0a0a0a;
+}
+
+[data-theme="dark"] .sidebar-nav::-webkit-scrollbar,
+[data-theme="dark"] .sidebar-nav::-webkit-scrollbar-track,
+[data-theme="dark"] .sidebar-nav::-webkit-scrollbar-track-piece {
+  background: #0a0a0a;
+  background-color: #0a0a0a;
+  border: 0;
 }
 
 h1, h2, h3, h4, h5, h6 {

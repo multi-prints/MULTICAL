@@ -3848,6 +3848,21 @@ impl Database {
 
     pub fn get_dashboard_chart(&self, period: &str) -> Result<Vec<DashboardChartPoint>, String> {
         let conn = self.synced_conn()?;
+
+        // Helper: map (label, amount, sales_count, debt_amount) rows into chart points.
+        let map_points = |rows: Vec<(String, f64, f64, f64)>| -> Vec<DashboardChartPoint> {
+            rows.into_iter()
+                .map(
+                    |(label, amount, sales_count, debt_amount)| DashboardChartPoint {
+                        label,
+                        amount,
+                        sales_count,
+                        debt_amount,
+                    },
+                )
+                .collect()
+        };
+
         let points = match period {
             "month" => {
                 let mut stmt = conn.prepare(
@@ -3863,6 +3878,10 @@ impl Database {
                         SELECT DATE(timestamp) AS tx_date, amount FROM sales
                         UNION ALL
                         SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
+                    ), tx_counts AS (
+                        SELECT DATE(timestamp) AS tx_date FROM sales
+                        UNION ALL
+                        SELECT DATE(timestamp) AS tx_date FROM service_transactions
                     )
                     SELECT strftime('%d', start_date) || '–' || strftime('%d', end_date) || ' ' ||
                            CASE strftime('%m', end_date)
@@ -3880,6 +3899,12 @@ impl Database {
                                WHEN '12' THEN 'Dec'
                            END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date BETWEEN w.start_date AND w.end_date), 0) AS amount,
+                           COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.tx_date BETWEEN w.start_date AND w.end_date), 0) AS sales_count,
+                           COALESCE((
+                               SELECT SUM(remaining_amount) FROM debts d
+                               WHERE d.status = 'pending'
+                                 AND DATE(d.created_at) BETWEEN w.start_date AND w.end_date
+                           ), 0) AS debt_amount,
                            idx
                     FROM weeks w
                     ORDER BY idx DESC"
@@ -3887,15 +3912,19 @@ impl Database {
 
                 let rows = stmt
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, f64>(1)?,
+                            row.get::<_, f64>(2)?,
+                            row.get::<_, f64>(3)?,
+                        ))
                     })
                     .map_err(|e| e.to_string())?;
 
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .map(|(label, amount)| DashboardChartPoint { label, amount })
-                    .collect()
+                map_points(
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?,
+                )
             }
             "year" => {
                 let mut stmt = conn.prepare(
@@ -3909,6 +3938,10 @@ impl Database {
                         SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM sales
                         UNION ALL
                         SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM service_transactions
+                    ), tx_counts AS (
+                        SELECT strftime('%Y-%m', timestamp) AS ym FROM sales
+                        UNION ALL
+                        SELECT strftime('%Y-%m', timestamp) AS ym FROM service_transactions
                     )
                     SELECT CASE strftime('%m', month_start)
                                WHEN '01' THEN 'Jan'
@@ -3925,6 +3958,12 @@ impl Database {
                                WHEN '12' THEN 'Dec'
                            END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.ym = strftime('%Y-%m', m.month_start)), 0) AS amount,
+                           COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.ym = strftime('%Y-%m', m.month_start)), 0) AS sales_count,
+                           COALESCE((
+                               SELECT SUM(remaining_amount) FROM debts d
+                               WHERE d.status = 'pending'
+                                 AND strftime('%Y-%m', d.created_at) = strftime('%Y-%m', m.month_start)
+                           ), 0) AS debt_amount,
                            idx
                     FROM months m
                     ORDER BY idx DESC"
@@ -3932,17 +3971,22 @@ impl Database {
 
                 let rows = stmt
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, f64>(1)?,
+                            row.get::<_, f64>(2)?,
+                            row.get::<_, f64>(3)?,
+                        ))
                     })
                     .map_err(|e| e.to_string())?;
 
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .map(|(label, amount)| DashboardChartPoint { label, amount })
-                    .collect()
+                map_points(
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?,
+                )
             }
             _ => {
+                // week (default): last 7 days
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE days(idx, day_date) AS (
                         SELECT 0, DATE('now', 'localtime')
@@ -3954,6 +3998,10 @@ impl Database {
                         SELECT DATE(timestamp) AS tx_date, amount FROM sales
                         UNION ALL
                         SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
+                    ), tx_counts AS (
+                        SELECT DATE(timestamp) AS tx_date FROM sales
+                        UNION ALL
+                        SELECT DATE(timestamp) AS tx_date FROM service_transactions
                     )
                     SELECT CASE strftime('%w', day_date)
                                WHEN '0' THEN 'Sun'
@@ -3965,6 +4013,12 @@ impl Database {
                                WHEN '6' THEN 'Sat'
                            END AS label,
                            COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date = d.day_date), 0) AS amount,
+                           COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.tx_date = d.day_date), 0) AS sales_count,
+                           COALESCE((
+                               SELECT SUM(remaining_amount) FROM debts dbt
+                               WHERE dbt.status = 'pending'
+                                 AND DATE(dbt.created_at) = d.day_date
+                           ), 0) AS debt_amount,
                            idx
                     FROM days d
                     ORDER BY idx DESC"
@@ -3972,15 +4026,19 @@ impl Database {
 
                 let rows = stmt
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, f64>(1)?,
+                            row.get::<_, f64>(2)?,
+                            row.get::<_, f64>(3)?,
+                        ))
                     })
                     .map_err(|e| e.to_string())?;
 
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .map(|(label, amount)| DashboardChartPoint { label, amount })
-                    .collect()
+                map_points(
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?,
+                )
             }
         };
 

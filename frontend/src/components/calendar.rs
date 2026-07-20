@@ -93,10 +93,18 @@ pub fn CalendarModal(
                 </button>
             </div>
             <div class="modal-body">
-                <div class="flex items-center justify-between mb-6">
-                    <button on:click=prev class="p-2 hover:bg-gray-100 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg></button>
-                    <h4 class="text-lg font-semibold text-gray-900">{label}</h4>
-                    <button on:click=next class="p-2 hover:bg-gray-100 transition-colors"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+                <div class="calendar-nav">
+                    <button type="button" class="calendar-nav-btn" aria-label="Previous month" on:click=prev>
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                        </svg>
+                    </button>
+                    <h4 class="calendar-nav-title">{label}</h4>
+                    <button type="button" class="calendar-nav-btn" aria-label="Next month" on:click=next>
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </button>
                 </div>
                 <div class="calendar-grid">
                     {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].into_iter().map(|h| view!{<div class="calendar-day-header">{h}</div>}).collect::<Vec<_>>()}
@@ -141,7 +149,7 @@ pub fn CalendarModal(
                         out.into_any()
                     }}
                 </div>
-                <div class="calendar-legend mt-4">
+                <div class="calendar-legend">
                     <div class="calendar-legend-item"><div class="calendar-legend-dot overdue"></div><span>"Overdue"</span></div>
                     <div class="calendar-legend-item"><div class="calendar-legend-dot due-soon"></div><span>"Due Soon"</span></div>
                     <div class="calendar-legend-item"><div class="calendar-legend-dot upcoming"></div><span>"Upcoming"</span></div>
@@ -150,41 +158,78 @@ pub fn CalendarModal(
                 {move || sel_debts().map(|debts| {
                     let (sm, sd) = sel_date.get().unwrap();
                     let title = format!("Debts for {} {}, {}", MONTHS[sm as usize], sd, year.get());
-                    view!{<div class="mt-6"><h5 class="font-medium text-gray-900 mb-3">{title}</h5><div class="space-y-2">
-                        {if debts.is_empty() { view!{<p class="text-sm text-gray-500 italic">"No debts due on this day"</p>}.into_any() }
-                        else { debts.into_iter().map(|debt| {
-                            let paid = debt.status=="paid";
-                            let dd = debt.due_date.clone().unwrap_or_default();
-                            let diff = if dd.is_empty() { 0 } else {
-                                chrono::NaiveDate::parse_from_str(&dd,"%Y-%m-%d").map(|p| (p-chrono::Local::now().date_naive()).num_days()).unwrap_or(0)
-                            };
-                            let (border, badge_cls, badge_text) = if paid {
-                                ("border-green-200 bg-green-50 opacity-75", "bg-green-100 text-green-700", "Paid".to_string())
-                            } else if diff < 0 {
-                                ("border-red-200 bg-red-50", "bg-red-100 text-red-700", format!("Overdue by {} day{}", diff.abs(), if diff.abs()>1{"s"}else{""}))
-                            } else if diff <= 3 {
-                                ("border-amber-200 bg-amber-50", "bg-amber-100 text-amber-700",
-                                    if diff==0 {"Due Today".into()} else if diff==1 {"Due Tomorrow".into()} else {format!("Due in {} days", diff)})
-                            } else {
-                                ("border-neutral-200 bg-neutral-50", "bg-neutral-100 text-neutral-800", format!("Due in {} days", diff))
-                            };
-                            view!{<div class=format!("p-4 rounded-lg border {}", border)>
-                                <div class="flex items-start justify-between"><div class="flex-1">
-                                    <div class="flex items-center gap-2"><h6 class="font-medium text-gray-900">{debt.customer_name.clone()}</h6>
-                                        <span class=format!("px-2 py-0.5 rounded-full text-xs font-medium {}", badge_cls)>{badge_text}</span></div>
-                                    <p class=format!("text-lg font-semibold text-gray-900 mt-1{}", if paid{" line-through"}else{""})>{format!("KSh {:.2}", debt.remaining_amount)}</p>
-                                    {debt.description.as_ref().map(|desc| view!{<p class="text-xs text-gray-500 mt-1">{desc.clone()}</p>})}
-                                </div></div>
-                            </div>}
-                        }).collect::<Vec<_>>().into_any() }}
-                    </div></div>}
+                    view!{
+                        <div class="calendar-day-detail">
+                            <h5 class="calendar-day-detail-title">{title}</h5>
+                            <div class="calendar-day-detail-list">
+                                {if debts.is_empty() {
+                                    view!{ <p class="calendar-day-detail-empty">"No debts due on this day"</p> }.into_any()
+                                } else {
+                                    debts.into_iter().map(|debt| {
+                                        let paid = debt.status == "paid";
+                                        let dd = debt.due_date.clone().unwrap_or_default();
+                                        let diff = if dd.is_empty() {
+                                            0
+                                        } else {
+                                            chrono::NaiveDate::parse_from_str(&dd, "%Y-%m-%d")
+                                                .map(|p| (p - chrono::Local::now().date_naive()).num_days())
+                                                .unwrap_or(0)
+                                        };
+                                        let status = if paid {
+                                            "paid"
+                                        } else if diff < 0 {
+                                            "overdue"
+                                        } else if diff <= 3 {
+                                            "due-soon"
+                                        } else {
+                                            "upcoming"
+                                        };
+                                        let badge_text = if paid {
+                                            "Paid".to_string()
+                                        } else if diff < 0 {
+                                            format!(
+                                                "Overdue by {} day{}",
+                                                diff.abs(),
+                                                if diff.abs() > 1 { "s" } else { "" }
+                                            )
+                                        } else if diff == 0 {
+                                            "Due Today".into()
+                                        } else if diff == 1 {
+                                            "Due Tomorrow".into()
+                                        } else {
+                                            format!("Due in {} days", diff)
+                                        };
+                                        view! {
+                                            <div class=format!("calendar-debt-card is-{}", status)>
+                                                <div class="calendar-debt-card-top">
+                                                    <div>
+                                                        <div class="flex items-center gap-2">
+                                                            <h6 class="calendar-debt-card-name">{debt.customer_name.clone()}</h6>
+                                                            <span class=format!("calendar-debt-badge is-{}", status)>{badge_text}</span>
+                                                        </div>
+                                                        <p class=format!(
+                                                            "calendar-debt-card-amount{}",
+                                                            if paid { " is-paid" } else { "" }
+                                                        )>{format!("KSh {:.2}", debt.remaining_amount)}</p>
+                                                        {debt.description.as_ref().map(|desc| view! {
+                                                            <p class="calendar-debt-card-desc">{desc.clone()}</p>
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                            </div>
+                        </div>
+                    }
                 })}
             </div>
         </div></div>}.into_any()}else{().into_any()}}
     }
 }
 
-/// Compact inline date picker — opens below a trigger element.
+/// Compact inline date picker — opens in a small modal.
 /// `date_r` / `date_w` are the YYYY-MM-DD value, `label` is a display string (e.g. "15 May 2026").
 #[component]
 pub fn MiniCalendar(
@@ -224,71 +269,104 @@ pub fn MiniCalendar(
     };
 
     view! {
-        <div class="inline-block">
-            <button type="button"
-                class="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white hover:border-gray-300 transition-colors flex items-center gap-2"
+        <div class="mini-cal">
+            <button
+                type="button"
+                class="mini-cal-trigger"
                 on:click=move |_| set_open.set(true)
             >
-                <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                <svg class="mini-cal-trigger-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
-                <span>{move || {
-                    let d = date_r.get();
-                    if d.is_empty() { "Pick date".to_string() }
-                    else { format_date_display(&d) }
-                }}</span>
+                <span class="mini-cal-trigger-text">
+                    {move || {
+                        let d = date_r.get();
+                        if d.is_empty() {
+                            "Pick date".to_string()
+                        } else {
+                            format_date_display(&d)
+                        }
+                    }}
+                </span>
             </button>
         </div>
         {move || if open.get() {
-            view!{<div class="modal-overlay open" on:click=move |_| set_open.set(false)>
-                <div class="modal-container" style="max-width:340px" on:click=move |e| e.stop_propagation()>
-                    <div class="modal-header">
-                        <h3 class="modal-title">"Pick a Date"</h3>
-                        <button class="modal-close-btn" on:click=move |_| set_open.set(false)>
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="flex items-center justify-between mb-4">
-                            <button on:click=prev class="p-1.5 hover:bg-gray-100 rounded transition-colors">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                            </button>
-                            <span class="text-sm font-semibold text-gray-900">{month_label}</span>
-                            <button on:click=next class="p-1.5 hover:bg-gray-100 rounded transition-colors">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            view! {
+                <div class="modal-overlay open" on:click=move |_| set_open.set(false)>
+                    <div
+                        class="modal-container mini-cal-modal"
+                        style="max-width:340px"
+                        on:click=move |e| e.stop_propagation()
+                    >
+                        <div class="modal-header">
+                            <h3 class="modal-title">"Pick a Date"</h3>
+                            <button type="button" class="modal-close-btn" on:click=move |_| set_open.set(false)>
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
                             </button>
                         </div>
-                        <div class="grid grid-cols-7 gap-1 text-center mb-1">
-                            {["Su","Mo","Tu","We","Th","Fr","Sa"].into_iter().map(|h| view!{<div class="text-[10px] font-medium text-gray-400 py-1">{h}</div>}).collect::<Vec<_>>()}
-                        </div>
-                        <div class="grid grid-cols-7 gap-1 text-center">
-                            {move || {
-                                let m = month.get(); let y = year.get();
-                                let first = chrono::NaiveDate::from_ymd_opt(y, (m+1) as u32, 1).unwrap();
-                                let so = first.weekday().num_days_from_sunday() as usize;
-                                let today = chrono::Local::now().date_naive();
-                                let sel_val = date_r.get();
-                                let mut cells: Vec<leptos::prelude::AnyView> = Vec::new();
-                                for _ in 0..so { cells.push(view!{<div></div>}.into_any()); }
-                                for d in 1..=dim(m, y) {
-                                    let dd = chrono::NaiveDate::from_ymd_opt(y, (m+1) as u32, d).unwrap();
-                                    let is_today = dd == today;
-                                    let is_sel = sel_val == format!("{:04}-{:02}-{:02}", y, m+1, d);
-                                    let cls = if is_sel { "bg-black text-white rounded-full font-medium" }
-                                        else if is_today { "border border-black rounded-full font-medium" }
-                                        else { "hover:bg-gray-100 rounded-full" };
-                                    let d2 = d;
-                                    cells.push(view!{<div class=format!("text-sm py-2 cursor-pointer transition-colors {}", cls)
-                                        on:click=move |_| select_date(d2)
-                                    >{d2}</div>}.into_any());
-                                }
-                                cells.into_any()
-                            }}
+                        <div class="modal-body">
+                            <div class="mini-cal-nav">
+                                <button type="button" class="calendar-nav-btn" aria-label="Previous month" on:click=prev>
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                                    </svg>
+                                </button>
+                                <span class="mini-cal-nav-title">{month_label}</span>
+                                <button type="button" class="calendar-nav-btn" aria-label="Next month" on:click=next>
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="mini-cal-weekdays">
+                                {["Su","Mo","Tu","We","Th","Fr","Sa"].into_iter().map(|h| {
+                                    view! { <div class="mini-cal-weekday">{h}</div> }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                            <div class="mini-cal-days">
+                                {move || {
+                                    let m = month.get();
+                                    let y = year.get();
+                                    let first = chrono::NaiveDate::from_ymd_opt(y, (m + 1) as u32, 1).unwrap();
+                                    let so = first.weekday().num_days_from_sunday() as usize;
+                                    let today = chrono::Local::now().date_naive();
+                                    let sel_val = date_r.get();
+                                    let mut cells: Vec<leptos::prelude::AnyView> = Vec::new();
+                                    for _ in 0..so {
+                                        cells.push(view! { <div class="mini-cal-day is-empty"></div> }.into_any());
+                                    }
+                                    for d in 1..=dim(m, y) {
+                                        let dd = chrono::NaiveDate::from_ymd_opt(y, (m + 1) as u32, d).unwrap();
+                                        let is_today = dd == today;
+                                        let is_sel = sel_val == format!("{:04}-{:02}-{:02}", y, m + 1, d);
+                                        let cls = if is_sel {
+                                            "mini-cal-day is-selected"
+                                        } else if is_today {
+                                            "mini-cal-day is-today"
+                                        } else {
+                                            "mini-cal-day"
+                                        };
+                                        let d2 = d;
+                                        cells.push(view! {
+                                            <button
+                                                type="button"
+                                                class=cls
+                                                on:click=move |_| select_date(d2)
+                                            >{d2}</button>
+                                        }.into_any());
+                                    }
+                                    cells.into_any()
+                                }}
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>}.into_any()
-        } else { ().into_any() }}
+            }.into_any()
+        } else {
+            ().into_any()
+        }}
     }
 }
 

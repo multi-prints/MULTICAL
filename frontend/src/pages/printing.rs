@@ -11,6 +11,12 @@ use dropdown_comp::{CustomDropdown, DropdownItem};
 #[path = "../components/loading.rs"]
 mod loading_comp;
 use loading_comp::PageLoading;
+#[path = "../components/calendar.rs"]
+mod calendar_comp;
+use calendar_comp::MiniCalendar;
+#[path = "../components/receipt.rs"]
+mod receipt_comp;
+use receipt_comp::{open_printing_receipt, ReceiptModal};
 
 fn format_printing_timestamp(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -75,6 +81,11 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (conv_phone, set_conv_phone) = signal(String::new());
     let (conv_paid, set_conv_paid) = signal(String::new());
     let (conv_due, set_conv_due) = signal(String::new());
+    let (_conv_due_label, set_conv_due_label) = signal(String::new());
+    // Receipt preview
+    let (show_receipt, set_show_receipt) = signal(false);
+    let (receipt_html, set_receipt_html) = signal(String::new());
+    let (receipt_title, set_receipt_title) = signal(String::new());
     let (loading, set_loading) = signal(true);
 
     let reload = {
@@ -642,6 +653,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                                 let pm_label = t.payment_method.clone();
                                 let cust = t.customer_name.clone();
                                 let txn_clone = t.clone();
+                                let txn_for_receipt = t.clone();
                                 let amount = t.amount;
                                 let metres = t.stock_metres_used;
                                 view! {
@@ -658,6 +670,22 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                                                 <button
                                                     type="button"
                                                     class="prod-btn-icon"
+                                                    title="Print receipt"
+                                                    aria-label="Print receipt"
+                                                    on:click=move |_| open_printing_receipt(
+                                                        &txn_for_receipt,
+                                                        set_show_receipt,
+                                                        set_receipt_html,
+                                                        set_receipt_title,
+                                                    )
+                                                >
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="prod-btn-icon"
                                                     title="Convert to debt"
                                                     aria-label="Convert to debt"
                                                     on:click=move |_| {
@@ -665,6 +693,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                                                         set_conv_phone.set(String::new());
                                                         set_conv_paid.set("0".into());
                                                         set_conv_due.set(String::new());
+                                                        set_conv_due_label.set(String::new());
                                                         set_show_convert.set(Some(txn_clone.clone()));
                                                     }
                                                 >
@@ -803,10 +832,17 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Phone"</label><input type="tel" class="w-full" placeholder="Optional" prop:value=move || conv_phone.get() on:input=move |e| set_conv_phone.set(event_target_value(&e))/></div>
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Paid *"</label><input type="number" min="0" step="0.01" class="w-full" placeholder="0.00" prop:value=move || conv_paid.get() on:input=move |e| set_conv_paid.set(event_target_value(&e))/></div>
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Remaining Debt"</label><div class="px-3 py-2 bg-red-50 border border-red-200 text-lg font-bold text-red-600">{move || format!("KSh {:.0}", remaining())}</div></div>
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><input type="date" class="w-full" prop:value=move || conv_due.get() on:input=move |e| set_conv_due.set(event_target_value(&e))/></div>
+                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><MiniCalendar date_r=conv_due date_w=set_conv_due label=set_conv_due_label/></div>
                 </div>
             </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_convert.set(None)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=submit_convert>"Create Debt"</button></div></div></div>}.into_any()
         }).unwrap_or_else(|| ().into_any())}
+
+        <ReceiptModal
+            show=Signal::derive(move || show_receipt.get())
+            set_show=set_show_receipt
+            receipt_html=Signal::derive(move || receipt_html.get())
+            title=Signal::derive(move || receipt_title.get())
+        />
     </div>
         </Show>
     }

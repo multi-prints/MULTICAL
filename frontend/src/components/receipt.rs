@@ -1,4 +1,4 @@
-use crate::api::Sale;
+use crate::api::{Sale, ServiceTransaction};
 use leptos::prelude::*;
 
 const BUSINESS_NAME: &str = "MULTIPRINTS";
@@ -30,6 +30,10 @@ fn format_multi_receipt_date(sales: &[Sale]) -> String {
 
 fn receipt_num(id: i64) -> String {
     format!("RCP-{:04}", id)
+}
+
+fn printing_receipt_num(id: i64) -> String {
+    format!("PRT-{:04}", id)
 }
 
 fn fmt_money(n: f64) -> String {
@@ -74,6 +78,7 @@ fn business_info_html() -> String {
 
 fn build_receipt_shell(
     document_type: &str,
+    section_title: &str,
     meta_html: String,
     items_html: String,
     summary_html: String,
@@ -92,7 +97,7 @@ fn build_receipt_shell(
             <div class="receipt-meta">{meta}</div>
 
             <div class="receipt-rule receipt-rule--soft"></div>
-            <div class="receipt-section-title">Items Purchased</div>
+            <div class="receipt-section-title">{section_title}</div>
             <div class="receipt-items">{items}</div>
 
             <div class="receipt-rule receipt-rule--soft"></div>
@@ -109,6 +114,7 @@ fn build_receipt_shell(
         </div>"#,
         business = escape_html(BUSINESS_NAME),
         doc_type = escape_html(document_type),
+        section_title = escape_html(section_title),
         business_info = business_info_html(),
         meta = meta_html,
         items = items_html,
@@ -170,6 +176,7 @@ fn build_single_sale_receipt(sale: &Sale) -> String {
 
     build_receipt_shell(
         "Sales Receipt",
+        "Items Purchased",
         meta_html,
         items_html,
         summary_html,
@@ -258,6 +265,7 @@ fn build_multi_sale_receipt(sales: &[Sale]) -> String {
 
     build_receipt_shell(
         "Sales Summary Receipt",
+        "Items Purchased",
         meta_html,
         items_html,
         summary_html,
@@ -309,6 +317,113 @@ pub fn ReceiptModal(
     }
 }
 
+fn build_single_printing_receipt(job: &ServiceTransaction) -> String {
+    let num = printing_receipt_num(job.id);
+    let date = format_date(&job.timestamp);
+    let cust = if job.customer_name.trim().is_empty() {
+        "Walk-in"
+    } else {
+        job.customer_name.as_str()
+    };
+    let service = if job.service_name.trim().is_empty() {
+        "Printing job"
+    } else {
+        job.service_name.as_str()
+    };
+    let pay = payment_label(&job.payment_method);
+    let amount = fmt_money(job.amount);
+    let metres = job.stock_metres_used;
+
+    let material_bits: Vec<String> = [
+        job.material_size
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{}m", s)),
+        job.material_type
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let material_line = if material_bits.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", material_bits.join(" "))
+    };
+
+    let mut item_meta = format!("{:.1}m printed{}", metres, material_line);
+    if let Some(notes) = job
+        .notes
+        .as_ref()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+    {
+        item_meta.push_str(" · ");
+        item_meta.push_str(notes);
+    }
+
+    let meta_html = format!(
+        r#"<div class="receipt-meta-row"><span>Receipt No</span><span>{num}</span></div>
+           <div class="receipt-meta-row"><span>Date</span><span>{date}</span></div>
+           <div class="receipt-meta-row"><span>Customer</span><span>{cust}</span></div>"#,
+        num = escape_html(&num),
+        date = escape_html(&date),
+        cust = escape_html(cust),
+    );
+
+    let items_html = format!(
+        r#"<div class="receipt-item-row">
+            <div class="receipt-item-copy">
+                <div class="receipt-item-name">{name}</div>
+                <div class="receipt-item-meta">{meta}</div>
+            </div>
+            <div class="receipt-item-amount">{currency} {amount}</div>
+        </div>"#,
+        name = escape_html(service),
+        meta = escape_html(&item_meta),
+        currency = CURRENCY,
+        amount = amount,
+    );
+
+    let status_line = if job.is_debt > 0 {
+        r#"<div class="receipt-row"><span>Status</span><span class="receipt-payment">Debt</span></div>"#
+    } else {
+        ""
+    };
+
+    let summary_html = format!(
+        r#"<div class="receipt-row"><span>Jobs</span><span>1</span></div>
+           <div class="receipt-row"><span>Metres</span><span>{metres:.1}m</span></div>
+           <div class="receipt-row"><span>Payment</span><span class="receipt-payment">{pay}</span></div>
+           {status}
+           <div class="receipt-row"><span>Subtotal</span><span>{currency} {amount}</span></div>"#,
+        metres = metres,
+        pay = escape_html(pay),
+        status = status_line,
+        currency = CURRENCY,
+        amount = amount,
+    );
+
+    let total_html = format!(
+        r#"<span>TOTAL</span><span>{currency} {amount}</span>"#,
+        currency = CURRENCY,
+        amount = amount,
+    );
+
+    build_receipt_shell(
+        "Printing Receipt",
+        "Service Details",
+        meta_html,
+        items_html,
+        summary_html,
+        total_html,
+    )
+}
+
 pub fn open_sale_receipt(
     sale: &Sale,
     show: WriteSignal<bool>,
@@ -332,5 +447,16 @@ pub fn open_multi_sale_receipt(
         format!("Print {} Sales Receipt", sales.len())
     });
     html.set(build_multi_sale_receipt(sales));
+    show.set(true);
+}
+
+pub fn open_printing_receipt(
+    job: &ServiceTransaction,
+    show: WriteSignal<bool>,
+    html: WriteSignal<String>,
+    title: WriteSignal<String>,
+) {
+    title.set("Print Printing Receipt".into());
+    html.set(build_single_printing_receipt(job));
     show.set(true);
 }

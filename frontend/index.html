@@ -21,6 +21,142 @@
   <link data-trunk rel="css" href="assets/css/theme.css">
   <link data-trunk rel="css" href="assets/css/components.css">
   <link data-trunk rel="css" href="assets/css/print.css">
+  <!--
+    ApexShot scrollbar (exact port from apexshot/src/settings/ui_support.rs).
+    Inline so it always wins over framework/native chrome.
+    Size is always 12px — hover only changes opacity.
+  -->
+  <style id="apexshot-scrollbar">
+    /*
+     * ApexShot scrollbar look.
+     * Light: alpha(#111827, …) — works cleanly on white.
+     * Dark: solid soft greys (not translucent white) so WebKit doesn’t paint
+     *       an anti-aliased “border” fringe on pure black (#050505).
+     * Size always 12px; hover only changes color.
+     */
+    :root,
+    [data-theme="light"] {
+      --as-sb: rgba(17, 24, 39, 0.18);
+      --as-sb-hover: rgba(17, 24, 39, 0.30);
+      --as-sb-active: rgba(17, 24, 39, 0.40);
+    }
+    [data-theme="dark"] {
+      /* Solid fills ≈ alpha(white, 0.18/0.28/0.35) on dark chrome, no edge halo */
+      --as-sb: #2e2e30;
+      --as-sb-hover: #3c3c40;
+      --as-sb-active: #4a4a50;
+    }
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--as-sb) transparent;
+    }
+    ::-webkit-scrollbar {
+      -webkit-appearance: none !important;
+      appearance: none !important;
+      width: 12px !important;
+      height: 12px !important;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-track-piece {
+      -webkit-appearance: none !important;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    ::-webkit-scrollbar-thumb {
+      -webkit-appearance: none !important;
+      background-color: var(--as-sb) !important;
+      background-image: none !important;
+      border: 0 !important;
+      border-radius: 999px !important;
+      min-width: 12px !important;
+      min-height: 12px !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: var(--as-sb-hover) !important;
+      background-image: none !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    ::-webkit-scrollbar-thumb:active {
+      background-color: var(--as-sb-active) !important;
+      background-image: none !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    ::-webkit-scrollbar-corner {
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+    ::-webkit-scrollbar-button {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+    }
+    /*
+     * Dark: hide the trough/gutter “outline” that light mode conceals on white.
+     * Paint scrollbar chrome the same as the page so only the soft thumb shows.
+     */
+    [data-theme="dark"] ::-webkit-scrollbar {
+      background-color: #050505 !important;
+      background: #050505 !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-track,
+    [data-theme="dark"] ::-webkit-scrollbar-track-piece {
+      background-color: #050505 !important;
+      background: #050505 !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-corner {
+      background-color: #050505 !important;
+      background: #050505 !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb {
+      background-color: #2e2e30 !important;
+      background-image: none !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      outline: none !important;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+      background-color: #3c3c40 !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb:active {
+      background-color: #4a4a50 !important;
+      border: 0 !important;
+      box-shadow: none !important;
+    }
+    /* Scroll surfaces: no light edge along the scroll gutter */
+    [data-theme="dark"] .app-page,
+    [data-theme="dark"] .app-main-body,
+    [data-theme="dark"] .app-main,
+    [data-theme="dark"] .sidebar-nav,
+    [data-theme="dark"] .modal-body,
+    [data-theme="dark"] .dash-table-card,
+    [data-theme="dark"] .login-page {
+      scrollbar-color: #2e2e30 #050505 !important;
+    }
+  </style>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
   window.tauriInvoke = async function(cmd, argsJson) {
@@ -48,10 +184,10 @@
       }
       return null;
     },
-    _invoke: async function (cmd) {
+    _invoke: async function (cmd, args) {
       try {
         if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-          return await window.__TAURI_INTERNALS__.invoke(cmd);
+          return await window.__TAURI_INTERNALS__.invoke(cmd, args || {});
         }
       } catch (e) {
         console.warn('multiprintsWindow invoke failed', cmd, e);
@@ -74,12 +210,28 @@
     },
     startDragging: async function () {
       var w = this._win();
-      if (w) return w.startDragging();
+      if (w && typeof w.startDragging === 'function') {
+        return w.startDragging();
+      }
       return this._invoke('plugin:window|start_dragging');
+    },
+    /**
+     * Start edge/corner resize. direction: North|South|East|West|NorthEast|NorthWest|SouthEast|SouthWest
+     */
+    startResizeDragging: async function (direction) {
+      if (!direction) return;
+      var w = this._win();
+      if (w && typeof w.startResizeDragging === 'function') {
+        return w.startResizeDragging(direction);
+      }
+      // Tauri window plugin setter takes { value: ResizeDirection }
+      return this._invoke('plugin:window|start_resize_dragging', { value: direction });
     },
     isMaximized: async function () {
       var w = this._win();
-      if (w) return w.isMaximized();
+      if (w && typeof w.isMaximized === 'function') {
+        return w.isMaximized();
+      }
       return false;
     }
   };

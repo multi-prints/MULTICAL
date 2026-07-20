@@ -181,6 +181,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app-frame">
+            <WindowResizeHandles/>
             {move || {
                 if loading.get() {
                     view! {
@@ -294,6 +295,48 @@ fn window_control(action: &str) {
         return;
     };
     let _ = func.call0(&api);
+}
+
+fn window_start_resize(direction: &str) {
+    let global = js_sys::global();
+    let Ok(api) = Reflect::get(&global, &JsValue::from_str("multiprintsWindow")) else {
+        return;
+    };
+    let Ok(func) = Reflect::get(&api, &JsValue::from_str("startResizeDragging"))
+        .and_then(|v| v.dyn_into::<Function>())
+    else {
+        return;
+    };
+    let _ = func.call1(&api, &JsValue::from_str(direction));
+}
+
+/// Edge/corner resize grips for the undecorated window.
+#[component]
+fn WindowResizeHandles() -> impl IntoView {
+    let on_resize = move |direction: &'static str| {
+        move |ev: leptos::ev::MouseEvent| {
+            // Only primary button; ignore when maximized (handles are CSS-hidden too).
+            if ev.button() != 0 {
+                return;
+            }
+            ev.prevent_default();
+            ev.stop_propagation();
+            window_start_resize(direction);
+        }
+    };
+
+    view! {
+        <div class="win-resize-layer" aria-hidden="true">
+            <div class="win-resize win-resize--n" on:mousedown=on_resize("North")></div>
+            <div class="win-resize win-resize--s" on:mousedown=on_resize("South")></div>
+            <div class="win-resize win-resize--e" on:mousedown=on_resize("East")></div>
+            <div class="win-resize win-resize--w" on:mousedown=on_resize("West")></div>
+            <div class="win-resize win-resize--ne" on:mousedown=on_resize("NorthEast")></div>
+            <div class="win-resize win-resize--nw" on:mousedown=on_resize("NorthWest")></div>
+            <div class="win-resize win-resize--se" on:mousedown=on_resize("SouthEast")></div>
+            <div class="win-resize win-resize--sw" on:mousedown=on_resize("SouthWest")></div>
+        </div>
+    }
 }
 
 const THEME_STORAGE_KEY: &str = "multiprints-theme";
@@ -528,6 +571,18 @@ fn TitleBar(
         .forget();
     };
 
+    // Manual drag fallback — more reliable than data-tauri-drag-region alone on some Linux WMs.
+    let on_drag_mousedown = move |ev: leptos::ev::MouseEvent| {
+        if ev.button() != 0 {
+            return;
+        }
+        // Leave double-click maximize free; only start drag on single primary press.
+        if ev.detail() > 1 {
+            return;
+        }
+        window_control("startDragging");
+    };
+
     let toggle_theme = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
@@ -545,10 +600,11 @@ fn TitleBar(
             <div
                 class="titlebar-drag"
                 attr:data-tauri-drag-region=""
+                on:mousedown=on_drag_mousedown
                 on:dblclick=on_drag_dblclick
             ></div>
 
-            <div class="titlebar-controls">
+            <div class="titlebar-controls" on:mousedown=|ev| ev.stop_propagation()>
                 <button
                     type="button"
                     class="titlebar-theme-btn titlebar-theme"
@@ -1157,8 +1213,8 @@ fn smooth_line_through(pts: &[(f64, f64)]) -> String {
         );
     }
 
-    // Tension: smaller = tighter to points, larger = rounder (1/6 ≈ classic Catmull–Rom)
-    let t = 0.22;
+    // Low tension keeps the curve inside the plot box when the SVG scales.
+    let t = 0.14;
     let mut d = format!("M{:.2},{:.2}", pts[0].0, pts[0].1);
 
     for i in 0..pts.len() - 1 {
@@ -1171,10 +1227,20 @@ fn smooth_line_through(pts: &[(f64, f64)]) -> String {
             pts[i + 1]
         };
 
-        let cp1x = p1.0 + (p2.0 - p0.0) * t;
-        let cp1y = p1.1 + (p2.1 - p0.1) * t;
-        let cp2x = p2.0 - (p3.0 - p1.0) * t;
-        let cp2y = p2.1 - (p3.1 - p1.1) * t;
+        let mut cp1x = p1.0 + (p2.0 - p0.0) * t;
+        let mut cp1y = p1.1 + (p2.1 - p0.1) * t;
+        let mut cp2x = p2.0 - (p3.0 - p1.0) * t;
+        let mut cp2y = p2.1 - (p3.1 - p1.1) * t;
+
+        // Keep control points inside the point bounds so scaled SVGs don't clip spikes.
+        let min_x = p1.0.min(p2.0);
+        let max_x = p1.0.max(p2.0);
+        let min_y = p0.1.min(p1.1).min(p2.1).min(p3.1);
+        let max_y = p0.1.max(p1.1).max(p2.1).max(p3.1);
+        cp1x = cp1x.clamp(min_x, max_x);
+        cp2x = cp2x.clamp(min_x, max_x);
+        cp1y = cp1y.clamp(min_y, max_y);
+        cp2y = cp2y.clamp(min_y, max_y);
 
         d.push_str(&format!(
             " C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
@@ -1193,16 +1259,19 @@ fn sparkline_paths(values: &[f64], width: f64, height: f64) -> Option<(String, S
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     // Soft floor so a single spike doesn't pin everything to the bottom edge
     let range = (max - min).max(1.0);
-    let pad = 3.0;
-    let plot_h = (height - pad * 2.0).max(1.0);
+    // Inset so stroke ends and smooth curves stay inside the viewBox when scaled.
+    let pad_x = 4.0;
+    let pad_y = 5.0;
+    let plot_w = (width - pad_x * 2.0).max(1.0);
+    let plot_h = (height - pad_y * 2.0).max(1.0);
     let n = values.len();
-    let step = width / (n - 1) as f64;
+    let step = plot_w / (n - 1) as f64;
 
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n);
     for (i, v) in values.iter().enumerate() {
-        let x = i as f64 * step;
+        let x = pad_x + i as f64 * step;
         let t = ((v - min) / range).clamp(0.0, 1.0);
-        let y = pad + plot_h * (1.0 - t);
+        let y = pad_y + plot_h * (1.0 - t);
         pts.push((x, y));
     }
 
@@ -1226,8 +1295,9 @@ fn MetricSparkline(
     #[prop(into)]
     grad_id: String,
 ) -> impl IntoView {
-    const W: f64 = 96.0;
-    const H: f64 = 40.0;
+    // Logical viewBox; CSS scales the SVG fluidly to the card width.
+    const W: f64 = 100.0;
+    const H: f64 = 36.0;
     let paths = sparkline_paths(&values, W, H);
     view! {
         <div class="dash-metric-spark" aria-hidden="true">
@@ -1237,10 +1307,12 @@ fn MetricSparkline(
                         class="dash-spark-svg"
                         viewBox=format!("0 0 {} {}", W, H)
                         preserveAspectRatio="none"
+                        width="100%"
+                        height="100%"
                     >
                         <defs>
                             <linearGradient id=grad_id.clone() x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stop-color=color stop-opacity="0.32"/>
+                                <stop offset="0%" stop-color=color stop-opacity="0.28"/>
                                 <stop offset="100%" stop-color=color stop-opacity="0"/>
                             </linearGradient>
                         </defs>
@@ -1250,9 +1322,10 @@ fn MetricSparkline(
                             d=line
                             fill="none"
                             stroke=color
-                            stroke-width="2.25"
+                            stroke-width="2"
                             stroke-linecap="round"
                             stroke-linejoin="round"
+                            vector-effect="non-scaling-stroke"
                         />
                     </svg>
                 }.into_any(),
@@ -1373,11 +1446,14 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
     };
 
     view! {
-        <Show when=move || !loading.get() fallback=|| view! {
-            <div class="dash">
-                <PageLoading message="Loading dashboard..."/>
-            </div>
-        }>
+        {move || if loading.get() {
+            view! {
+                <div class="dash dash--loading" role="status" aria-live="polite" aria-busy="true">
+                    <PageLoading message="Loading dashboard..."/>
+                </div>
+            }.into_any()
+        } else {
+            view! {
         <div class="dash">
             <div class="dash-top">
                 <h2 class="dash-welcome">"Welcome back, " {display_name.clone()} "!"</h2>
@@ -1532,7 +1608,9 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
                             </div>
                         </div>
                         {move || {
-                            let vals: Vec<f64> = chart_data.get().into_iter().map(|p| p.amount).collect();
+                            // Revenue trend for the selected chart period
+                            let vals: Vec<f64> =
+                                chart_data.get().into_iter().map(|p| p.amount).collect();
                             view! {
                                 <MetricSparkline values=vals color="#6565EC" grad_id="spark-rev"/>
                             }
@@ -1559,7 +1637,14 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
                                 </p>
                             </div>
                         </div>
-                        // No historical debt series yet — omit sparkline
+                        {move || {
+                            // Pending debt remaining amounts created in each period bucket
+                            let vals: Vec<f64> =
+                                chart_data.get().into_iter().map(|p| p.debt_amount).collect();
+                            view! {
+                                <MetricSparkline values=vals color="#EF4444" grad_id="spark-debt"/>
+                            }
+                        }}
                     </div>
                     <div class="dash-metric">
                         <div class="dash-metric-main">
@@ -1577,8 +1662,9 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
                             </div>
                         </div>
                         {move || {
-                            // Same period revenue series as activity proxy for sales trend
-                            let vals: Vec<f64> = chart_data.get().into_iter().map(|p| p.amount).collect();
+                            // Transaction count trend (sales + printing jobs) for the period
+                            let vals: Vec<f64> =
+                                chart_data.get().into_iter().map(|p| p.sales_count).collect();
                             view! {
                                 <MetricSparkline values=vals color="#F59E0B" grad_id="spark-sales"/>
                             }
@@ -1702,7 +1788,8 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
                 </div>
             </div>
         </div>
-        </Show>
+            }.into_any()
+        }}
     }
 }
 

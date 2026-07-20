@@ -30,6 +30,8 @@ pub fn SettingsPage(
     let (checking_update, set_checking_update) = signal(false);
     let (show_uninstall, set_show_uninstall) = signal(false);
     let (uninstalling, set_uninstalling) = signal(false);
+    let (del_user, set_del_user) = signal(None::<String>);
+    let (deleting_user, set_deleting_user) = signal(false);
     let (loading, set_loading) = signal(true);
 
     // Username change
@@ -37,9 +39,12 @@ pub fn SettingsPage(
     // Password change
     let (old_pw, set_old_pw) = signal(String::new());
     let (new_pw, set_new_pw) = signal(String::new());
+    let (show_old_pw, set_show_old_pw) = signal(false);
+    let (show_new_pw, set_show_new_pw) = signal(false);
     // Add user (admin)
     let (new_user, set_new_user) = signal(String::new());
     let (new_upass, set_new_upass) = signal(String::new());
+    let (show_new_upass, set_show_new_upass) = signal(false);
     let (new_role, set_new_role) = signal("employee".to_string());
 
     let cur_user = move || user.get().map(|u| u.username).unwrap_or_default();
@@ -173,12 +178,32 @@ pub fn SettingsPage(
         });
     };
 
-    let delete_user = move |username: String| {
+    let confirm_delete_user = move |_| {
+        let Some(username) = del_user.get() else {
+            return;
+        };
+        if deleting_user.get() {
+            return;
+        }
+        set_deleting_user.set(true);
         leptos::task::spawn_local(async move {
-            let _ = api::delete_user(username).await;
-            if let Ok(u) = api::get_all_users().await {
-                set_users.set(u);
+            match api::delete_user(username.clone()).await {
+                Ok(r) if r.success => {
+                    set_msg.set(Some((true, format!("User \"{}\" removed", username))));
+                    set_del_user.set(None);
+                    if let Ok(u) = api::get_all_users().await {
+                        set_users.set(u);
+                    }
+                }
+                Ok(r) => {
+                    set_msg.set(Some((
+                        false,
+                        r.error.unwrap_or_else(|| "Failed to remove user".into()),
+                    )));
+                }
+                Err(e) => set_msg.set(Some((false, e))),
             }
+            set_deleting_user.set(false);
         });
     };
 
@@ -255,24 +280,80 @@ pub fn SettingsPage(
                             <h3 class="settings-card-title">"Change password"</h3>
                             <div class="settings-form">
                                 <div class="settings-field">
-                                    <label class="settings-label">"Current password"</label>
-                                    <input
-                                        type="password"
-                                        class="settings-input"
-                                        placeholder="Enter current password"
-                                        prop:value=move || old_pw.get()
-                                        on:input=move |e| set_old_pw.set(event_target_value(&e))
-                                    />
+                                    <label class="settings-label" for="settings-current-password">"Current password"</label>
+                                    <div class="settings-password-wrap">
+                                        <input
+                                            id="settings-current-password"
+                                            type=move || if show_old_pw.get() { "text" } else { "password" }
+                                            class="settings-input settings-input--password"
+                                            placeholder="Enter current password"
+                                            autocomplete="current-password"
+                                            prop:value=move || old_pw.get()
+                                            on:input=move |e| set_old_pw.set(event_target_value(&e))
+                                        />
+                                        <button
+                                            type="button"
+                                            class="settings-pw-toggle"
+                                            aria-label=move || if show_old_pw.get() { "Hide password" } else { "Show password" }
+                                            on:click=move |_| set_show_old_pw.update(|v| *v = !*v)
+                                        >
+                                            {move || if show_old_pw.get() {
+                                                view! {
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                                                    </svg>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                                                    </svg>
+                                                }.into_any()
+                                            }}
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="settings-field">
-                                    <label class="settings-label">"New password"</label>
-                                    <input
-                                        type="password"
-                                        class="settings-input"
-                                        placeholder="Enter new password"
-                                        prop:value=move || new_pw.get()
-                                        on:input=move |e| set_new_pw.set(event_target_value(&e))
-                                    />
+                                    <label class="settings-label" for="settings-new-password">"New password"</label>
+                                    <div class="settings-password-wrap">
+                                        <input
+                                            id="settings-new-password"
+                                            type=move || if show_new_pw.get() { "text" } else { "password" }
+                                            class="settings-input settings-input--password"
+                                            placeholder="Enter new password"
+                                            autocomplete="new-password"
+                                            prop:value=move || new_pw.get()
+                                            on:input=move |e| set_new_pw.set(event_target_value(&e))
+                                        />
+                                        <button
+                                            type="button"
+                                            class="settings-pw-toggle"
+                                            aria-label=move || if show_new_pw.get() { "Hide password" } else { "Show password" }
+                                            on:click=move |_| set_show_new_pw.update(|v| *v = !*v)
+                                        >
+                                            {move || if show_new_pw.get() {
+                                                view! {
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                                                    </svg>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                                                    </svg>
+                                                }.into_any()
+                                            }}
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="settings-actions">
                                     <button type="button" class="dash-btn-primary" on:click=change_pw>"Update password"</button>
@@ -296,14 +377,42 @@ pub fn SettingsPage(
                                             />
                                         </div>
                                         <div class="settings-field">
-                                            <label class="settings-label">"Password"</label>
-                                            <input
-                                                type="password"
-                                                class="settings-input"
-                                                placeholder="Password"
-                                                prop:value=move || new_upass.get()
-                                                on:input=move |e| set_new_upass.set(event_target_value(&e))
-                                            />
+                                            <label class="settings-label" for="settings-new-user-password">"Password"</label>
+                                            <div class="settings-password-wrap">
+                                                <input
+                                                    id="settings-new-user-password"
+                                                    type=move || if show_new_upass.get() { "text" } else { "password" }
+                                                    class="settings-input settings-input--password"
+                                                    placeholder="Password"
+                                                    autocomplete="new-password"
+                                                    prop:value=move || new_upass.get()
+                                                    on:input=move |e| set_new_upass.set(event_target_value(&e))
+                                                />
+                                                <button
+                                                    type="button"
+                                                    class="settings-pw-toggle"
+                                                    aria-label=move || if show_new_upass.get() { "Hide password" } else { "Show password" }
+                                                    on:click=move |_| set_show_new_upass.update(|v| *v = !*v)
+                                                >
+                                                    {move || if show_new_upass.get() {
+                                                        view! {
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                                                            </svg>
+                                                        }.into_any()
+                                                    } else {
+                                                        view! {
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                                                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                                                            </svg>
+                                                        }.into_any()
+                                                    }}
+                                                </button>
+                                            </div>
                                         </div>
                                         <div class="settings-field">
                                             <label class="settings-label">"Role"</label>
@@ -314,7 +423,7 @@ pub fn SettingsPage(
                                             />
                                         </div>
                                         <div class="settings-field settings-field--btn">
-                                            <label class="settings-label" style="opacity:0">"Add"</label>
+                                            <span class="settings-label" aria-hidden="true">"Add user"</span>
                                             <button type="button" class="dash-btn-primary" on:click=add_user>"Add user"</button>
                                         </div>
                                     </div>
@@ -347,13 +456,12 @@ pub fn SettingsPage(
                                                                 <td>
                                                                     {if u.username != "admin" && !is_self {
                                                                         let un = uname.clone();
-                                                                        let del = delete_user;
                                                                         view! {
                                                                             <button
                                                                                 type="button"
                                                                                 class="prod-btn-icon is-danger"
                                                                                 aria-label="Remove user"
-                                                                                on:click=move |_| del(un.clone())
+                                                                                on:click=move |_| set_del_user.set(Some(un.clone()))
                                                                             >
                                                                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -444,6 +552,67 @@ pub fn SettingsPage(
                 ().into_any()
             }}
 
+            // Delete user confirmation modal
+            {move || if del_user.get().is_some() {
+                view! {
+                    <div
+                        class="modal-overlay open"
+                        on:click=move |e| {
+                            if e.target() == e.current_target() && !deleting_user.get() {
+                                set_del_user.set(None);
+                            }
+                        }
+                    >
+                        <div class="modal-container modal-sm">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Delete User?"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || deleting_user.get()
+                                    on:click=move |_| {
+                                        if !deleting_user.get() {
+                                            set_del_user.set(None);
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="modal-msg">
+                                    "Are you sure you want to delete user "
+                                    <span class="modal-entity">{move || del_user.get().unwrap_or_default()}</span>
+                                    "? They will no longer be able to sign in. This action cannot be undone."
+                                </p>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || deleting_user.get()
+                                    on:click=move |_| {
+                                        if !deleting_user.get() {
+                                            set_del_user.set(None);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-danger"
+                                    prop:disabled=move || deleting_user.get()
+                                    on:click=confirm_delete_user
+                                >{move || if deleting_user.get() { "Deleting..." } else { "Delete" }}</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
             // Uninstall modal
             {move || if show_uninstall.get() {
                 view! {
@@ -512,10 +681,6 @@ pub fn SettingsPage(
                             <div class="settings-kv-list">
                                 <div class="settings-kv"><span class="dash-metric-label">"Author"</span><span class="dash-td-strong">"Godwin Mayodi"</span></div>
                                 <div class="settings-kv"><span class="dash-metric-label">"Email"</span><span class="dash-td-strong">"codegoddy@gmail.com"</span></div>
-                                <div class="settings-kv">
-                                    <span class="dash-metric-label">"Repository"</span>
-                                    <a href="https://github.com/multi-prints/MULTICAL" target="_blank" class="settings-link">"github.com/multi-prints/MULTICAL"</a>
-                                </div>
                             </div>
                         </div>
                     </div>

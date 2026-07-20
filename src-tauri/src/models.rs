@@ -545,7 +545,14 @@ pub struct DashboardTopProduct {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardChartPoint {
     pub label: String,
+    /// Revenue (product sales + printing services) for the bucket.
     pub amount: f64,
+    /// Number of sales + printing jobs in the bucket.
+    #[serde(default)]
+    pub sales_count: f64,
+    /// Remaining amount of pending debts created in the bucket.
+    #[serde(default)]
+    pub debt_amount: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
