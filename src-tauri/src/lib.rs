@@ -78,15 +78,20 @@ pub fn run() {
                 }
             };
 
-            // Diagnostics: which DB file + whether Turso engine attached
+            // Diagnostics: embed status + engine + row counts (Windows has no console).
             write_startup_log(
                 &app_data_dir,
                 &format!(
-                    "DB file: {} | turso_engine={}",
+                    "DB file: {} | turso_engine={} | source={} | binary_embed={}",
                     database.active_db_path().display(),
-                    database.has_turso()
+                    database.has_turso(),
+                    database.turso_source(),
+                    Database::has_embedded_turso()
                 ),
             );
+            if let Some(err) = database.turso_engine_error() {
+                write_startup_log(&app_data_dir, &format!("Turso engine error: {err}"));
+            }
             write_startup_log(
                 &app_data_dir,
                 &format!("Before sync: {}", database.local_row_summary()),
@@ -107,10 +112,15 @@ pub fn run() {
                         &format!("Initial Turso sync error (offline OK): {e}"),
                     ),
                 }
+            } else if database.turso_engine_error().is_some() {
+                write_startup_log(
+                    &app_data_dir,
+                    "Turso credentials found but engine failed to start — see Turso engine error above.",
+                );
             } else {
                 write_startup_log(
                     &app_data_dir,
-                    "Turso NOT configured — local-only mode (no multi-PC pull). Check CI secrets / turso.json.",
+                    "Turso NOT configured — binary was built without secrets and no turso.json was found.",
                 );
             }
 

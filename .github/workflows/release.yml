@@ -84,9 +84,12 @@ jobs:
           echo "Turso secrets present (url length=${#MULTIPRINTS_TURSO_DATABASE_URL}, token length=${#MULTIPRINTS_TURSO_AUTH_TOKEN})"
 
       - name: Force rebuild multiprints with Turso embeds
-        # Avoid shipping a cached binary compiled without secrets (option_env/OUT_DIR).
+        # Avoid shipping a cached binary compiled without secrets.
         shell: bash
-        run: cargo clean -p multiprints
+        run: |
+          cargo clean -p multiprints
+          # Bust build-script fingerprint so embedded_turso.rs is always regenerated
+          rm -rf target/release/build/multiprints-* target/debug/build/multiprints-* 2>/dev/null || true
 
       - name: Build Tauri bundle
         run: cargo tauri build --bundles ${{ matrix.os == 'windows-latest' && 'nsis' || 'deb' }}
@@ -98,6 +101,40 @@ jobs:
           MULTIPRINTS_TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+
+      - name: Verify Turso URL is inside the built binary
+        shell: bash
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Extract host portion we expect to find as a string in the binary
+          HOST=$(echo "$TURSO_DATABASE_URL" | sed -E 's#^libsql://##; s#^https://##; s#/.*##')
+          echo "Looking for host string in binary: $HOST"
+          BIN=""
+          if [ -f target/release/multiprints ]; then
+            BIN=target/release/multiprints
+          elif [ -f target/release/multiprints.exe ]; then
+            BIN=target/release/multiprints.exe
+          else
+            BIN=$(find target/release -maxdepth 2 -type f \( -name multiprints -o -name multiprints.exe \) | head -1 || true)
+          fi
+          if [ -z "${BIN}" ] || [ ! -f "$BIN" ]; then
+            echo "::error::Could not locate multiprints binary under target/release"
+            find target/release -maxdepth 3 -type f | head -50 || true
+            exit 1
+          fi
+          echo "Checking binary: $BIN ($(wc -c < "$BIN") bytes)"
+          if ! strings "$BIN" | grep -F "$HOST" >/dev/null; then
+            echo "::error::Turso host '$HOST' not found in binary — embed failed"
+            # Show whether generated embed module had PRESENT=true
+            find target -name embedded_turso.rs | while read f; do
+              echo "---- $f ----"
+              head -5 "$f" || true
+            done
+            exit 1
+          fi
+          echo "OK: Turso host is embedded in $BIN"
 
       - name: List build artifacts
         run: |

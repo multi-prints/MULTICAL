@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 
 use crate::models::*;
 
+/// Compile-time Turso credentials from build.rs (CI secrets → every installed PC).
+mod embedded_turso {
+    include!(concat!(env!("OUT_DIR"), "/embedded_turso.rs"));
+}
+
 const TURSO_CONFIG_FILE: &str = "turso.json";
 const SYNC_DB_FILE: &str = "multiprints-sync.db";
 /// Background libSQL replica interval (pull/push without blocking UI reads).
@@ -78,6 +83,10 @@ pub struct Database {
     db_path: PathBuf,
     /// Last successful Turso sync — used to throttle read-path network syncs.
     last_sync_at: Mutex<Option<Instant>>,
+    /// Where credentials came from (environment / compile-time / path / none).
+    turso_source: String,
+    /// If credentials existed but the libsql engine failed to open.
+    turso_engine_error: Option<String>,
 }
 
 fn infer_debt_payment_method(
@@ -121,7 +130,8 @@ impl Database {
 
         let (turso_config, turso_source) = Self::load_turso_config(data_dir);
         if let Some(ref config) = turso_config {
-            // Persist so every future launch works without manual setup / env vars.
+            // Always refresh app-data turso.json from known-good credentials so every
+            // PC keeps a working file even after reinstall / profile wipe.
             Self::persist_turso_config(data_dir, config, &turso_source);
         }
 
@@ -140,11 +150,14 @@ impl Database {
         // network sync here. try_initial_sync / spawn_background_sync handle that.
         let mut sync_db = None;
         let mut turso_active = false;
+        let mut turso_engine_error = None;
         if let Some(config) = turso_config.clone() {
             let path_for_build = active_db_path.clone();
+            // libsql is happier with a stable path string on Windows.
+            let path_str = path_for_build.to_string_lossy().replace('\\', "/");
             match tauri::async_runtime::block_on(async move {
                 Builder::new_synced_database(
-                    &path_for_build,
+                    path_str.as_str(),
                     config.database_url,
                     config.auth_token,
                 )
@@ -160,10 +173,9 @@ impl Database {
                     turso_active = true;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Turso replica init failed ({}); keeping offline open so the app can start: {}",
-                        turso_source, e
-                    );
+                    let msg = format!("Turso replica init failed (source={}): {}", turso_source, e);
+                    eprintln!("{msg}");
+                    turso_engine_error = Some(msg);
                     // Keep multiprints-sync.db if it already exists (has last-known multi-PC data).
                     // Only fall all the way back to multiprints.db when there is no replica yet.
                     if !sync_path.exists() {
@@ -221,6 +233,8 @@ impl Database {
             db_path: active_db_path.clone(),
             // None until a real sync succeeds — first reads must be allowed to pull.
             last_sync_at: Mutex::new(None),
+            turso_source: turso_source.clone(),
+            turso_engine_error,
         };
 
         // Schema work is purely local — never force a Turso round-trip during boot.
@@ -252,6 +266,23 @@ impl Database {
     /// Whether Turso sync is configured for this process.
     pub fn has_turso(&self) -> bool {
         self.sync_db.is_some()
+    }
+
+    /// Credential source label (e.g. compile-time, path, environment, none).
+    pub fn turso_source(&self) -> &str {
+        &self.turso_source
+    }
+
+    /// True when build.rs baked non-empty Turso credentials into this binary.
+    pub fn has_embedded_turso() -> bool {
+        embedded_turso::EMBEDDED_TURSO_PRESENT
+            && !embedded_turso::EMBEDDED_TURSO_URL.is_empty()
+            && !embedded_turso::EMBEDDED_TURSO_TOKEN.is_empty()
+    }
+
+    /// Engine open error if credentials existed but libsql failed.
+    pub fn turso_engine_error(&self) -> Option<&str> {
+        self.turso_engine_error.as_deref()
     }
 
     /// Path of the active local DB file (replica or plain sqlite).
@@ -376,16 +407,20 @@ impl Database {
     }
 
     /// Resolve Turso credentials automatically, in priority order:
-    /// 1. Process env (`TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN`)
-    /// 2. App data `turso.json` (or `.env` next to the DB)
-    /// 3. User config dir / system-wide install paths
-    /// 4. Compile-time defaults baked in at release build
+    /// 1. Process env (dev override)
+    /// 2. **Compile-time embed** from CI secrets (every installed PC — primary path)
+    /// 3. App data `turso.json` / `.env`
+    /// 4. User config / system-wide paths
     fn load_turso_config(data_dir: &Path) -> (Option<TursoConfig>, String) {
         if let Some(cfg) = Self::turso_from_env() {
             return (Some(cfg), "environment".into());
         }
 
-        // Explicit files next to the database (highest local priority)
+        // Baked into release binaries so multi-PC works with zero setup.
+        if let Some(cfg) = Self::turso_from_compile_time() {
+            return (Some(cfg), "compile-time (embedded in app)".into());
+        }
+
         for path in [data_dir.join(TURSO_CONFIG_FILE), data_dir.join(".env")] {
             if let Some(cfg) = Self::turso_from_path(&path) {
                 return (Some(cfg), path.display().to_string());
@@ -401,39 +436,28 @@ impl Database {
             }
         }
 
-        if let Some(cfg) = Self::turso_from_compile_time() {
-            return (Some(cfg), "compile-time (release embed)".into());
-        }
-
         (None, "none".into())
     }
 
     fn turso_from_env() -> Option<TursoConfig> {
-        let database_url = std::env::var("TURSO_DATABASE_URL").ok()?;
-        let auth_token = std::env::var("TURSO_AUTH_TOKEN").ok()?;
+        let database_url = std::env::var("TURSO_DATABASE_URL")
+            .or_else(|_| std::env::var("MULTIPRINTS_TURSO_DATABASE_URL"))
+            .ok()?;
+        let auth_token = std::env::var("TURSO_AUTH_TOKEN")
+            .or_else(|_| std::env::var("MULTIPRINTS_TURSO_AUTH_TOKEN"))
+            .ok()?;
         Self::turso_if_valid(database_url, auth_token)
     }
 
     fn turso_from_compile_time() -> Option<TursoConfig> {
-        // Written by build.rs from CI secrets (MULTIPRINTS_TURSO_* / TURSO_*).
-        // Prefer OUT_DIR embeds (rebuild when env changes) over option_env!.
-        let database_url = include_str!(concat!(env!("OUT_DIR"), "/embedded_turso_url.txt"))
-            .trim()
-            .to_string();
-        let auth_token = include_str!(concat!(env!("OUT_DIR"), "/embedded_turso_token.txt"))
-            .trim()
-            .to_string();
-        if let Some(cfg) = Self::turso_if_valid(database_url, auth_token) {
-            return Some(cfg);
+        // Generated by build.rs as real Rust string constants (not fragile include_str txt).
+        if !embedded_turso::EMBEDDED_TURSO_PRESENT {
+            return None;
         }
-        // Fallback for older tooling paths
-        let database_url = option_env!("MULTIPRINTS_TURSO_DATABASE_URL")
-            .or(option_env!("TURSO_DATABASE_URL"))?
-            .to_string();
-        let auth_token = option_env!("MULTIPRINTS_TURSO_AUTH_TOKEN")
-            .or(option_env!("TURSO_AUTH_TOKEN"))?
-            .to_string();
-        Self::turso_if_valid(database_url, auth_token)
+        Self::turso_if_valid(
+            embedded_turso::EMBEDDED_TURSO_URL.to_string(),
+            embedded_turso::EMBEDDED_TURSO_TOKEN.to_string(),
+        )
     }
 
     fn turso_if_valid(database_url: String, auth_token: String) -> Option<TursoConfig> {
@@ -519,11 +543,15 @@ impl Database {
     }
 
     /// Write credentials into app data so subsequent launches don't depend on env/cwd.
-    /// Never overwrites an existing app-data file (user/admin edits win).
+    /// Overwrites missing/invalid files. Keeps a valid existing file if it already works
+    /// (so a hand-edited token is not clobbered unless it is broken).
     fn persist_turso_config(data_dir: &Path, config: &TursoConfig, source: &str) {
         let path = data_dir.join(TURSO_CONFIG_FILE);
         if path.exists() {
-            return;
+            if Self::turso_from_path(&path).is_some() {
+                return;
+            }
+            eprintln!("Existing turso.json is invalid — replacing from {}", source);
         }
 
         let payload = serde_json::json!({
