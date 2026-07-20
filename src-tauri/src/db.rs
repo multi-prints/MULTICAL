@@ -125,7 +125,10 @@ impl Database {
             Self::persist_turso_config(data_dir, config, &turso_source);
         }
 
-        let active_db_path = if turso_config.is_some() {
+        // Prefer Turso replica path when credentials exist, but never hard-fail
+        // startup if the embedded replica cannot be opened (common on Windows with
+        // file locks, corrupt replicas, or TLS/runtime issues). Fall back to local.
+        let mut active_db_path = if turso_config.is_some() {
             data_dir.join(SYNC_DB_FILE)
         } else {
             db_path.clone()
@@ -133,9 +136,11 @@ impl Database {
 
         // Build the embedded replica connection, but do NOT block startup on a full
         // network sync. Background sync runs after the UI is up (see spawn_background_sync).
-        let sync_db = if let Some(config) = turso_config.clone() {
+        let mut sync_db = None;
+        let mut turso_active = false;
+        if let Some(config) = turso_config.clone() {
             let sync_path = active_db_path.clone();
-            let db = tauri::async_runtime::block_on(async move {
+            match tauri::async_runtime::block_on(async move {
                 Builder::new_synced_database(&sync_path, config.database_url, config.auth_token)
                     .read_your_writes(true)
                     .remote_writes(false)
@@ -143,14 +148,30 @@ impl Database {
                     .build()
                     .await
                     .map_err(|e| e.to_string())
-            })?;
-            Some(Arc::new(db))
-        } else {
-            None
-        };
+            }) {
+                Ok(db) => {
+                    sync_db = Some(Arc::new(db));
+                    turso_active = true;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Turso replica init failed ({}); falling back to local SQLite so the app can start: {}",
+                        turso_source, e
+                    );
+                    active_db_path = db_path.clone();
+                }
+            }
+        }
 
-        let conn = Connection::open(&active_db_path).map_err(|e| e.to_string())?;
-        conn.execute_batch(
+        let conn = Connection::open(&active_db_path).map_err(|e| {
+            format!(
+                "Failed to open database at {}: {}",
+                active_db_path.display(),
+                e
+            )
+        })?;
+        // PRAGMAs are best-effort — WAL can fail on some Windows/network volumes.
+        if let Err(e) = conn.execute_batch(
             "
             PRAGMA foreign_keys = ON;
             PRAGMA busy_timeout = 5000;
@@ -159,8 +180,11 @@ impl Database {
             PRAGMA cache_size = -20000;
             PRAGMA journal_mode = WAL;
             ",
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            eprintln!("Database PRAGMA setup warning: {}", e);
+            // Ensure foreign keys still on even if WAL failed.
+            let _ = conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+        }
 
         let db = Database {
             conn: Mutex::new(conn),
@@ -173,7 +197,7 @@ impl Database {
         db.create_tables_local()?;
         db.run_migrations_local()?;
 
-        if turso_config.is_some()
+        if turso_active
             && db.is_business_data_empty_local()?
             && db_path.exists()
             && db_path != active_db_path
@@ -181,7 +205,7 @@ impl Database {
             db.import_legacy_sqlite(&db_path)?;
         }
 
-        if turso_config.is_some() {
+        if turso_active {
             // Prevent schema/user bootstrap from forcing a network sync before the UI opens.
             if let Ok(mut last) = db.last_sync_at.lock() {
                 *last = Some(Instant::now());
@@ -192,8 +216,8 @@ impl Database {
             );
         } else {
             println!(
-                "Database initialized in local mode at: {:?} (no Turso config found)",
-                active_db_path
+                "Database initialized in local mode at: {:?} (turso source: {})",
+                active_db_path, turso_source
             );
         }
         Ok(db)
@@ -424,15 +448,23 @@ impl Database {
         self.local_conn()
     }
 
-    /// Write path: data is already on disk; force-push to Turso so other PCs see it soon.
+    /// Write path: data is already on disk. Push to Turso in the background so the
+    /// UI (and first-launch setup) never blocks on the network. Periodic
+    /// `sync_interval` on the replica covers retries.
     fn finish_write<T>(&self, value: T) -> Result<T, String> {
-        if let Err(e) = self.maybe_sync(true) {
-            // Local write already succeeded; surface sync failure without losing the save.
-            eprintln!(
-                "Database change was saved locally, but could not sync to Turso: {}",
-                e
-            );
-            // Still return success so the UI stays responsive offline / on flaky network.
+        if let Some(sync_db) = self.sync_db.clone() {
+            // Mark throttle so concurrent reads don't also kick a sync immediately.
+            if let Ok(mut last) = self.last_sync_at.lock() {
+                *last = Some(Instant::now());
+            }
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = sync_db.sync().await {
+                    eprintln!(
+                        "Database change was saved locally, but could not sync to Turso: {}",
+                        e
+                    );
+                }
+            });
         }
         Ok(value)
     }
@@ -4197,7 +4229,8 @@ impl Database {
     // ==================== Users (for auth) ====================
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRow>, String> {
-        let conn = self.synced_conn()?;
+        // Local-only during auth bootstrap so startup never waits on the network.
+        let conn = self.local_conn()?;
         let mut stmt = conn
             .prepare("SELECT id, username, password_hash, role, permissions, created_at, updated_at FROM users WHERE username = ?1")
             .map_err(|e| e.to_string())?;
@@ -4226,12 +4259,13 @@ impl Database {
         role: &str,
         permissions: &str,
     ) -> Result<(), String> {
-        let conn = self.synced_conn()?;
+        let conn = self.local_conn()?;
         let id = new_distributed_id();
         conn.execute(
             "INSERT INTO users (id, username, password_hash, role, permissions) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, username, password_hash, role, permissions],
         ).map_err(|e| e.to_string())?;
+        // Defer Turso push to background / later writes so first-launch setup cannot hang.
         self.finish_write(())
     }
 

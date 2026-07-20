@@ -10,8 +10,32 @@ mod models;
 use auth::AuthManager;
 use db::Database;
 use models::{DatabaseBackup, LocalStorageData, SuccessResponse};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
+
+/// Best-effort crash/startup log for Windows release builds (no console window).
+fn write_startup_log(dir: &std::path::Path, message: &str) {
+    let path = dir.join("startup.log");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            message
+        );
+    }
+    eprintln!("{}", message);
+}
+
+fn install_panic_hook(log_dir: PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("PANIC: {info}");
+        write_startup_log(&log_dir, &msg);
+    }));
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,17 +47,37 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Get app data directory for database
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data directory");
+            let app_data_dir = app.path().app_data_dir().map_err(|e| {
+                format!("Failed to get app data directory: {e}")
+            })?;
+
+            std::fs::create_dir_all(&app_data_dir).map_err(|e| {
+                format!(
+                    "Failed to create app data directory {}: {e}",
+                    app_data_dir.display()
+                )
+            })?;
+
+            install_panic_hook(app_data_dir.clone());
+            write_startup_log(
+                &app_data_dir,
+                &format!("Starting MULTIPRINTS v{}", env!("CARGO_PKG_VERSION")),
+            );
 
             let db_path = app_data_dir.join("multiprints.db");
 
-            // Initialize database (local open is fast; Turso sync runs in background)
-            let database = Database::new(db_path).expect("Failed to initialize database");
+            // Initialize database (local open is fast; Turso sync runs in background).
+            // Never hard-crash without a log — Windows release has no console.
+            let database = match Database::new(db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    let msg = format!("Failed to initialize database: {e}");
+                    write_startup_log(&app_data_dir, &msg);
+                    return Err(msg.into());
+                }
+            };
 
-            // Initialize default users
+            // Initialize default users (local; writes may best-effort sync later)
             auth_manager.init_default_users(&database);
 
             // Pull/push Turso after the window can show — do not block setup on the network
@@ -43,6 +87,7 @@ pub fn run() {
             app.manage(database);
             app.manage(auth_manager);
 
+            write_startup_log(&app_data_dir, "MULTIPRINTS Tauri app initialized");
             println!("MULTIPRINTS Tauri app initialized");
             Ok(())
         })

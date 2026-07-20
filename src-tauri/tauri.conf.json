@@ -1,12 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/master/tauri-conf.schema.json",
   "productName": "MULTIPRINTS",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "identifier": "com.multiprints.desktop",
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "MULTIPRINTS",
         "width": 1200,
         "height": 800,

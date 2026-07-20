@@ -1,0 +1,20 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MULTIPRINTS",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true
+      }
+    ]
+  }
+}
