@@ -67,6 +67,27 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Verify Turso secrets are present
+        shell: bash
+        env:
+          MULTIPRINTS_TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          MULTIPRINTS_TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          if [ -z "$MULTIPRINTS_TURSO_DATABASE_URL" ] || [ -z "$MULTIPRINTS_TURSO_AUTH_TOKEN" ]; then
+            echo "::error::TURSO_DATABASE_URL / TURSO_AUTH_TOKEN secrets are missing. Multi-PC sync will not work."
+            exit 1
+          fi
+          case "$MULTIPRINTS_TURSO_DATABASE_URL" in
+            libsql://*|https://*) echo "Turso URL shape OK" ;;
+            *) echo "::error::TURSO_DATABASE_URL must start with libsql:// or https://"; exit 1 ;;
+          esac
+          echo "Turso secrets present (url length=${#MULTIPRINTS_TURSO_DATABASE_URL}, token length=${#MULTIPRINTS_TURSO_AUTH_TOKEN})"
+
+      - name: Force rebuild multiprints with Turso embeds
+        # Avoid shipping a cached binary compiled without secrets (option_env/OUT_DIR).
+        shell: bash
+        run: cargo clean -p multiprints
+
       - name: Build Tauri bundle
         run: cargo tauri build --bundles ${{ matrix.os == 'windows-latest' && 'nsis' || 'deb' }}
         env:
@@ -75,6 +96,8 @@ jobs:
           # without a manual turso.json step. Set these once under repo Settings → Secrets.
           MULTIPRINTS_TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           MULTIPRINTS_TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
 
       - name: List build artifacts
         run: |

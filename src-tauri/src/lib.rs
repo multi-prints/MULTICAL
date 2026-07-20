@@ -78,22 +78,46 @@ pub fn run() {
                 }
             };
 
+            // Diagnostics: which DB file + whether Turso engine attached
+            write_startup_log(
+                &app_data_dir,
+                &format!(
+                    "DB file: {} | turso_engine={}",
+                    database.active_db_path().display(),
+                    database.has_turso()
+                ),
+            );
+            write_startup_log(
+                &app_data_dir,
+                &format!("Before sync: {}", database.local_row_summary()),
+            );
+
             // Pull multi-PC data BEFORE seeding defaults so remote users/products appear.
-            // Cap wait so a flaky network cannot hang the window forever.
+            // Windows first-launch often needs longer than a few seconds.
             if database.has_turso() {
                 write_startup_log(&app_data_dir, "Starting initial Turso sync…");
-                match database.try_initial_sync(std::time::Duration::from_secs(12)) {
+                match database.try_initial_sync(std::time::Duration::from_secs(45)) {
                     Ok(true) => write_startup_log(&app_data_dir, "Initial Turso sync OK"),
                     Ok(false) => write_startup_log(
                         &app_data_dir,
-                        "Initial Turso sync timed out — continuing with local replica",
+                        "Initial Turso sync timed out — continuing with local replica; background sync continues",
                     ),
                     Err(e) => write_startup_log(
                         &app_data_dir,
                         &format!("Initial Turso sync error (offline OK): {e}"),
                     ),
                 }
+            } else {
+                write_startup_log(
+                    &app_data_dir,
+                    "Turso NOT configured — local-only mode (no multi-PC pull). Check CI secrets / turso.json.",
+                );
             }
+
+            write_startup_log(
+                &app_data_dir,
+                &format!("After sync: {}", database.local_row_summary()),
+            );
 
             // Seed defaults only if still missing after the pull
             auth_manager.init_default_users(&database);

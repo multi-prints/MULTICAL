@@ -173,6 +173,25 @@ impl Database {
             }
         }
 
+        // Pull remote rows BEFORE opening the rusqlite handle so the first open
+        // sees Turso data (avoids stale empty snapshot, especially on Windows).
+        if let Some(ref db) = sync_db {
+            let db = db.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            tauri::async_runtime::spawn(async move {
+                let r = db.sync().await.map(|_| ()).map_err(|e| e.to_string());
+                let _ = tx.send(r);
+            });
+            match rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(Ok(())) => println!("Pre-open Turso sync OK ({})", turso_source),
+                Ok(Err(e)) => eprintln!("Pre-open Turso sync failed ({}): {}", turso_source, e),
+                Err(_) => eprintln!(
+                    "Pre-open Turso sync still running after 30s ({}) — continuing open",
+                    turso_source
+                ),
+            }
+        }
+
         let conn = Connection::open(&active_db_path).map_err(|e| {
             format!(
                 "Failed to open database at {}: {}",
@@ -235,43 +254,75 @@ impl Database {
         self.sync_db.is_some()
     }
 
+    /// Path of the active local DB file (replica or plain sqlite).
+    pub fn active_db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// Local row counts for startup diagnostics (no network).
+    pub fn local_row_summary(&self) -> String {
+        let Ok(conn) = self.local_conn() else {
+            return "rows: <lock error>".into();
+        };
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap_or(-1)
+        };
+        format!(
+            "products={} stock={} sales={} debts={} users={} services={} jobs={}",
+            count("products"),
+            count("stock"),
+            count("sales"),
+            count("debts"),
+            count("users"),
+            count("services"),
+            count("service_transactions"),
+        )
+    }
+
     /// Best-effort first pull so multi-PC data is present before default users / UI load.
-    /// Returns Ok(true) if a sync completed, Ok(false) if Turso is not configured.
+    /// Returns Ok(true) if a sync completed, Ok(false) if Turso is not configured / still running.
     pub fn try_initial_sync(&self, timeout: Duration) -> Result<bool, String> {
         let Some(sync_db) = self.sync_db.clone() else {
             return Ok(false);
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let sync_for_task = sync_db.clone();
         tauri::async_runtime::spawn(async move {
-            let result = sync_db.sync().await.map(|_| ()).map_err(|e| e.to_string());
+            let result = sync_for_task
+                .sync()
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
 
-        match rx.recv_timeout(timeout) {
-            Ok(Ok(())) => {
-                if let Ok(mut last) = self.last_sync_at.lock() {
-                    *last = Some(Instant::now());
-                }
-                // Ensure the rusqlite handle sees commits written by libsql into the same file.
-                self.checkpoint_wal();
-                println!("Initial Turso sync completed within {:?}", timeout);
-                Ok(true)
-            }
+        let result = match rx.recv_timeout(timeout) {
+            Ok(Ok(())) => true,
             Ok(Err(e)) => {
                 eprintln!("Initial Turso sync failed: {}", e);
-                Err(e)
+                return Err(e);
             }
             Err(_) => {
-                // Sync continues in the background task; do not mark last_sync_at so
-                // subsequent reads still attempt a pull until one succeeds.
+                // Sync still running in background — do not treat as hard failure.
                 eprintln!(
-                    "Initial Turso sync still running after {:?} — UI will show local replica and keep syncing",
+                    "Initial Turso sync still running after {:?} — will keep retrying in background",
                     timeout
                 );
-                Ok(false)
+                false
             }
+        };
+
+        if result {
+            if let Ok(mut last) = self.last_sync_at.lock() {
+                *last = Some(Instant::now());
+            }
+            // libsql and rusqlite share the file — reopen so we don't keep a stale snapshot.
+            self.reopen_local_connection()?;
+            println!("Initial Turso sync completed within {:?}", timeout);
         }
+        Ok(result)
     }
 
     /// Force WAL checkpoint so readers on this connection see the latest pages.
@@ -281,13 +332,37 @@ impl Database {
         }
     }
 
+    /// Re-open the rusqlite handle after libsql rewrites the replica file.
+    fn reopen_local_connection(&self) -> Result<(), String> {
+        let mut guard = self.local_conn()?;
+        // Drop the old connection first (end of replace), then open fresh.
+        let new_conn = Connection::open(&self.db_path).map_err(|e| {
+            format!(
+                "Failed to reopen database at {}: {}",
+                self.db_path.display(),
+                e
+            )
+        })?;
+        let _ = new_conn.execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA cache_size = -20000;
+            PRAGMA journal_mode = WAL;
+            ",
+        );
+        *guard = new_conn;
+        let _ = guard.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        Ok(())
+    }
+
     /// Kick off a non-blocking Turso pull/push after the window is shown.
     pub fn spawn_background_sync(&self) {
         let Some(sync_db) = self.sync_db.clone() else {
             return;
         };
-        // Share last_sync marker by re-syncing through a dedicated path isn't possible
-        // without Arc; background success still helps the next maybe_sync cycle.
         tauri::async_runtime::spawn(async move {
             match sync_db.sync().await {
                 Ok(_) => {
@@ -340,9 +415,24 @@ impl Database {
     }
 
     fn turso_from_compile_time() -> Option<TursoConfig> {
-        // Set at release build time via CI secrets (see .github/workflows/release.yml).
-        let database_url = option_env!("MULTIPRINTS_TURSO_DATABASE_URL")?.to_string();
-        let auth_token = option_env!("MULTIPRINTS_TURSO_AUTH_TOKEN")?.to_string();
+        // Written by build.rs from CI secrets (MULTIPRINTS_TURSO_* / TURSO_*).
+        // Prefer OUT_DIR embeds (rebuild when env changes) over option_env!.
+        let database_url = include_str!(concat!(env!("OUT_DIR"), "/embedded_turso_url.txt"))
+            .trim()
+            .to_string();
+        let auth_token = include_str!(concat!(env!("OUT_DIR"), "/embedded_turso_token.txt"))
+            .trim()
+            .to_string();
+        if let Some(cfg) = Self::turso_if_valid(database_url, auth_token) {
+            return Some(cfg);
+        }
+        // Fallback for older tooling paths
+        let database_url = option_env!("MULTIPRINTS_TURSO_DATABASE_URL")
+            .or(option_env!("TURSO_DATABASE_URL"))?
+            .to_string();
+        let auth_token = option_env!("MULTIPRINTS_TURSO_AUTH_TOKEN")
+            .or(option_env!("TURSO_AUTH_TOKEN"))?
+            .to_string();
         Self::turso_if_valid(database_url, auth_token)
     }
 
@@ -469,8 +559,11 @@ impl Database {
             if let Ok(mut last) = self.last_sync_at.lock() {
                 *last = Some(Instant::now());
             }
-            // libsql writes into the same file — checkpoint so this connection sees them.
-            self.checkpoint_wal();
+            // libsql rewrites the replica — reopen so SELECT sees new rows (esp. Windows).
+            if let Err(e) = self.reopen_local_connection() {
+                eprintln!("Reopen after sync failed (checkpoint only): {}", e);
+                self.checkpoint_wal();
+            }
             Ok(())
         } else {
             Ok(())
