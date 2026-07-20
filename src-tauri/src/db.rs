@@ -17,11 +17,15 @@ const SYNC_INTERVAL_SECS: u64 = 10;
 const MIN_READ_SYNC_GAP: Duration = Duration::from_secs(8);
 
 /// Collision-resistant positive i64 for multi-PC inserts (avoids AUTOINCREMENT races).
-/// Layout: 42 bits UTC ms + 21 bits random ≈ unique across machines without a central allocator.
+///
+/// Must stay within JavaScript `Number.MAX_SAFE_INTEGER` (2^53 - 1) because the
+/// Tauri webview IPC still materializes JSON numbers as IEEE-754 doubles.
+/// Layout: 42 bits UTC ms + 10 bits random (52 bits total, always safe).
 fn new_distributed_id() -> i64 {
     let ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
-    let rand_bits: u64 = rand::thread_rng().gen::<u32>() as u64 & ((1u64 << 21) - 1);
-    let id = ((ms & ((1u64 << 42) - 1)) << 21) | rand_bits;
+    let ms_bits = ms & ((1u64 << 42) - 1);
+    let rand_bits = (rand::thread_rng().gen::<u32>() as u64) & ((1u64 << 10) - 1);
+    let id = (ms_bits << 10) | rand_bits;
     (id as i64).max(1)
 }
 
@@ -1807,7 +1811,11 @@ impl Database {
     pub fn get_all_sales(&self) -> Result<Vec<Sale>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp FROM sales ORDER BY timestamp DESC")
+            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
+                END AS amount_paid
+             FROM sales ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -1826,6 +1834,7 @@ impl Database {
                     customer_name: row.get(10)?,
                     is_debt: row.get(11)?,
                     timestamp: row.get(12)?,
+                    amount_paid: row.get(13)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1837,7 +1846,11 @@ impl Database {
     pub fn get_today_sales(&self) -> Result<Vec<Sale>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
+            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
+                END AS amount_paid
+             FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -1856,6 +1869,7 @@ impl Database {
                     customer_name: row.get(10)?,
                     is_debt: row.get(11)?,
                     timestamp: row.get(12)?,
+                    amount_paid: row.get(13)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1937,6 +1951,7 @@ impl Database {
             customer_name: sale.customer_name,
             is_debt: sale.is_debt,
             timestamp: Some(timestamp),
+            amount_paid: if sale.is_debt == 0 { sale.amount } else { 0.0 },
         })
     }
 
@@ -1944,7 +1959,14 @@ impl Database {
         let conn = self.synced_conn()?;
         let total: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(amount), 0) FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime')",
+                "SELECT
+                    COALESCE((SELECT SUM(amount) FROM sales
+                              WHERE DATE(timestamp) = DATE('now', 'localtime')
+                                AND COALESCE(is_debt, 0) = 0), 0)
+                  + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                              INNER JOIN debts d ON d.id = dp.debt_id
+                              WHERE d.sale_id IS NOT NULL
+                                AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)",
                 [],
                 |row| row.get(0),
             )
@@ -1995,7 +2017,10 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let sql = format!(
-            "SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp
+            "SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
+                END AS amount_paid
              FROM sales
              {}
              ORDER BY {}
@@ -2024,6 +2049,7 @@ impl Database {
                         customer_name: row.get(10)?,
                         is_debt: row.get(11)?,
                         timestamp: row.get(12)?,
+                        amount_paid: row.get(13)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -2048,6 +2074,7 @@ impl Database {
                         customer_name: row.get(10)?,
                         is_debt: row.get(11)?,
                         timestamp: row.get(12)?,
+                        amount_paid: row.get(13)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -2055,16 +2082,32 @@ impl Database {
                 .map_err(|e| e.to_string())?
         };
 
-        let today_total: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM sales WHERE DATE(timestamp) = DATE('now', 'localtime')",
-            [],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
+        // Recognized cash only: non-debt sales + debt collections linked to sales.
+        let today_total: f64 = conn
+            .query_row(
+                "SELECT
+                COALESCE((SELECT SUM(amount) FROM sales
+                          WHERE DATE(timestamp) = DATE('now', 'localtime')
+                            AND COALESCE(is_debt, 0) = 0), 0)
+              + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                          INNER JOIN debts d ON d.id = dp.debt_id
+                          WHERE d.sale_id IS NOT NULL
+                            AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
 
         let all_revenue: f64 = conn
-            .query_row("SELECT COALESCE(SUM(amount), 0) FROM sales", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT
+                    COALESCE((SELECT SUM(amount) FROM sales WHERE COALESCE(is_debt, 0) = 0), 0)
+                  + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                              INNER JOIN debts d ON d.id = dp.debt_id
+                              WHERE d.sale_id IS NOT NULL), 0)",
+                [],
+                |row| row.get(0),
+            )
             .map_err(|e| e.to_string())?;
 
         let product_sales_count: i64 = conn
@@ -2136,7 +2179,70 @@ impl Database {
     pub fn get_all_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d ORDER BY d.created_at DESC")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+             FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -2156,6 +2262,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2167,7 +2280,70 @@ impl Database {
     pub fn get_pending_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' ORDER BY d.created_at DESC")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+             FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id WHERE d.status = 'pending' ORDER BY d.created_at DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -2187,6 +2363,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2229,6 +2412,15 @@ impl Database {
             ).map_err(|e| e.to_string())?;
         }
 
+        let source_kind = if debt.sale_id.is_some() {
+            Some("sale".into())
+        } else if debt.service_transaction_id.is_some() {
+            Some("printing".into())
+        } else {
+            Some("manual".into())
+        };
+        let source_label = debt.description.clone().filter(|s| !s.trim().is_empty());
+
         self.finish_write(Debt {
             id,
             customer_name: debt.customer_name,
@@ -2248,6 +2440,13 @@ impl Database {
                 None
             },
             created_at: Some(created_at),
+            source_label,
+            source_kind,
+            source_detail: None,
+            source_sale_type: None,
+            source_product_type: None,
+            source_color: None,
+            source_sticker_type: None,
         })
     }
 
@@ -2353,7 +2552,70 @@ impl Database {
     pub fn get_debt_by_sale_id(&self, sale_id: i64) -> Result<Option<Debt>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.sale_id = ?1")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+             FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id WHERE d.sale_id = ?1")
             .map_err(|e| e.to_string())?;
 
         let mut rows = stmt
@@ -2373,6 +2635,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2383,7 +2652,70 @@ impl Database {
     pub fn get_debt_by_transaction_id(&self, transaction_id: i64) -> Result<Option<Debt>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.service_transaction_id = ?1")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+             FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id WHERE d.service_transaction_id = ?1")
             .map_err(|e| e.to_string())?;
 
         let mut rows = stmt
@@ -2403,6 +2735,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2436,24 +2775,27 @@ impl Database {
         let per_page = query.per_page.unwrap_or(10).clamp(1, 200);
         let offset = ((page - 1) * per_page) as i64;
 
+        // Qualify debt columns — joins to products also have created_at (ambiguous otherwise).
         let search_filter = if search.is_empty() {
             String::new()
         } else {
             "WHERE (
-                LOWER(customer_name) LIKE ?1 OR
-                LOWER(COALESCE(phone, '')) LIKE ?1 OR
-                LOWER(COALESCE(description, '')) LIKE ?1 OR
-                LOWER(status) LIKE ?1 OR
-                LOWER(COALESCE(due_date, '')) LIKE ?1
+                LOWER(d.customer_name) LIKE ?1 OR
+                LOWER(COALESCE(d.phone, '')) LIKE ?1 OR
+                LOWER(COALESCE(d.description, '')) LIKE ?1 OR
+                LOWER(d.status) LIKE ?1 OR
+                LOWER(COALESCE(d.due_date, '')) LIKE ?1 OR
+                LOWER(COALESCE(s.product_name, '')) LIKE ?1 OR
+                LOWER(COALESCE(st.service_name, '')) LIKE ?1
             )"
             .to_string()
         };
 
         let order_by = match sort_by.as_str() {
-            "oldest" => "created_at ASC",
-            "amount_desc" => "remaining_amount DESC, created_at DESC",
-            "amount_asc" => "remaining_amount ASC, created_at DESC",
-            _ => "created_at DESC",
+            "oldest" => "d.created_at ASC",
+            "amount_desc" => "d.remaining_amount DESC, d.created_at DESC",
+            "amount_asc" => "d.remaining_amount ASC, d.created_at DESC",
+            _ => "d.created_at DESC",
         };
 
         let total_count: i64 = if search.is_empty() {
@@ -2461,7 +2803,13 @@ impl Database {
         } else {
             let term = format!("%{}%", search);
             conn.query_row(
-                &format!("SELECT COUNT(*) FROM debts {}", search_filter),
+                &format!(
+                    "SELECT COUNT(*) FROM debts d
+                     LEFT JOIN sales s ON s.id = d.sale_id
+                     LEFT JOIN service_transactions st ON st.id = d.service_transaction_id
+                     {}",
+                    search_filter
+                ),
                 params![term],
                 |row| row.get(0),
             )
@@ -2469,8 +2817,70 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let sql = format!(
-            "SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at
+            "SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
              FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id
              {}
              ORDER BY {}
              LIMIT ?{} OFFSET ?{}",
@@ -2499,6 +2909,13 @@ impl Database {
                         paid_at: row.get(11)?,
                         last_payment_at: row.get(12)?,
                         created_at: row.get(13)?,
+                        source_label: row.get(14)?,
+                        source_kind: row.get(15)?,
+                        source_detail: row.get(16)?,
+                        source_sale_type: row.get(17)?,
+                        source_product_type: row.get(18)?,
+                        source_color: row.get(19)?,
+                        source_sticker_type: row.get(20)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -2524,6 +2941,13 @@ impl Database {
                         paid_at: row.get(11)?,
                         last_payment_at: row.get(12)?,
                         created_at: row.get(13)?,
+                        source_label: row.get(14)?,
+                        source_kind: row.get(15)?,
+                        source_detail: row.get(16)?,
+                        source_sale_type: row.get(17)?,
+                        source_product_type: row.get(18)?,
+                        source_color: row.get(19)?,
+                        source_sticker_type: row.get(20)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -2556,8 +2980,70 @@ impl Database {
             .map_err(|e| e.to_string())?;
 
         let mut all_stmt = conn.prepare(
-            "SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at
+            "SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
              FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id
              ORDER BY d.created_at DESC"
         ).map_err(|e| e.to_string())?;
 
@@ -2578,6 +3064,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2608,7 +3101,70 @@ impl Database {
     pub fn get_overdue_debts(&self) -> Result<Vec<Debt>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at FROM debts d WHERE d.status = 'pending' AND d.due_date IS NOT NULL AND DATE(d.due_date) < DATE('now')")
+            .prepare("SELECT d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount, d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id, d.paid_at, (SELECT MAX(dp.payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at, d.created_at,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN COALESCE(
+                    NULLIF(TRIM(s.product_name), ''),
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Life Saver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE NULL
+                    END,
+                    CASE
+                      WHEN s.type = 'stock' THEN TRIM(COALESCE(sk.color, '') || ' ' || CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Sticker' END)
+                      WHEN s.type = 'service' THEN 'Service sale'
+                      WHEN s.type = 'product' THEN 'Product sale'
+                      ELSE 'Sale'
+                    END
+                  )
+                  WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(NULLIF(TRIM(st.service_name), ''), 'Printing job')
+                  ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+                END AS source_label,
+                CASE
+                  WHEN d.sale_id IS NOT NULL THEN 'sale'
+                  WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+                  ELSE 'manual'
+                END AS source_kind,
+                CASE
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+                    CASE s.product_type
+                      WHEN 'life_saver' THEN 'Lifesaver'
+                      WHEN 'chevron' THEN 'Chevron'
+                      WHEN 'stripes' THEN 'Stripes'
+                      ELSE COALESCE(s.product_type, 'Product')
+                    END ||
+                    CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+                      WHEN 'white_red' THEN 'White / Red'
+                      WHEN 'yellow_red' THEN 'Yellow / Red'
+                      WHEN 'white' THEN 'White'
+                      WHEN 'yellow' THEN 'Yellow'
+                      ELSE p.color
+                    END ELSE '' END ||
+                    CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+                    CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective' THEN 'Reflective' ELSE 'Colored' END ||
+                    CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+                    CASE WHEN COALESCE(sk.size, s.quantity, '') != '' THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+                  )
+                  WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+                  WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+                    CASE WHEN st.stock_metres_used > 0 THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+                    CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != '' THEN ' · ' || st.material_type ELSE '' END ||
+                    CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != '' THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+                  )
+                  ELSE NULL
+                END AS source_detail,
+                s.type AS source_sale_type,
+                s.product_type AS source_product_type,
+                COALESCE(p.color, sk.color) AS source_color,
+                COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+             FROM debts d
+             LEFT JOIN sales s ON s.id = d.sale_id
+             LEFT JOIN products p ON p.id = s.product_id
+             LEFT JOIN stock sk ON sk.id = s.stock_id
+             LEFT JOIN service_transactions st ON st.id = d.service_transaction_id WHERE d.status = 'pending' AND d.due_date IS NOT NULL AND DATE(d.due_date) < DATE('now')")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -2628,6 +3184,13 @@ impl Database {
                     paid_at: row.get(11)?,
                     last_payment_at: row.get(12)?,
                     created_at: row.get(13)?,
+                    source_label: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_detail: row.get(16)?,
+                    source_sale_type: row.get(17)?,
+                    source_product_type: row.get(18)?,
+                    source_color: row.get(19)?,
+                    source_sticker_type: row.get(20)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2912,7 +3475,11 @@ impl Database {
     pub fn get_all_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp FROM service_transactions ORDER BY timestamp DESC")
+            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
+                END AS amount_paid
+             FROM service_transactions ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -2934,6 +3501,7 @@ impl Database {
                     printing_material_id: row.get(13)?,
                     is_debt: row.get(14)?,
                     timestamp: row.get(15)?,
+                    amount_paid: row.get(16)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2945,7 +3513,11 @@ impl Database {
     pub fn get_today_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp FROM service_transactions WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
+            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
+                END AS amount_paid
+             FROM service_transactions WHERE DATE(timestamp) = DATE('now', 'localtime') ORDER BY timestamp DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
@@ -2967,6 +3539,7 @@ impl Database {
                     printing_material_id: row.get(13)?,
                     is_debt: row.get(14)?,
                     timestamp: row.get(15)?,
+                    amount_paid: row.get(16)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3060,22 +3633,35 @@ impl Database {
             printing_material_id: tx.printing_material_id,
             is_debt: tx.is_debt,
             timestamp: Some(timestamp),
+            amount_paid: if tx.is_debt == 0 { amount } else { 0.0 },
         })
     }
 
     pub fn get_today_total_service_earnings(&self) -> Result<f64, String> {
         let conn = self.synced_conn()?;
         conn.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM service_transactions WHERE DATE(timestamp) = DATE('now', 'localtime')",
+            "SELECT
+                COALESCE((SELECT SUM(amount) FROM service_transactions
+                          WHERE DATE(timestamp) = DATE('now', 'localtime')
+                            AND COALESCE(is_debt, 0) = 0), 0)
+              + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                          INNER JOIN debts d ON d.id = dp.debt_id
+                          WHERE d.service_transaction_id IS NOT NULL
+                            AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)",
             [],
             |row| row.get(0),
-        ).map_err(|e| e.to_string())
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn get_total_service_earnings(&self) -> Result<f64, String> {
         let conn = self.synced_conn()?;
         conn.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM service_transactions",
+            "SELECT
+                COALESCE((SELECT SUM(amount) FROM service_transactions WHERE COALESCE(is_debt, 0) = 0), 0)
+              + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                          INNER JOIN debts d ON d.id = dp.debt_id
+                          WHERE d.service_transaction_id IS NOT NULL), 0)",
             [],
             |row| row.get(0),
         )
@@ -3138,7 +3724,10 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let sql = format!(
-            "SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp
+            "SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+                CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
+                     ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
+                END AS amount_paid
              FROM service_transactions
              WHERE {}
              ORDER BY {}
@@ -3170,6 +3759,7 @@ impl Database {
                         printing_material_id: row.get(13)?,
                         is_debt: row.get(14)?,
                         timestamp: row.get(15)?,
+                        amount_paid: row.get(16)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -3197,6 +3787,7 @@ impl Database {
                         printing_material_id: row.get(13)?,
                         is_debt: row.get(14)?,
                         timestamp: row.get(15)?,
+                        amount_paid: row.get(16)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -3206,9 +3797,16 @@ impl Database {
 
         let today_earnings: f64 = conn
             .query_row(
-                "SELECT COALESCE(SUM(amount), 0)
-             FROM service_transactions
-             WHERE stock_metres_used > 0 AND DATE(timestamp) = DATE('now', 'localtime')",
+                "SELECT
+                    COALESCE((SELECT SUM(amount) FROM service_transactions
+                              WHERE stock_metres_used > 0
+                                AND DATE(timestamp) = DATE('now', 'localtime')
+                                AND COALESCE(is_debt, 0) = 0), 0)
+                  + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                              INNER JOIN debts d ON d.id = dp.debt_id
+                              INNER JOIN service_transactions st ON st.id = d.service_transaction_id
+                              WHERE st.stock_metres_used > 0
+                                AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)",
                 [],
                 |row| row.get(0),
             )
@@ -3228,11 +3826,19 @@ impl Database {
             |row| row.get(0),
         ).map_err(|e| e.to_string())?;
 
-        let total_revenue: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM service_transactions WHERE stock_metres_used > 0",
-            [],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
+        let total_revenue: f64 = conn
+            .query_row(
+                "SELECT
+                COALESCE((SELECT SUM(amount) FROM service_transactions
+                          WHERE stock_metres_used > 0 AND COALESCE(is_debt, 0) = 0), 0)
+              + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                          INNER JOIN debts d ON d.id = dp.debt_id
+                          INNER JOIN service_transactions st ON st.id = d.service_transaction_id
+                          WHERE st.stock_metres_used > 0), 0)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
 
         Ok(PrintingPageData {
             items,
@@ -3680,7 +4286,12 @@ impl Database {
 
     pub fn clear_all_data(&self) -> Result<(), String> {
         let conn = self.synced_conn()?;
+        Self::clear_business_tables(&conn)?;
+        println!("All business data cleared");
+        self.finish_write(())
+    }
 
+    fn clear_business_tables(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(
             "
             DELETE FROM debt_payments;
@@ -3691,12 +4302,319 @@ impl Database {
             DELETE FROM printing_materials;
             DELETE FROM stock;
             DELETE FROM products;
-            DELETE FROM sqlite_sequence WHERE name IN ('debt_payments', 'debts', 'sales', 'service_transactions', 'services', 'printing_materials', 'stock', 'products');
-            "
-        ).map_err(|e| e.to_string())?;
+            DELETE FROM sqlite_sequence WHERE name IN (
+                'debt_payments', 'debts', 'sales', 'service_transactions',
+                'services', 'printing_materials', 'stock', 'products'
+            );
+            ",
+        )
+        .map_err(|e| e.to_string())
+    }
 
-        println!("All business data cleared");
-        self.finish_write(())
+    // ==================== Backup export / import ====================
+
+    pub fn export_database_backup(&self) -> Result<DatabaseBackup, String> {
+        let conn = self.synced_conn()?;
+        Ok(DatabaseBackup {
+            format: "multiprints-backup".into(),
+            version: 1,
+            exported_at: chrono::Local::now().to_rfc3339(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            products: Self::select_table_json(&conn, "products")?,
+            stock: Self::select_table_json(&conn, "stock")?,
+            services: Self::select_table_json(&conn, "services")?,
+            printing_materials: Self::select_table_json(&conn, "printing_materials")?,
+            sales: Self::select_table_json(&conn, "sales")?,
+            service_transactions: Self::select_table_json(&conn, "service_transactions")?,
+            debts: Self::select_table_json(&conn, "debts")?,
+            debt_payments: Self::select_table_json(&conn, "debt_payments")?,
+        })
+    }
+
+    pub fn import_database_backup(&self, backup: DatabaseBackup) -> Result<(), String> {
+        if backup.format != "multiprints-backup" {
+            return Err(
+                "Not a valid MULTIPRINTS backup file (missing or wrong format marker)".into(),
+            );
+        }
+        if backup.version == 0 {
+            return Err("Backup file is missing a version field".into());
+        }
+        if backup.version > 1 {
+            return Err(format!(
+                "Backup version {} is newer than this app supports",
+                backup.version
+            ));
+        }
+
+        let conn = self.synced_conn()?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+
+        let result = (|| -> Result<(), String> {
+            // Temporarily relax FKs for bulk replace with preserved ids
+            let _ = conn.execute_batch("PRAGMA foreign_keys = OFF");
+            Self::clear_business_tables(&conn)?;
+
+            Self::insert_json_rows(
+                &conn,
+                "products",
+                &[
+                    "id",
+                    "name",
+                    "product_type",
+                    "color",
+                    "size",
+                    "selling_price",
+                    "stock",
+                    "natural_key",
+                    "created_at",
+                    "updated_at",
+                ],
+                &backup.products,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "stock",
+                &[
+                    "id",
+                    "color",
+                    "size",
+                    "sticker_type",
+                    "rolls",
+                    "metres_per_roll",
+                    "total_metres",
+                    "metres_used",
+                    "natural_key",
+                    "created_at",
+                    "updated_at",
+                ],
+                &backup.stock,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "services",
+                &[
+                    "id",
+                    "name",
+                    "description",
+                    "price",
+                    "unit",
+                    "uses_stock",
+                    "is_active",
+                    "created_at",
+                    "updated_at",
+                ],
+                &backup.services,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "printing_materials",
+                &[
+                    "id",
+                    "name",
+                    "material_type",
+                    "width",
+                    "rolls",
+                    "metres_per_roll",
+                    "total_metres",
+                    "metres_used",
+                    "color",
+                    "natural_key",
+                    "created_at",
+                    "updated_at",
+                ],
+                &backup.printing_materials,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "sales",
+                &[
+                    "id",
+                    "type",
+                    "product_id",
+                    "stock_id",
+                    "product_name",
+                    "product_type",
+                    "sticker_type",
+                    "quantity",
+                    "amount",
+                    "payment_method",
+                    "customer_name",
+                    "is_debt",
+                    "timestamp",
+                ],
+                &backup.sales,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "service_transactions",
+                &[
+                    "id",
+                    "service_id",
+                    "service_name",
+                    "quantity",
+                    "price",
+                    "amount",
+                    "payment_method",
+                    "customer_name",
+                    "notes",
+                    "stock_id",
+                    "stock_metres_used",
+                    "material_size",
+                    "material_type",
+                    "printing_material_id",
+                    "is_debt",
+                    "timestamp",
+                ],
+                &backup.service_transactions,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "debts",
+                &[
+                    "id",
+                    "customer_name",
+                    "phone",
+                    "amount",
+                    "paid_amount",
+                    "remaining_amount",
+                    "due_date",
+                    "description",
+                    "status",
+                    "sale_id",
+                    "service_transaction_id",
+                    "paid_at",
+                    "created_at",
+                ],
+                &backup.debts,
+            )?;
+            Self::insert_json_rows(
+                &conn,
+                "debt_payments",
+                &[
+                    "id",
+                    "debt_id",
+                    "amount",
+                    "payment_method",
+                    "notes",
+                    "payment_date",
+                ],
+                &backup.debt_payments,
+            )?;
+
+            let _ = conn.execute_batch("PRAGMA foreign_keys = ON");
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                println!(
+                    "Imported backup (products={}, sales={}, debts={})",
+                    backup.products.len(),
+                    backup.sales.len(),
+                    backup.debts.len()
+                );
+                self.finish_write(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                let _ = conn.execute_batch("PRAGMA foreign_keys = ON");
+                Err(e)
+            }
+        }
+    }
+
+    fn select_table_json(conn: &Connection, table: &str) -> Result<Vec<serde_json::Value>, String> {
+        // Table names are hardcoded callers only — never user input.
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table}"))
+            .map_err(|e| e.to_string())?;
+        let col_count = stmt.column_count();
+        let col_names: Vec<String> = (0..col_count)
+            .map(|i| stmt.column_name(i).unwrap_or("col").to_string())
+            .collect();
+
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let mut map = serde_json::Map::new();
+            for (i, name) in col_names.iter().enumerate() {
+                let val = match row.get_ref(i).map_err(|e| e.to_string())? {
+                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => {
+                        // Keep large distributed ids exact in JSON
+                        serde_json::Value::String(n.to_string())
+                    }
+                    rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => serde_json::Value::String(hex::encode(b)),
+                };
+                map.insert(name.clone(), val);
+            }
+            out.push(serde_json::Value::Object(map));
+        }
+        Ok(out)
+    }
+
+    fn insert_json_rows(
+        conn: &Connection,
+        table: &str,
+        columns: &[&str],
+        rows: &[serde_json::Value],
+    ) -> Result<(), String> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "INSERT INTO {table} ({cols}) VALUES ({vals})",
+            cols = columns.join(", "),
+            vals = placeholders.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+        for row in rows {
+            let obj = row
+                .as_object()
+                .ok_or_else(|| format!("Invalid row in {table} backup"))?;
+            let params: Vec<rusqlite::types::Value> = columns
+                .iter()
+                .map(|col| Self::json_to_sql_value(obj.get(*col)))
+                .collect();
+            stmt.execute(rusqlite::params_from_iter(params.iter()))
+                .map_err(|e| format!("Failed inserting into {table}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    fn json_to_sql_value(v: Option<&serde_json::Value>) -> rusqlite::types::Value {
+        match v {
+            None | Some(serde_json::Value::Null) => rusqlite::types::Value::Null,
+            Some(serde_json::Value::Bool(b)) => {
+                rusqlite::types::Value::Integer(if *b { 1 } else { 0 })
+            }
+            Some(serde_json::Value::Number(n)) => {
+                if let Some(i) = n.as_i64() {
+                    rusqlite::types::Value::Integer(i)
+                } else if let Some(u) = n.as_u64() {
+                    rusqlite::types::Value::Integer(u as i64)
+                } else if let Some(f) = n.as_f64() {
+                    rusqlite::types::Value::Real(f)
+                } else {
+                    rusqlite::types::Value::Null
+                }
+            }
+            // Keep strings as text so phone numbers / sizes keep leading zeros and format.
+            // SQLite column affinity still coerces pure digit strings into INTEGER/REAL columns.
+            Some(serde_json::Value::String(s)) => rusqlite::types::Value::Text(s.clone()),
+            Some(serde_json::Value::Array(_)) | Some(serde_json::Value::Object(_)) => {
+                rusqlite::types::Value::Text(v.unwrap().to_string())
+            }
+        }
     }
 
     // ==================== Migration from localStorage ====================
@@ -3704,11 +4622,13 @@ impl Database {
     pub fn get_dashboard_summary(&self) -> Result<DashboardSummary, String> {
         let conn = self.synced_conn()?;
 
+        // Cash recognized: non-debt sales/jobs + all debt repayments (partial + full).
         let total_revenue: f64 = conn
             .query_row(
                 "SELECT
-                COALESCE((SELECT SUM(amount) FROM sales), 0) +
-                COALESCE((SELECT SUM(amount) FROM service_transactions), 0)",
+                COALESCE((SELECT SUM(amount) FROM sales WHERE COALESCE(is_debt, 0) = 0), 0) +
+                COALESCE((SELECT SUM(amount) FROM service_transactions WHERE COALESCE(is_debt, 0) = 0), 0) +
+                COALESCE((SELECT SUM(amount) FROM debt_payments), 0)",
                 [],
                 |row| row.get(0),
             )
@@ -3716,7 +4636,14 @@ impl Database {
 
         let (today_sales_count, today_sales_revenue): (i64, f64) = conn
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(amount), 0)
+                "SELECT COUNT(*),
+                    COALESCE((SELECT SUM(amount) FROM sales
+                              WHERE DATE(timestamp) = DATE('now', 'localtime')
+                                AND COALESCE(is_debt, 0) = 0), 0)
+                  + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                              INNER JOIN debts d ON d.id = dp.debt_id
+                              WHERE d.sale_id IS NOT NULL
+                                AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)
              FROM sales
              WHERE DATE(timestamp) = DATE('now', 'localtime')",
                 [],
@@ -3726,7 +4653,14 @@ impl Database {
 
         let (today_service_count, today_service_revenue): (i64, f64) = conn
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(amount), 0)
+                "SELECT COUNT(*),
+                    COALESCE((SELECT SUM(amount) FROM service_transactions
+                              WHERE DATE(timestamp) = DATE('now', 'localtime')
+                                AND COALESCE(is_debt, 0) = 0), 0)
+                  + COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp
+                              INNER JOIN debts d ON d.id = dp.debt_id
+                              WHERE d.service_transaction_id IS NOT NULL
+                                AND DATE(dp.payment_date) = DATE('now', 'localtime')), 0)
              FROM service_transactions
              WHERE DATE(timestamp) = DATE('now', 'localtime')",
                 [],
@@ -3875,9 +4809,11 @@ impl Database {
                         FROM weeks
                         WHERE idx < 3
                     ), revenues AS (
-                        SELECT DATE(timestamp) AS tx_date, amount FROM sales
+                        SELECT DATE(timestamp) AS tx_date, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
                         UNION ALL
-                        SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
+                        SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+                        UNION ALL
+                        SELECT DATE(payment_date) AS tx_date, amount FROM debt_payments
                     ), tx_counts AS (
                         SELECT DATE(timestamp) AS tx_date FROM sales
                         UNION ALL
@@ -3935,9 +4871,11 @@ impl Database {
                         FROM months
                         WHERE idx < 11
                     ), revenues AS (
-                        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM sales
+                        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
                         UNION ALL
-                        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM service_transactions
+                        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+                        UNION ALL
+                        SELECT strftime('%Y-%m', payment_date) AS ym, amount FROM debt_payments
                     ), tx_counts AS (
                         SELECT strftime('%Y-%m', timestamp) AS ym FROM sales
                         UNION ALL
@@ -3995,9 +4933,11 @@ impl Database {
                         FROM days
                         WHERE idx < 6
                     ), revenues AS (
-                        SELECT DATE(timestamp) AS tx_date, amount FROM sales
+                        SELECT DATE(timestamp) AS tx_date, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
                         UNION ALL
-                        SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions
+                        SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+                        UNION ALL
+                        SELECT DATE(payment_date) AS tx_date, amount FROM debt_payments
                     ), tx_counts AS (
                         SELECT DATE(timestamp) AS tx_date FROM sales
                         UNION ALL

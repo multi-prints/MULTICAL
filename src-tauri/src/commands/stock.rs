@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::db::Database;
-use crate::models::*;
+use crate::models::{IdArg, *};
 
 #[tauri::command]
 pub fn get_all_stock(db: State<'_, Database>) -> Result<Vec<StockItem>, String> {
@@ -17,7 +17,8 @@ pub fn get_stock_page(
 }
 
 #[tauri::command]
-pub fn get_stock(db: State<'_, Database>, id: i64) -> Result<Option<StockItem>, String> {
+pub fn get_stock(db: State<'_, Database>, id: IdArg) -> Result<Option<StockItem>, String> {
+    let id = id.0;
     db.get_stock(id)
 }
 
@@ -39,9 +40,11 @@ pub fn add_stock(db: State<'_, Database>, item: NewStockItem) -> Result<StockIte
 #[tauri::command]
 pub fn update_stock(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     updates: StockUpdate,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.update_stock(id, updates)?;
     Ok(SuccessResponse {
         success: true,
@@ -54,9 +57,11 @@ pub fn update_stock(
 #[tauri::command]
 pub fn add_stock_rolls(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     rolls: i64,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.add_stock_rolls(id, rolls)?;
     Ok(SuccessResponse {
         success: true,
@@ -66,7 +71,8 @@ pub fn add_stock_rolls(
 }
 
 #[tauri::command]
-pub fn delete_stock(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
+pub fn delete_stock(db: State<'_, Database>, id: IdArg) -> Result<SuccessResponse, String> {
+    let id = id.0;
     db.delete_stock(id)?;
     Ok(SuccessResponse {
         success: true,

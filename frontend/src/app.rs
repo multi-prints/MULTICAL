@@ -152,12 +152,9 @@ pub fn App() -> impl IntoView {
 
     let check_for_update = move || {
         leptos::task::spawn_local(async move {
-            if let Ok(result) = api::check_for_update().await {
-                if result.available {
-                    set_available_update.set(Some(result));
-                } else {
-                    set_available_update.set(None);
-                }
+            match api::check_for_update().await {
+                Ok(result) if result.available => set_available_update.set(Some(result)),
+                _ => set_available_update.set(None),
             }
         });
     };
@@ -1207,15 +1204,22 @@ fn smooth_line_through(pts: &[(f64, f64)]) -> String {
         return format!("M{:.2},{:.2}", pts[0].0, pts[0].1);
     }
     if pts.len() == 2 {
+        let mid_x = (pts[0].0 + pts[1].0) * 0.5;
+        // Soft S-curve between two points instead of a hard diagonal.
         return format!(
-            "M{:.2},{:.2} L{:.2},{:.2}",
-            pts[0].0, pts[0].1, pts[1].0, pts[1].1
+            "M{:.2},{:.2} C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
+            pts[0].0, pts[0].1, mid_x, pts[0].1, mid_x, pts[1].1, pts[1].0, pts[1].1
         );
     }
 
-    // Low tension keeps the curve inside the plot box when the SVG scales.
-    let t = 0.14;
+    // Higher tension = rounder, less “harsh” corners (reference-style).
+    let t = 0.22;
     let mut d = format!("M{:.2},{:.2}", pts[0].0, pts[0].1);
+
+    // Allow slight vertical overshoot so curves don’t get ironed flat.
+    let global_min_y = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let global_max_y = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let y_slack = ((global_max_y - global_min_y) * 0.2).max(2.0);
 
     for i in 0..pts.len() - 1 {
         let p0 = if i == 0 { pts[0] } else { pts[i - 1] };
@@ -1232,15 +1236,12 @@ fn smooth_line_through(pts: &[(f64, f64)]) -> String {
         let mut cp2x = p2.0 - (p3.0 - p1.0) * t;
         let mut cp2y = p2.1 - (p3.1 - p1.1) * t;
 
-        // Keep control points inside the point bounds so scaled SVGs don't clip spikes.
         let min_x = p1.0.min(p2.0);
         let max_x = p1.0.max(p2.0);
-        let min_y = p0.1.min(p1.1).min(p2.1).min(p3.1);
-        let max_y = p0.1.max(p1.1).max(p2.1).max(p3.1);
         cp1x = cp1x.clamp(min_x, max_x);
         cp2x = cp2x.clamp(min_x, max_x);
-        cp1y = cp1y.clamp(min_y, max_y);
-        cp2y = cp2y.clamp(min_y, max_y);
+        cp1y = cp1y.clamp(global_min_y - y_slack, global_max_y + y_slack);
+        cp2y = cp2y.clamp(global_min_y - y_slack, global_max_y + y_slack);
 
         d.push_str(&format!(
             " C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
@@ -1250,17 +1251,99 @@ fn smooth_line_through(pts: &[(f64, f64)]) -> String {
     d
 }
 
+/// Ease-in curve that settles on `peak` — used for sparse / constant series
+/// so we never draw a flat bar when there is real activity.
+fn ease_to_peak(peak: f64, n: usize) -> Vec<f64> {
+    let n = n.max(4);
+    let peak = peak.max(0.0);
+    (0..n)
+        .map(|i| {
+            let t = i as f64 / (n - 1) as f64;
+            // smoothstep² — slow start, soft landing (not a harsh diagonal)
+            let s = t * t * (3.0 - 2.0 * t);
+            let s = s * s;
+            peak * (0.08 + 0.92 * s)
+        })
+        .collect()
+}
+
+/// Prepare a sparkline series from raw period buckets.
+/// - drops the long leading zero baseline
+/// - turns single/flat series into a soft rising shape (never a flat bar)
+/// - lightly smooths noisy multi-bucket series
+fn prepare_sparkline_values(values: &[f64]) -> Vec<f64> {
+    const EPS: f64 = 1e-9;
+    let cleaned: Vec<f64> = values
+        .iter()
+        .map(|v| if v.is_finite() && *v > EPS { *v } else { 0.0 })
+        .collect();
+
+    let start = cleaned
+        .iter()
+        .position(|v| *v > EPS)
+        .unwrap_or(cleaned.len());
+    if start >= cleaned.len() {
+        return Vec::new();
+    }
+    let mut out: Vec<f64> = cleaned[start..].to_vec();
+
+    // Cap length so year-long zeros-trimmed tails stay readable.
+    if out.len() > 14 {
+        out = out[out.len() - 14..].to_vec();
+    }
+
+    let min = out.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = out.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = max - min;
+
+    // One bucket of activity, or all buckets nearly the same value
+    // (e.g. sales_count = [2,2,2] → flat bar) → soft ease into the peak.
+    if out.len() == 1 || span <= max.max(1.0) * 0.06 {
+        return ease_to_peak(max.max(min), 8);
+    }
+
+    if out.len() == 2 {
+        let a = out[0];
+        let b = out[1];
+        return vec![
+            a,
+            a * 0.82 + b * 0.18,
+            a * 0.55 + b * 0.45,
+            a * 0.28 + b * 0.72,
+            b,
+        ];
+    }
+
+    // Light 3-tap smooth so period jumps aren't jagged.
+    if out.len() >= 4 {
+        let raw = out.clone();
+        for i in 1..out.len() - 1 {
+            out[i] = raw[i - 1] * 0.2 + raw[i] * 0.6 + raw[i + 1] * 0.2;
+        }
+    }
+    out
+}
+
 /// Build SVG line + area paths for a compact metric sparkline (smooth curves).
 fn sparkline_paths(values: &[f64], width: f64, height: f64) -> Option<(String, String)> {
+    let values = prepare_sparkline_values(values);
     if values.len() < 2 {
         return None;
     }
     let min = values.iter().copied().fold(f64::INFINITY, f64::min);
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    // Soft floor so a single spike doesn't pin everything to the bottom edge
-    let range = (max - min).max(1.0);
-    // Inset so stroke ends and smooth curves stay inside the viewBox when scaled.
-    let pad_x = 4.0;
+    let raw_range = (max - min).max(0.0);
+    // Always leave headroom so the stroke never becomes a top-edge flat fill.
+    let pad = if raw_range < 1e-9 {
+        max.max(1.0) * 0.35
+    } else {
+        raw_range * 0.22
+    };
+    let ymin = (min - pad).max(0.0);
+    let ymax = max + pad * 0.45;
+    let range = (ymax - ymin).max(1e-6);
+
+    let pad_x = 1.5;
     let pad_y = 5.0;
     let plot_w = (width - pad_x * 2.0).max(1.0);
     let plot_h = (height - pad_y * 2.0).max(1.0);
@@ -1270,7 +1353,7 @@ fn sparkline_paths(values: &[f64], width: f64, height: f64) -> Option<(String, S
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n);
     for (i, v) in values.iter().enumerate() {
         let x = pad_x + i as f64 * step;
-        let t = ((v - min) / range).clamp(0.0, 1.0);
+        let t = ((v - ymin) / range).clamp(0.0, 1.0);
         let y = pad_y + plot_h * (1.0 - t);
         pts.push((x, y));
     }
@@ -1296,8 +1379,8 @@ fn MetricSparkline(
     grad_id: String,
 ) -> impl IntoView {
     // Logical viewBox; CSS scales the SVG fluidly to the card width.
-    const W: f64 = 100.0;
-    const H: f64 = 36.0;
+    const W: f64 = 120.0;
+    const H: f64 = 40.0;
     let paths = sparkline_paths(&values, W, H);
     view! {
         <div class="dash-metric-spark" aria-hidden="true">
@@ -1312,7 +1395,8 @@ fn MetricSparkline(
                     >
                         <defs>
                             <linearGradient id=grad_id.clone() x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stop-color=color stop-opacity="0.28"/>
+                                <stop offset="0%" stop-color=color stop-opacity="0.32"/>
+                                <stop offset="55%" stop-color=color stop-opacity="0.1"/>
                                 <stop offset="100%" stop-color=color stop-opacity="0"/>
                             </linearGradient>
                         </defs>
@@ -1662,9 +1746,10 @@ fn DashboardPage(set_page: WriteSignal<Page>, username: String) -> impl IntoView
                             </div>
                         </div>
                         {move || {
-                            // Transaction count trend (sales + printing jobs) for the period
+                            // Revenue by period bucket (not raw counts — counts stay flat
+                            // when you only have a couple of sales and look broken next to KSh totals).
                             let vals: Vec<f64> =
-                                chart_data.get().into_iter().map(|p| p.sales_count).collect();
+                                chart_data.get().into_iter().map(|p| p.amount).collect();
                             view! {
                                 <MetricSparkline values=vals color="#F59E0B" grad_id="spark-sales"/>
                             }

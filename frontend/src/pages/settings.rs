@@ -30,8 +30,18 @@ pub fn SettingsPage(
     let (checking_update, set_checking_update) = signal(false);
     let (show_uninstall, set_show_uninstall) = signal(false);
     let (uninstalling, set_uninstalling) = signal(false);
+    let (show_export, set_show_export) = signal(false);
+    let (exporting, set_exporting) = signal(false);
+    let (show_import, set_show_import) = signal(false);
+    let (importing, set_importing) = signal(false);
+    let (show_clear, set_show_clear) = signal(false);
+    let (clearing, set_clearing) = signal(false);
+    let (clear_confirm_text, set_clear_confirm_text) = signal(String::new());
     let (del_user, set_del_user) = signal(None::<String>);
     let (deleting_user, set_deleting_user) = signal(false);
+    let (saving_username, set_saving_username) = signal(false);
+    let (saving_password, set_saving_password) = signal(false);
+    let (adding_user, set_adding_user) = signal(false);
     let (loading, set_loading) = signal(true);
 
     // Username change
@@ -94,11 +104,122 @@ pub fn SettingsPage(
         });
     };
 
+    let do_export = move |_| {
+        if exporting.get() {
+            return;
+        }
+        set_exporting.set(true);
+        leptos::task::spawn_local(async move {
+            match api::export_database().await {
+                Ok(r) if r.success => {
+                    set_show_export.set(false);
+                    set_msg.set(Some((
+                        true,
+                        r.message
+                            .unwrap_or_else(|| "Database exported successfully".into()),
+                    )));
+                }
+                Ok(r) => {
+                    // User cancelled the native save dialog — not an error
+                    set_show_export.set(false);
+                    if let Some(m) = r.message {
+                        if !m.to_lowercase().contains("cancel") {
+                            set_msg.set(Some((false, m)));
+                        }
+                    }
+                }
+                Err(e) => set_msg.set(Some((false, e))),
+            }
+            set_exporting.set(false);
+        });
+    };
+
+    let do_import = move |_| {
+        if importing.get() {
+            return;
+        }
+        set_importing.set(true);
+        leptos::task::spawn_local(async move {
+            match api::import_database().await {
+                Ok(r) if r.success => {
+                    set_show_import.set(false);
+                    set_msg.set(Some((
+                        true,
+                        r.message
+                            .unwrap_or_else(|| "Database imported successfully".into()),
+                    )));
+                }
+                Ok(r) => {
+                    set_show_import.set(false);
+                    if let Some(m) = r.message {
+                        if !m.to_lowercase().contains("cancel") {
+                            set_msg.set(Some((false, m)));
+                        }
+                    }
+                }
+                Err(e) => set_msg.set(Some((false, e))),
+            }
+            set_importing.set(false);
+        });
+    };
+
+    let do_clear = move |_| {
+        if clearing.get() {
+            return;
+        }
+        if clear_confirm_text.get().trim() != "DELETE" {
+            set_msg.set(Some((
+                false,
+                "Type DELETE to confirm clearing all data".into(),
+            )));
+            return;
+        }
+        set_clearing.set(true);
+        leptos::task::spawn_local(async move {
+            match api::clear_all_data().await {
+                Ok(r) if r.success => {
+                    set_show_clear.set(false);
+                    set_clear_confirm_text.set(String::new());
+                    set_msg.set(Some((
+                        true,
+                        r.message
+                            .unwrap_or_else(|| "All business data cleared".into()),
+                    )));
+                }
+                Ok(r) => set_msg.set(Some((
+                    false,
+                    r.error
+                        .or(r.message)
+                        .unwrap_or_else(|| "Failed to clear data".into()),
+                ))),
+                Err(e) => set_msg.set(Some((false, e))),
+            }
+            set_clearing.set(false);
+        });
+    };
+
     let do_uninstall = move |_| {
+        if uninstalling.get() {
+            return;
+        }
         set_uninstalling.set(true);
         leptos::task::spawn_local(async move {
             match api::uninstall_app().await {
-                Ok(_) => set_msg.set(Some((true, "Uninstalling…".into()))),
+                Ok(r) if r.success => {
+                    set_msg.set(Some((
+                        true,
+                        r.message.unwrap_or_else(|| "Uninstalling…".into()),
+                    )));
+                }
+                Ok(r) => {
+                    set_msg.set(Some((
+                        false,
+                        r.error
+                            .or(r.message)
+                            .unwrap_or_else(|| "Uninstall failed".into()),
+                    )));
+                    set_uninstalling.set(false);
+                }
                 Err(e) => {
                     set_msg.set(Some((false, e)));
                     set_uninstalling.set(false);
@@ -108,11 +229,15 @@ pub fn SettingsPage(
     };
 
     let change_username = move |_| {
+        if saving_username.get() {
+            return;
+        }
         let old = cur_user();
         let new_name = new_username.get().trim().to_string();
         if old.is_empty() || new_name.is_empty() || old == new_name {
             return;
         }
+        set_saving_username.set(true);
         leptos::task::spawn_local(async move {
             match api::update_username(&old, &new_name).await {
                 Ok(r) if r.success => {
@@ -132,16 +257,21 @@ pub fn SettingsPage(
                 Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_else(|| "Failed".into())))),
                 Err(e) => set_msg.set(Some((false, e))),
             }
+            set_saving_username.set(false);
         });
     };
 
     let change_pw = move |_| {
+        if saving_password.get() {
+            return;
+        }
         let o = old_pw.get();
         let n = new_pw.get();
         if o.is_empty() || n.is_empty() {
             return;
         }
         let un = cur_user();
+        set_saving_password.set(true);
         leptos::task::spawn_local(async move {
             match api::update_password(&un, &o, &n).await {
                 Ok(r) if r.success => {
@@ -152,16 +282,21 @@ pub fn SettingsPage(
                 Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_else(|| "Failed".into())))),
                 Err(e) => set_msg.set(Some((false, e))),
             }
+            set_saving_password.set(false);
         });
     };
 
     let add_user = move |_| {
+        if adding_user.get() {
+            return;
+        }
         let n = new_user.get();
         let p = new_upass.get();
         let r = new_role.get();
         if n.is_empty() || p.is_empty() {
             return;
         }
+        set_adding_user.set(true);
         leptos::task::spawn_local(async move {
             match api::add_user(&n, &p, &r).await {
                 Ok(r) if r.success => {
@@ -175,6 +310,7 @@ pub fn SettingsPage(
                 Ok(r) => set_msg.set(Some((false, r.error.unwrap_or_default()))),
                 Err(e) => set_msg.set(Some((false, e))),
             }
+            set_adding_user.set(false);
         });
     };
 
@@ -271,7 +407,12 @@ pub fn SettingsPage(
                                     />
                                 </div>
                                 <div class="settings-actions">
-                                    <button type="button" class="dash-btn-primary" on:click=change_username>"Update username"</button>
+                                    <button
+                                        type="button"
+                                        class="dash-btn-primary"
+                                        prop:disabled=move || saving_username.get()
+                                        on:click=change_username
+                                    >{move || if saving_username.get() { "Updating..." } else { "Update username" }}</button>
                                 </div>
                             </div>
                         </div>
@@ -356,7 +497,12 @@ pub fn SettingsPage(
                                     </div>
                                 </div>
                                 <div class="settings-actions">
-                                    <button type="button" class="dash-btn-primary" on:click=change_pw>"Update password"</button>
+                                    <button
+                                        type="button"
+                                        class="dash-btn-primary"
+                                        prop:disabled=move || saving_password.get()
+                                        on:click=change_pw
+                                    >{move || if saving_password.get() { "Updating..." } else { "Update password" }}</button>
                                 </div>
                             </div>
                         </div>
@@ -424,7 +570,12 @@ pub fn SettingsPage(
                                         </div>
                                         <div class="settings-field settings-field--btn">
                                             <span class="settings-label" aria-hidden="true">"Add user"</span>
-                                            <button type="button" class="dash-btn-primary" on:click=add_user>"Add user"</button>
+                                            <button
+                                                type="button"
+                                                class="dash-btn-primary"
+                                                prop:disabled=move || adding_user.get()
+                                                on:click=add_user
+                                            >{move || if adding_user.get() { "Adding..." } else { "Add user" }}</button>
                                         </div>
                                     </div>
                                     <div class="dash-table-card settings-users-table-wrap">
@@ -496,28 +647,38 @@ pub fn SettingsPage(
                     <div class="settings-stack">
                         <div class="dash-card settings-card">
                             <h3 class="settings-card-title">"Database backup"</h3>
-                            <p class="prod-sub settings-card-desc">"Export or import your business data"</p>
+                            <p class="prod-sub settings-card-desc">"Export or import your business data as a JSON backup file. User accounts are not included."</p>
                             <div class="settings-action-list">
-                                <button type="button" class="settings-action-row">
+                                <button
+                                    type="button"
+                                    class="settings-action-row"
+                                    prop:disabled=move || exporting.get() || importing.get()
+                                    on:click=move |_| set_show_export.set(true)
+                                >
                                     <div class="settings-action-left">
                                         <span class="settings-action-icon is-blue" aria-hidden="true">
                                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                                         </span>
                                         <span>
                                             <span class="settings-action-title">"Export database"</span>
-                                            <span class="prod-sub">"Download all your data as JSON"</span>
+                                            <span class="prod-sub">"Save products, stock, sales, debts, and printing data as JSON"</span>
                                         </span>
                                     </div>
                                     <svg class="settings-action-chev" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5l7 7-7 7"/></svg>
                                 </button>
-                                <button type="button" class="settings-action-row">
+                                <button
+                                    type="button"
+                                    class="settings-action-row"
+                                    prop:disabled=move || exporting.get() || importing.get()
+                                    on:click=move |_| set_show_import.set(true)
+                                >
                                     <div class="settings-action-left">
                                         <span class="settings-action-icon is-green" aria-hidden="true">
                                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
                                         </span>
                                         <span>
                                             <span class="settings-action-title">"Import database"</span>
-                                            <span class="prod-sub">"Restore data from a backup file"</span>
+                                            <span class="prod-sub">"Replace current business data from a backup file"</span>
                                         </span>
                                     </div>
                                     <svg class="settings-action-chev" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5l7 7-7 7"/></svg>
@@ -532,16 +693,16 @@ pub fn SettingsPage(
                                 <button
                                     type="button"
                                     class="settings-btn-danger"
+                                    prop:disabled=move || clearing.get()
                                     on:click=move |_| {
-                                        leptos::task::spawn_local(async move {
-                                            let _ = api::clear_all_data().await;
-                                            set_msg.set(Some((true, "All data cleared".into())));
-                                        });
+                                        set_clear_confirm_text.set(String::new());
+                                        set_show_clear.set(true);
                                     }
                                 >"Clear all data"</button>
                                 <button
                                     type="button"
                                     class="settings-btn-danger is-solid"
+                                    prop:disabled=move || uninstalling.get()
                                     on:click=move |_| set_show_uninstall.set(true)
                                 >"Uninstall MULTIPRINTS"</button>
                             </div>
@@ -613,23 +774,255 @@ pub fn SettingsPage(
                 ().into_any()
             }}
 
-            // Uninstall modal
-            {move || if show_uninstall.get() {
+            // Export confirmation modal
+            {move || if show_export.get() {
                 view! {
-                    <div class="modal-overlay open">
-                        <div class="modal-container" style="max-width:420px">
+                    <div
+                        class="modal-overlay open"
+                        on:click=move |e| {
+                            if e.target() == e.current_target() && !exporting.get() {
+                                set_show_export.set(false);
+                            }
+                        }
+                    >
+                        <div class="modal-container modal-sm">
                             <div class="modal-header">
-                                <h3 class="modal-title">"Uninstall MULTIPRINTS"</h3>
-                                <button type="button" class="modal-close-btn" on:click=move |_| set_show_uninstall.set(false)>
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                <h3 class="modal-title">"Export database?"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || exporting.get()
+                                    on:click=move |_| {
+                                        if !exporting.get() {
+                                            set_show_export.set(false);
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
                                 </button>
                             </div>
                             <div class="modal-body">
-                                <p class="prod-sub">"This will remove the application and all its data from your system."</p>
+                                <p class="modal-msg">
+                                    "A JSON backup of your products, stock, sales, debts, services, and printing data will be saved to a file you choose."
+                                </p>
+                                <p class="prod-sub" style="margin-top:0.5rem">
+                                    "User accounts and passwords are not included."
+                                </p>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || exporting.get()
+                                    on:click=move |_| {
+                                        if !exporting.get() {
+                                            set_show_export.set(false);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-primary"
+                                    prop:disabled=move || exporting.get()
+                                    on:click=do_export
+                                >{move || if exporting.get() { "Exporting…" } else { "Choose location" }}</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Import confirmation modal
+            {move || if show_import.get() {
+                view! {
+                    <div
+                        class="modal-overlay open"
+                        on:click=move |e| {
+                            if e.target() == e.current_target() && !importing.get() {
+                                set_show_import.set(false);
+                            }
+                        }
+                    >
+                        <div class="modal-container modal-sm">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Import database?"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || importing.get()
+                                    on:click=move |_| {
+                                        if !importing.get() {
+                                            set_show_import.set(false);
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="modal-msg">
+                                    "This will "
+                                    <strong>"replace all current business data"</strong>
+                                    " (products, stock, sales, debts, services, and printing) with the contents of the backup file."
+                                </p>
+                                <p class="settings-danger-note">"This cannot be undone. Export a backup first if you need a copy of the current data."</p>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || importing.get()
+                                    on:click=move |_| {
+                                        if !importing.get() {
+                                            set_show_import.set(false);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-danger"
+                                    prop:disabled=move || importing.get()
+                                    on:click=do_import
+                                >{move || if importing.get() { "Importing…" } else { "Choose backup file" }}</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Clear all data modal
+            {move || if show_clear.get() {
+                view! {
+                    <div
+                        class="modal-overlay open"
+                        on:click=move |e| {
+                            if e.target() == e.current_target() && !clearing.get() {
+                                set_show_clear.set(false);
+                                set_clear_confirm_text.set(String::new());
+                            }
+                        }
+                    >
+                        <div class="modal-container modal-sm">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Clear all data?"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || clearing.get()
+                                    on:click=move |_| {
+                                        if !clearing.get() {
+                                            set_show_clear.set(false);
+                                            set_clear_confirm_text.set(String::new());
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="modal-msg">
+                                    "This permanently deletes all products, stock, sales, debts, services, and printing records. "
+                                    <strong>"User accounts are kept."</strong>
+                                </p>
+                                <p class="settings-danger-note">"This action cannot be undone."</p>
+                                <div class="settings-field" style="margin-top:1rem">
+                                    <label class="settings-label" for="clear-confirm-input">
+                                        "Type DELETE to confirm"
+                                    </label>
+                                    <input
+                                        id="clear-confirm-input"
+                                        type="text"
+                                        class="settings-input"
+                                        placeholder="DELETE"
+                                        autocomplete="off"
+                                        prop:disabled=move || clearing.get()
+                                        prop:value=move || clear_confirm_text.get()
+                                        on:input=move |e| set_clear_confirm_text.set(event_target_value(&e))
+                                    />
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || clearing.get()
+                                    on:click=move |_| {
+                                        if !clearing.get() {
+                                            set_show_clear.set(false);
+                                            set_clear_confirm_text.set(String::new());
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-danger"
+                                    prop:disabled=move || clearing.get() || clear_confirm_text.get().trim() != "DELETE"
+                                    on:click=do_clear
+                                >{move || if clearing.get() { "Clearing…" } else { "Clear all data" }}</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+
+            // Uninstall modal
+            {move || if show_uninstall.get() {
+                view! {
+                    <div
+                        class="modal-overlay open"
+                        on:click=move |e| {
+                            if e.target() == e.current_target() && !uninstalling.get() {
+                                set_show_uninstall.set(false);
+                            }
+                        }
+                    >
+                        <div class="modal-container modal-sm">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Uninstall MULTIPRINTS"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || uninstalling.get()
+                                    on:click=move |_| {
+                                        if !uninstalling.get() {
+                                            set_show_uninstall.set(false);
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="modal-msg">
+                                    "This will remove the application and its local data from your system. Export a backup first if you need your records."
+                                </p>
                                 <p class="settings-danger-note">"This action cannot be undone."</p>
                             </div>
                             <div class="modal-footer">
-                                <button type="button" class="btn-secondary" on:click=move |_| set_show_uninstall.set(false)>"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || uninstalling.get()
+                                    on:click=move |_| {
+                                        if !uninstalling.get() {
+                                            set_show_uninstall.set(false);
+                                        }
+                                    }
+                                >"Cancel"</button>
                                 <button
                                     type="button"
                                     class="settings-btn-danger is-solid"

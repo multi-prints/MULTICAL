@@ -9,8 +9,9 @@ mod models;
 
 use auth::AuthManager;
 use db::Database;
-use models::{LocalStorageData, SuccessResponse};
+use models::{DatabaseBackup, LocalStorageData, SuccessResponse};
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,6 +20,7 @@ pub fn run() {
     let auth_manager = AuthManager::new();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Get app data directory for database
             let app_data_dir = app
@@ -129,6 +131,8 @@ pub fn run() {
             commands::updates::check_and_install_update,
             // Data management
             clear_all_data,
+            export_database,
+            import_database,
             migrate_from_localstorage,
             uninstall_app,
         ])
@@ -157,6 +161,89 @@ fn clear_all_data(db: State<'_, Database>) -> Result<SuccessResponse, String> {
         success: true,
         error: None,
         message: Some("All data cleared".to_string()),
+    })
+}
+
+#[tauri::command]
+fn export_database(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+) -> Result<SuccessResponse, String> {
+    let default_name = format!(
+        "multiprints-backup-{}.json",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+
+    let Some(file_path) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("MULTIPRINTS Backup", &["json"])
+        .set_title("Export database backup")
+        .blocking_save_file()
+    else {
+        return Ok(SuccessResponse {
+            success: false,
+            error: None,
+            message: Some("Export cancelled".into()),
+        });
+    };
+
+    let path = file_path
+        .into_path()
+        .map_err(|e| format!("Invalid save path: {e}"))?;
+
+    // Ensure .json extension if the user omitted it
+    let path = if path.extension().is_none() {
+        path.with_extension("json")
+    } else {
+        path
+    };
+
+    let backup = db.export_database_backup()?;
+    let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write backup: {e}"))?;
+
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: Some(format!("Backup saved to {}", path.display())),
+    })
+}
+
+#[tauri::command]
+fn import_database(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+) -> Result<SuccessResponse, String> {
+    let Some(file_path) = app
+        .dialog()
+        .file()
+        .add_filter("MULTIPRINTS Backup", &["json"])
+        .set_title("Import database backup")
+        .blocking_pick_file()
+    else {
+        return Ok(SuccessResponse {
+            success: false,
+            error: None,
+            message: Some("Import cancelled".into()),
+        });
+    };
+
+    let path = file_path
+        .into_path()
+        .map_err(|e| format!("Invalid file path: {e}"))?;
+
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read backup: {e}"))?;
+    let backup: DatabaseBackup = serde_json::from_str(&raw)
+        .map_err(|e| format!("Invalid backup file (expected MULTIPRINTS JSON): {e}"))?;
+
+    db.import_database_backup(backup)?;
+
+    Ok(SuccessResponse {
+        success: true,
+        error: None,
+        message: Some(format!("Data restored from {}", path.display())),
     })
 }
 

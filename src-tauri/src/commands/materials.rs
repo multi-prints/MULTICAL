@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::db::Database;
-use crate::models::*;
+use crate::models::{IdArg, *};
 
 #[tauri::command]
 pub fn get_all_printing_materials(
@@ -13,8 +13,10 @@ pub fn get_all_printing_materials(
 #[tauri::command]
 pub fn get_printing_material(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
 ) -> Result<Option<PrintingMaterial>, String> {
+    let id = id.0;
+
     db.get_printing_material(id)
 }
 
@@ -29,9 +31,11 @@ pub fn add_printing_material(
 #[tauri::command]
 pub fn update_printing_material(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     updates: PrintingMaterialUpdate,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.update_printing_material(id, updates)?;
     Ok(SuccessResponse {
         success: true,
@@ -44,9 +48,11 @@ pub fn update_printing_material(
 #[tauri::command]
 pub fn add_printing_material_rolls(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     rolls: i64,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.add_printing_material_rolls(id, rolls)?;
     Ok(SuccessResponse {
         success: true,
@@ -58,8 +64,10 @@ pub fn add_printing_material_rolls(
 #[tauri::command]
 pub fn delete_printing_material(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.delete_printing_material(id)?;
     Ok(SuccessResponse {
         success: true,

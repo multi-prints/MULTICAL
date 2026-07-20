@@ -161,7 +161,13 @@
   <script>
   window.tauriInvoke = async function(cmd, argsJson) {
     try {
-      var args = JSON.parse(argsJson);
+      // Quote integers with 16+ digits so JSON.parse does not round them
+      // (JS Number is only safe to 2^53-1). Backend IdArg accepts strings.
+      var safeArgsJson = String(argsJson).replace(
+        /([:\[,]\s*)(-?\d{16,})(?=\s*[,\]\}])/g,
+        '$1"$2"'
+      );
+      var args = JSON.parse(safeArgsJson);
       if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
         var result = await window.__TAURI_INTERNALS__.invoke(cmd, args);
         return JSON.stringify({ ok: result });

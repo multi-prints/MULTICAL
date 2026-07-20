@@ -1,4 +1,4 @@
-use super::stock_page::get_hex as stock_color_hex;
+use super::stock_page::{get_hex as stock_color_hex, reflective_swatch_style};
 use crate::api::{self, NewDebt, NewSale, Product, Sale, SalesPageQuery, StockItem};
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
@@ -182,10 +182,7 @@ fn render_sale_item_cell(
                 .unwrap_or_else(|| "gray".to_string());
             let color_hex = stock_color_hex(&color_name);
             let swatch_style = if is_reflective {
-                format!(
-                    "background: repeating-linear-gradient(135deg, rgba(255,255,255,0.85) 0 4px, rgba(255,255,255,0.25) 4px 8px), {}; border-color: #a855f7;",
-                    color_hex
-                )
+                reflective_swatch_style(color_hex)
             } else {
                 format!("background-color: {};", color_hex)
             };
@@ -254,6 +251,11 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (receipt_html, set_receipt_html) = signal(String::new());
     let (receipt_title, set_receipt_title) = signal(String::new());
 
+    // Delete confirmation
+    let (del_id, set_del_id) = signal(None::<i64>);
+    let (del_label, set_del_label) = signal(String::new());
+    let (deleting_sale, set_deleting_sale) = signal(false);
+
     // Stock tab state
     let (stock_id, set_stock_id) = signal(None::<i64>);
     let (sale_unit, set_sale_unit) = signal("metres".to_string());
@@ -279,6 +281,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let (svc_price, set_svc_price) = signal(String::new());
     let (svc_payment, set_svc_payment) = signal("cash".to_string());
     let (svc_cust, set_svc_cust) = signal("Walk-in".to_string());
+    let (svc_submitting, set_svc_submitting) = signal(false);
+    let (convert_submitting, set_convert_submitting) = signal(false);
 
     let items_per_page = 10u32;
 
@@ -484,9 +488,16 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         set_svc_price.set(String::new());
         set_svc_payment.set("cash".into());
         set_svc_cust.set("Walk-in".into());
+        set_svc_submitting.set(false);
     };
 
+    let sale_busy =
+        move || stock_submitting.get() || product_submitting.get() || svc_submitting.get();
+
     let close_modal = move || {
+        if sale_busy() {
+            return;
+        }
         set_show_modal.set(false);
         reset_stock_tab();
         reset_product_tab();
@@ -660,6 +671,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     Ok(_) => {
                         set_show_modal.set(false);
                         reset_product_tab();
+                        set_product_submitting.set(false);
                     }
                     Err(e) => {
                         error!("add product sale failed: {}", e);
@@ -678,14 +690,17 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
     let submit_service = {
         let l = reload;
         move |_| {
+            if svc_submitting.get() {
+                return;
+            }
             let name = svc_name.get();
             let price: f64 = svc_price.get().parse().unwrap_or(0.0);
             if name.is_empty() || price <= 0.0 {
                 return;
             }
-            close_modal();
+            set_svc_submitting.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::add_sale(&NewSale {
+                match api::add_sale(&NewSale {
                     r#type: "service".into(),
                     product_id: None,
                     stock_id: None,
@@ -700,7 +715,17 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     product_quantity: None,
                     stock_metres_used: None,
                 })
-                .await;
+                .await
+                {
+                    Ok(_) => {
+                        set_show_modal.set(false);
+                        reset_service_tab();
+                    }
+                    Err(e) => {
+                        error!("add service sale failed: {}", e);
+                    }
+                }
+                set_svc_submitting.set(false);
                 l();
             });
         }
@@ -749,10 +774,38 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         }
     };
 
+    let confirm_delete_sale = {
+        let l = reload;
+        move |_| {
+            let Some(id) = del_id.get() else {
+                return;
+            };
+            if deleting_sale.get() {
+                return;
+            }
+            set_deleting_sale.set(true);
+            leptos::task::spawn_local(async move {
+                let _ = api::delete_sale(id).await;
+                set_del_id.set(None);
+                set_del_label.set(String::new());
+                set_deleting_sale.set(false);
+                // Drop from multi-select if it was checked
+                set_selected_sales.update(|ids| {
+                    ids.retain(|x| *x != id);
+                    set_selected.set(ids.len() as u32);
+                });
+                l();
+            });
+        }
+    };
+
     // Convert-to-debt submit
     let submit_convert = {
         let l = reload;
         move |_| {
+            if convert_submitting.get() {
+                return;
+            }
             let sale = show_convert.get();
             if let Some(s) = sale {
                 let name = convert_customer.get();
@@ -766,25 +819,42 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     return;
                 }
                 let s_id = s.id;
-                set_show_convert.set(None);
+                let phone = convert_phone.get();
+                let due = convert_due_date.get();
+                set_convert_submitting.set(true);
                 leptos::task::spawn_local(async move {
-                    let _ = api::add_debt(&NewDebt {
+                    let desc = {
+                        let name = s
+                            .product_name
+                            .as_deref()
+                            .filter(|n| !n.trim().is_empty())
+                            .unwrap_or(match s.r#type.as_str() {
+                                "stock" => "Sticker sale",
+                                "product" => "Product sale",
+                                "service" => "Service sale",
+                                _ => "Sale",
+                            });
+                        let qty = s.quantity.as_deref().unwrap_or("-");
+                        format!("Sale · {} × {}", name, qty)
+                    };
+                    let ok = api::add_debt(&NewDebt {
                         customer_name: name,
-                        phone: Some(convert_phone.get()).filter(|p| !p.is_empty()),
+                        phone: Some(phone).filter(|p| !p.is_empty()),
                         amount: s.amount,
                         paid_amount: Some(paid),
                         remaining_amount: Some(remaining),
-                        due_date: Some(convert_due_date.get()).filter(|d| !d.is_empty()),
-                        description: Some(format!(
-                            "Sale: {} ({})",
-                            s.product_name.as_deref().unwrap_or(""),
-                            s.quantity.as_deref().unwrap_or("-")
-                        )),
+                        due_date: Some(due).filter(|d| !d.is_empty()),
+                        description: Some(desc),
                         sale_id: Some(s_id),
                         service_transaction_id: None,
                     })
-                    .await;
-                    let _ = api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
+                    .await
+                    .is_ok();
+                    if ok {
+                        let _ = api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
+                        set_show_convert.set(None);
+                    }
+                    set_convert_submitting.set(false);
                     l();
                 });
             }
@@ -970,8 +1040,43 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                 let sale_for_debt = sale.clone();
                                 let sale_for_receipt = sale.clone();
                                 let amount = sale.amount;
+                                let is_debt = sale.is_debt;
+                                let paid_display = if is_debt == 0 {
+                                    amount
+                                } else if sale.amount_paid > 0.0 {
+                                    sale.amount_paid
+                                } else {
+                                    0.0
+                                };
+                                let del_label_text = {
+                                    let name = sale
+                                        .product_name
+                                        .clone()
+                                        .filter(|n| !n.trim().is_empty())
+                                        .unwrap_or_else(|| {
+                                            if sale.r#type == "stock" {
+                                                "Sticker sale".into()
+                                            } else if sale.r#type == "service" {
+                                                "Service sale".into()
+                                            } else {
+                                                "Sale".into()
+                                            }
+                                        });
+                                    let cust = sale.customer_name.trim();
+                                    if cust.is_empty() || cust.eq_ignore_ascii_case("walk-in") {
+                                        format!("{} · KSh {:.0}", name, amount)
+                                    } else {
+                                        format!("{} · {} · KSh {:.0}", name, cust, amount)
+                                    }
+                                };
                                 view! {
-                                    <tr class=move || if is_sel() { "sales-row is-selected" } else { "sales-row" }>
+                                    <tr class=move || {
+                                        let mut cls = if is_sel() { "sales-row is-selected" } else { "sales-row" }.to_string();
+                                        if is_debt > 0 {
+                                            cls.push_str(" is-debt-row");
+                                        }
+                                        cls
+                                    }>
                                         <td class="sales-col-check">
                                             <label class="custom-checkbox">
                                                 <input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/>
@@ -981,9 +1086,26 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                         <td class="dash-td-muted tnum">{tm}</td>
                                         <td>{item_cell}</td>
                                         <td class="dash-td-muted tnum">{qty_display}</td>
-                                        <td class="dash-td-strong tnum">{format!("KSh {:.0}", amount)}</td>
+                                        <td class="dash-td-strong tnum">
+                                            <div class="sale-amount-cell">
+                                                <span>{format!("KSh {:.0}", paid_display)}</span>
+                                                {if is_debt > 0 && paid_display + 0.009 < amount {
+                                                    view! {
+                                                        <span class="sale-amount-of tnum">{format!("of {:.0}", amount)}</span>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
+                                            </div>
+                                        </td>
                                         <td>
-                                            <span class="dash-status is-ok capitalize">{pm_display}</span>
+                                            {if is_debt == 1 {
+                                                view! { <span class="dash-status is-debt">"Debt"</span> }.into_any()
+                                            } else if is_debt == 2 {
+                                                view! { <span class="dash-status is-debt-paid">"Debt paid"</span> }.into_any()
+                                            } else {
+                                                view! { <span class="dash-status is-ok capitalize">{pm_display}</span> }.into_any()
+                                            }}
                                         </td>
                                         <td class="dash-td-muted">{cust_display}</td>
                                         <td>
@@ -1004,31 +1126,31 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
                                                     </svg>
                                                 </button>
-                                                <button
-                                                    type="button"
-                                                    class="prod-btn-icon"
-                                                    title="Convert to debt"
-                                                    aria-label="Convert to debt"
-                                                    on:click=move |_| open_convert(Some(&sale_for_debt))
-                                                >
-                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                                                    </svg>
-                                                </button>
+                                                {if is_debt == 0 {
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon"
+                                                            title="Convert to debt"
+                                                            aria-label="Convert to debt"
+                                                            on:click=move |_| open_convert(Some(&sale_for_debt))
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                                            </svg>
+                                                        </button>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
                                                 <button
                                                     type="button"
                                                     class="prod-btn-icon is-danger"
                                                     title="Delete"
                                                     aria-label="Delete sale"
-                                                    on:click={
-                                                        let l = reload;
-                                                        move |_| {
-                                                            let i = id;
-                                                            leptos::task::spawn_local(async move {
-                                                                let _ = api::delete_sale(i).await;
-                                                                l();
-                                                            });
-                                                        }
+                                                    on:click=move |_| {
+                                                        set_del_label.set(del_label_text.clone());
+                                                        set_del_id.set(Some(id));
                                                     }
                                                 >
                                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1093,7 +1215,12 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             <div class="modal-container" style="max-width: 640px;">
                 <div class="modal-header">
                     <h3 class="modal-title">"Record New Sale"</h3>
-                    <button type="button" class="modal-close-btn" on:click=move |_| close_modal()>
+                    <button
+                        type="button"
+                        class="modal-close-btn"
+                        prop:disabled=sale_busy
+                        on:click=move |_| close_modal()
+                    >
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                 </div>
@@ -1149,8 +1276,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                             })}
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary" on:click=submit_stock disabled=move || stock_submitting.get()>
+                            <button type="button" class="btn-secondary" prop:disabled=sale_busy on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_stock prop:disabled=move || stock_submitting.get()>
                                 {move || if stock_submitting.get() { "Recording..." } else { "Record Stock Sale" }}
                             </button>
                         </div>
@@ -1194,8 +1321,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                             })}
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary" on:click=submit_product disabled=move || product_submitting.get()>
+                            <button type="button" class="btn-secondary" prop:disabled=sale_busy on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_product prop:disabled=move || product_submitting.get()>
                                 {move || if product_submitting.get() { "Recording..." } else { "Record Product Sale" }}
                             </button>
                         </div>
@@ -1229,8 +1356,10 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn-secondary" on:click=move |_| close_modal()>"Cancel"</button>
-                            <button type="button" class="btn-primary" on:click=submit_service>"Record Service Sale"</button>
+                            <button type="button" class="btn-secondary" prop:disabled=sale_busy on:click=move |_| close_modal()>"Cancel"</button>
+                            <button type="button" class="btn-primary" on:click=submit_service prop:disabled=move || svc_submitting.get()>
+                                {move || if svc_submitting.get() { "Recording..." } else { "Record Service Sale" }}
+                            </button>
                         </div>
                     </div>}.into_any() } else { ().into_any() }}
                 </div>
@@ -1245,7 +1374,15 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             let remaining = move || { let paid:f64 = convert_paid.get().parse().unwrap_or(0.0); (amount - paid).max(0.0) };
             view!{<div id="modal-convert-debt" class="modal-overlay open"><div class="modal-container" style="max-width: 500px;">
                 <div class="modal-header"><h3 class="modal-title">"Convert Sale to Debt"</h3>
-                    <button class="modal-close-btn" on:click=move |_| set_show_convert.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+                    <button
+                        class="modal-close-btn"
+                        prop:disabled=move || convert_submitting.get()
+                        on:click=move |_| {
+                            if !convert_submitting.get() {
+                                set_show_convert.set(None);
+                            }
+                        }
+                    ><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
                 </div>
                 <div class="modal-body">
                     <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Sale Details"</p>
@@ -1253,21 +1390,95 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         <p class="text-sm text-gray-600">{format!("{} - KSh {:.0}", pqty, amount)}</p>
                     </div>
                     <div class="space-y-4">
-                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Name *"</label><input type="text" class="w-full" placeholder="Enter customer name" prop:value=move || convert_customer.get() on:input=move |e| set_convert_customer.set(event_target_value(&e))/></div>
-                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Phone"</label><input type="tel" class="w-full" placeholder="Optional" prop:value=move || convert_phone.get() on:input=move |e| set_convert_phone.set(event_target_value(&e))/></div>
-                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Paid *"</label><input type="number" min="0" step="0.01" class="w-full" placeholder="0.00" prop:value=move || convert_paid.get() on:input=move |e| set_convert_paid.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Name *"</label><input type="text" class="w-full" placeholder="Enter customer name" prop:value=move || convert_customer.get() prop:disabled=move || convert_submitting.get() on:input=move |e| set_convert_customer.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Phone"</label><input type="tel" class="w-full" placeholder="Optional" prop:value=move || convert_phone.get() prop:disabled=move || convert_submitting.get() on:input=move |e| set_convert_phone.set(event_target_value(&e))/></div>
+                        <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Amount Paid *"</label><input type="number" min="0" step="0.01" class="w-full" placeholder="0.00" prop:value=move || convert_paid.get() prop:disabled=move || convert_submitting.get() on:input=move |e| set_convert_paid.set(event_target_value(&e))/></div>
                         <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Remaining Debt"</label><div class="px-3 py-2 bg-red-50 border border-red-200 text-lg font-bold text-red-600">{move || format!("KSh {:.0}", remaining())}</div></div>
                         <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><MiniCalendar date_r=convert_due_date date_w=set_convert_due_date label=set_convert_due_label/></div>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn-secondary" on:click=move |_| set_show_convert.set(None)>"Cancel"</button>
-                    <button type="button" class="btn-primary" on:click=submit_convert>"Create Debt"</button>
+                    <button
+                        type="button"
+                        class="btn-secondary"
+                        prop:disabled=move || convert_submitting.get()
+                        on:click=move |_| {
+                            if !convert_submitting.get() {
+                                set_show_convert.set(None);
+                            }
+                        }
+                    >"Cancel"</button>
+                    <button
+                        type="button"
+                        class="btn-primary"
+                        prop:disabled=move || convert_submitting.get()
+                        on:click=submit_convert
+                    >{move || if convert_submitting.get() { "Creating..." } else { "Create Debt" }}</button>
                 </div>
             </div></div>}
         }).map(|v| v.into_any()).unwrap_or_else(|| ().into_any())}
 
         <ReceiptModal show=Signal::derive(move || show_receipt.get()) set_show=set_show_receipt receipt_html=Signal::derive(move || receipt_html.get()) title=Signal::derive(move || receipt_title.get())/>
+
+        // Delete sale confirmation
+        <Show when=move || del_id.get().is_some()>
+            <div
+                class="modal-overlay open"
+                on:click=move |e| {
+                    if e.target() == e.current_target() && !deleting_sale.get() {
+                        set_del_id.set(None);
+                        set_del_label.set(String::new());
+                    }
+                }
+            >
+                <div class="modal-container modal-sm">
+                    <div class="modal-header">
+                        <h3 class="modal-title">"Delete Sale?"</h3>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            prop:disabled=move || deleting_sale.get()
+                            on:click=move |_| {
+                                if !deleting_sale.get() {
+                                    set_del_id.set(None);
+                                    set_del_label.set(String::new());
+                                }
+                            }
+                        >
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="modal-msg">
+                            "Are you sure you want to delete "
+                            <span class="modal-entity">{move || del_label.get()}</span>
+                            "? This action cannot be undone."
+                        </p>
+                    </div>
+                    <div class="modal-footer">
+                        <button
+                            type="button"
+                            class="btn-secondary"
+                            prop:disabled=move || deleting_sale.get()
+                            on:click=move |_| {
+                                if !deleting_sale.get() {
+                                    set_del_id.set(None);
+                                    set_del_label.set(String::new());
+                                }
+                            }
+                        >"Cancel"</button>
+                        <button
+                            type="button"
+                            class="btn-danger"
+                            prop:disabled=move || deleting_sale.get()
+                            on:click=confirm_delete_sale
+                        >{move || if deleting_sale.get() { "Deleting..." } else { "Delete" }}</button>
+                    </div>
+                </div>
+            </div>
+        </Show>
     </div>
         </Show>
     }

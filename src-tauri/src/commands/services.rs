@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::db::Database;
-use crate::models::*;
+use crate::models::{IdArg, *};
 
 #[tauri::command]
 pub fn get_all_services(db: State<'_, Database>) -> Result<Vec<Service>, String> {
@@ -14,7 +14,8 @@ pub fn get_active_services(db: State<'_, Database>) -> Result<Vec<Service>, Stri
 }
 
 #[tauri::command]
-pub fn get_service(db: State<'_, Database>, id: i64) -> Result<Option<Service>, String> {
+pub fn get_service(db: State<'_, Database>, id: IdArg) -> Result<Option<Service>, String> {
+    let id = id.0;
     db.get_service(id)
 }
 
@@ -26,9 +27,11 @@ pub fn add_service(db: State<'_, Database>, service: NewService) -> Result<Servi
 #[tauri::command]
 pub fn update_service(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     updates: ServiceUpdate,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.update_service(id, updates)?;
     Ok(SuccessResponse {
         success: true,
@@ -38,7 +41,8 @@ pub fn update_service(
 }
 
 #[tauri::command]
-pub fn delete_service(db: State<'_, Database>, id: i64) -> Result<SuccessResponse, String> {
+pub fn delete_service(db: State<'_, Database>, id: IdArg) -> Result<SuccessResponse, String> {
+    let id = id.0;
     db.delete_service(id)?;
     Ok(SuccessResponse {
         success: true,

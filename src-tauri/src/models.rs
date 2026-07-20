@@ -1,9 +1,96 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
+
+/// Serialize entity / FK ids as JSON strings so the webview (JS IEEE-754 numbers)
+/// cannot round them. Distributed i64 ids exceed Number.MAX_SAFE_INTEGER.
+pub mod lossless_i64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = i64;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an i64 as a string or integer")
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<i64, E> {
+                Ok(v)
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<i64, E> {
+                i64::try_from(v).map_err(E::custom)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<i64, E> {
+                v.parse().map_err(E::custom)
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<i64, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+pub mod lossless_opt_i64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => serializer.serialize_some(&v.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<i64>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Opt {
+            Str(String),
+            I64(i64),
+            U64(u64),
+        }
+        match Option::<Opt>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Opt::Str(s)) if s.is_empty() => Ok(None),
+            Some(Opt::Str(s)) => s.parse().map(Some).map_err(serde::de::Error::custom),
+            Some(Opt::I64(v)) => Ok(Some(v)),
+            Some(Opt::U64(v)) => i64::try_from(v).map(Some).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// Command-argument id that accepts JSON string or number (lossless with strings).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IdArg(pub i64);
+
+impl From<IdArg> for i64 {
+    fn from(v: IdArg) -> Self {
+        v.0
+    }
+}
+
+impl<'de> Deserialize<'de> for IdArg {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        lossless_i64::deserialize(deserializer).map(IdArg)
+    }
+}
+
+impl Serialize for IdArg {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        lossless_i64::serialize(&self.0, serializer)
+    }
+}
 
 // ==================== Product ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Product {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub product_type: String,
@@ -56,6 +143,7 @@ pub struct ProductsPageData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockItem {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub color: String,
     pub size: String,
@@ -121,15 +209,21 @@ pub struct StockPageData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sale {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub r#type: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub product_name: Option<String>,
     pub product_type: Option<String>,
     pub sticker_type: Option<String>,
     pub quantity: Option<String>,
     pub amount: f64,
+    /// Cash collected so far: full `amount` when not a debt; debt `paid_amount` when converted.
+    #[serde(default)]
+    pub amount_paid: f64,
     pub payment_method: String,
     pub customer_name: String,
     pub is_debt: i64,
@@ -139,7 +233,9 @@ pub struct Sale {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewSale {
     pub r#type: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub product_name: Option<String>,
     pub product_type: Option<String>,
@@ -188,6 +284,7 @@ pub struct SalesPageData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Debt {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub customer_name: String,
     pub phone: Option<String>,
@@ -197,11 +294,34 @@ pub struct Debt {
     pub due_date: Option<String>,
     pub description: Option<String>,
     pub status: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub sale_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_transaction_id: Option<i64>,
     pub paid_at: Option<String>,
     pub last_payment_at: Option<String>,
     pub created_at: Option<String>,
+    /// Human label for linked sale product / printing job / manual note.
+    #[serde(default)]
+    pub source_label: Option<String>,
+    /// "sale" | "printing" | "manual"
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    /// Extra context (qty, metres, material, etc.).
+    #[serde(default)]
+    pub source_detail: Option<String>,
+    /// Linked sale type: product | stock | service
+    #[serde(default)]
+    pub source_sale_type: Option<String>,
+    /// life_saver | chevron | stripes
+    #[serde(default)]
+    pub source_product_type: Option<String>,
+    /// Product/stock color key for preview swatches
+    #[serde(default)]
+    pub source_color: Option<String>,
+    /// colored | reflective (stickers)
+    #[serde(default)]
+    pub source_sticker_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,7 +333,9 @@ pub struct NewDebt {
     pub remaining_amount: Option<f64>,
     pub due_date: Option<String>,
     pub description: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub sale_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_transaction_id: Option<i64>,
 }
 
@@ -251,7 +373,9 @@ pub struct DebtUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebtPayment {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
+    #[serde(with = "lossless_i64", alias = "debtId")]
     pub debt_id: i64,
     pub amount: f64,
     pub payment_method: String,
@@ -261,6 +385,7 @@ pub struct DebtPayment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewDebtPayment {
+    #[serde(with = "lossless_i64", alias = "debtId")]
     pub debt_id: i64,
     pub amount: f64,
     #[serde(default = "default_payment_method")]
@@ -272,6 +397,7 @@ pub struct NewDebtPayment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub description: Option<String>,
@@ -310,19 +436,26 @@ pub struct ServiceUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceTransaction {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_id: Option<i64>,
     pub service_name: String,
     pub quantity: f64,
     pub price: f64,
     pub amount: f64,
+    /// Cash collected so far (full amount when not debt; debt payments when converted).
+    #[serde(default)]
+    pub amount_paid: f64,
     pub payment_method: String,
     pub customer_name: String,
     pub notes: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub stock_metres_used: f64,
     pub material_size: Option<String>,
     pub material_type: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub printing_material_id: Option<i64>,
     pub is_debt: i64,
     pub timestamp: Option<String>,
@@ -330,6 +463,7 @@ pub struct ServiceTransaction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewServiceTransaction {
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_id: Option<i64>,
     pub service_name: String,
     #[serde(default = "default_quantity")]
@@ -341,11 +475,13 @@ pub struct NewServiceTransaction {
     #[serde(default = "default_customer_name")]
     pub customer_name: String,
     pub notes: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     #[serde(default)]
     pub stock_metres_used: f64,
     pub material_size: Option<String>,
     pub material_type: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub printing_material_id: Option<i64>,
     #[serde(default)]
     pub is_debt: i64,
@@ -372,6 +508,7 @@ pub struct ServiceTransactionUpdate {
     pub payment_method: Option<String>,
     pub customer_name: Option<String>,
     pub notes: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub stock_metres_used: Option<f64>,
     pub material_size: Option<String>,
@@ -401,6 +538,7 @@ pub struct PrintingPageData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrintingMaterial {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub material_type: String,
@@ -453,6 +591,7 @@ pub struct PrintingMaterialUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub username: String,
     pub role: String,
@@ -461,6 +600,7 @@ pub struct User {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRow {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub username: String,
     pub password_hash: String,
@@ -537,6 +677,7 @@ pub struct DashboardActivityItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardTopProduct {
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
     pub name: String,
     pub quantity: i64,
@@ -575,4 +716,29 @@ pub struct LocalStorageData {
     pub stock: Option<Vec<serde_json::Value>>,
     pub sales: Option<Vec<serde_json::Value>>,
     pub debts: Option<Vec<serde_json::Value>>,
+}
+
+/// Full business-data backup (JSON). Users are intentionally excluded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseBackup {
+    pub format: String,
+    pub version: u32,
+    pub exported_at: String,
+    pub app_version: String,
+    #[serde(default)]
+    pub products: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub stock: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub services: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub printing_materials: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub sales: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub service_transactions: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub debts: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub debt_payments: Vec<serde_json::Value>,
 }

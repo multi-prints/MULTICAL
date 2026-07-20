@@ -16,7 +16,7 @@ mod calendar_comp;
 use calendar_comp::MiniCalendar;
 #[path = "../components/receipt.rs"]
 mod receipt_comp;
-use receipt_comp::{open_printing_receipt, ReceiptModal};
+use receipt_comp::{open_multi_printing_receipt, open_printing_receipt, ReceiptModal};
 
 fn format_printing_timestamp(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -86,7 +86,14 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (show_receipt, set_show_receipt) = signal(false);
     let (receipt_html, set_receipt_html) = signal(String::new());
     let (receipt_title, set_receipt_title) = signal(String::new());
+    // Multi-select for bulk receipt print (same pattern as sales)
+    let (selected, set_selected) = signal(0u32);
+    let (selected_jobs, set_selected_jobs) = signal(Vec::<i64>::new());
     let (loading, set_loading) = signal(true);
+    let (job_submitting, set_job_submitting) = signal(false);
+    let (mat_submitting, set_mat_submitting) = signal(false);
+    let (rolls_submitting, set_rolls_submitting) = signal(false);
+    let (convert_submitting, set_convert_submitting) = signal(false);
 
     let reload = {
         let sj = set_jobs;
@@ -276,6 +283,9 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let submit_job = {
         let l = reload;
         move |_| {
+            if job_submitting.get() {
+                return;
+            }
             let metres: f64 = metres_printed.get().parse().unwrap_or(0.0);
             let price: f64 = total_price.get().parse().unwrap_or(0.0);
             let mid = mat_id.get();
@@ -291,16 +301,18 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 .as_ref()
                 .map(|m| format!("{} - {}m", m.name, metres as u64))
                 .unwrap_or_default();
-            set_show_record.set(false);
+            let payment_method = payment.get();
+            let customer_name = customer.get();
+            set_job_submitting.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::add_service_transaction(&NewServiceTransaction {
+                let ok = api::add_service_transaction(&NewServiceTransaction {
                     service_id: None,
                     service_name: name,
                     quantity: 1.0,
                     price: Some(price),
                     amount: Some(price),
-                    payment_method: payment.get(),
-                    customer_name: customer.get(),
+                    payment_method,
+                    customer_name,
                     notes: Some(format!("Printing - {}m", metres as u64)),
                     stock_id: None,
                     stock_metres_used: metres,
@@ -309,7 +321,12 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     printing_material_id: mid,
                     is_debt: 0,
                 })
-                .await;
+                .await
+                .is_ok();
+                if ok {
+                    set_show_record.set(false);
+                }
+                set_job_submitting.set(false);
                 l();
             });
         }
@@ -319,6 +336,9 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let submit_add_mat = {
         let l = reload;
         move |_| {
+            if mat_submitting.get() {
+                return;
+            }
             let name = mat_name.get();
             let width: f64 = mat_width.get().parse().unwrap_or(0.0);
             let rolls: i64 = mat_rolls.get().parse().unwrap_or(0);
@@ -326,9 +346,9 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             if name.is_empty() || width <= 0.0 || rolls <= 0 {
                 return;
             }
-            set_show_add_mat.set(false);
+            set_mat_submitting.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::add_printing_material(&NewPrintingMaterial {
+                let ok = api::add_printing_material(&NewPrintingMaterial {
                     name,
                     material_type: "Custom".into(),
                     width,
@@ -338,7 +358,12 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     metres_used: 0.0,
                     color: None,
                 })
-                .await;
+                .await
+                .is_ok();
+                if ok {
+                    set_show_add_mat.set(false);
+                }
+                set_mat_submitting.set(false);
                 l();
             });
         }
@@ -348,15 +373,22 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let submit_add_rolls = {
         let l = reload;
         move |_| {
+            if rolls_submitting.get() {
+                return;
+            }
             let mat = show_add_rolls.get();
             let added: i64 = add_rolls_val.get().parse().unwrap_or(0);
             if mat.is_none() || added <= 0 {
                 return;
             }
             let m = mat.unwrap();
-            set_show_add_rolls.set(None);
+            set_rolls_submitting.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::add_printing_material_rolls(m.id, added).await;
+                let ok = api::add_printing_material_rolls(m.id, added).await.is_ok();
+                if ok {
+                    set_show_add_rolls.set(None);
+                }
+                set_rolls_submitting.set(false);
                 l();
             });
         }
@@ -366,6 +398,9 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let submit_convert = {
         let l = reload;
         move |_| {
+            if convert_submitting.get() {
+                return;
+            }
             let txn = show_convert.get();
             if let Some(t) = txn {
                 let name = conv_cust.get();
@@ -379,26 +414,85 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     return;
                 }
                 let t_id = t.id;
-                set_show_convert.set(None);
+                let phone = conv_phone.get();
+                let due = conv_due.get();
+                set_convert_submitting.set(true);
                 leptos::task::spawn_local(async move {
-                    let _ = api::add_debt(&NewDebt {
+                    let desc = {
+                        let metres = t.stock_metres_used;
+                        let mat = t.material_type.as_deref().unwrap_or("").trim();
+                        if mat.is_empty() {
+                            format!("Printing · {} · {:.1}m", t.service_name, metres)
+                        } else {
+                            format!("Printing · {} · {:.1}m · {}", t.service_name, metres, mat)
+                        }
+                    };
+                    let ok = api::add_debt(&NewDebt {
                         customer_name: name,
-                        phone: Some(conv_phone.get()).filter(|p| !p.is_empty()),
+                        phone: Some(phone).filter(|p| !p.is_empty()),
                         amount: t.amount,
                         paid_amount: Some(paid),
                         remaining_amount: Some(remaining),
-                        due_date: Some(conv_due.get()).filter(|d| !d.is_empty()),
-                        description: Some(format!("Printing Job: {}", t.service_name)),
+                        due_date: Some(due).filter(|d| !d.is_empty()),
+                        description: Some(desc),
                         sale_id: None,
                         service_transaction_id: Some(t_id),
                     })
-                    .await;
-                    let _ =
-                        api::update_service_transaction(t_id, &serde_json::json!({"is_debt": 1}))
-                            .await;
+                    .await
+                    .is_ok();
+                    if ok {
+                        let _ = api::update_service_transaction(
+                            t_id,
+                            &serde_json::json!({"is_debt": 1}),
+                        )
+                        .await;
+                        set_show_convert.set(None);
+                    }
+                    set_convert_submitting.set(false);
                     l();
                 });
             }
+        }
+    };
+
+    let toggle_select = move |id: i64| {
+        set_selected_jobs.update(|v| {
+            if let Some(p) = v.iter().position(|x| *x == id) {
+                v.remove(p);
+            } else {
+                v.push(id);
+            }
+        });
+        set_selected.update(|c| {
+            *c = selected_jobs.get().len() as u32;
+        });
+    };
+    let select_all = move |checked: bool| {
+        if checked {
+            let ids: Vec<i64> = jobs.get().iter().map(|j| j.id).collect();
+            let n = ids.len() as u32;
+            set_selected_jobs.set(ids);
+            set_selected.set(n);
+        } else {
+            set_selected_jobs.set(Vec::new());
+            set_selected.set(0);
+        }
+    };
+    let print_selected = {
+        let set_show = set_show_receipt;
+        let set_html = set_receipt_html;
+        let set_title = set_receipt_title;
+        move |_| {
+            let sel_ids = selected_jobs.get();
+            if sel_ids.is_empty() {
+                return;
+            }
+            let selected: Vec<ServiceTransaction> = jobs
+                .get()
+                .into_iter()
+                .filter(|j| sel_ids.contains(&j.id))
+                .collect();
+            open_multi_printing_receipt(&selected, set_show, set_html, set_title);
         }
     };
 
@@ -406,6 +500,10 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         let l = reload;
         leptos::task::spawn_local(async move {
             let _ = api::delete_service_transaction(id).await;
+            set_selected_jobs.update(|ids| {
+                ids.retain(|x| *x != id);
+                set_selected.set(ids.len() as u32);
+            });
             l();
         });
     };
@@ -431,6 +529,20 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     <p class="prod-sub">"Materials, metres, and service income"</p>
                 </div>
                 <div class="dash-table-actions">
+                    {move || if selected.get() > 0 {
+                        view! {
+                            <button
+                                type="button"
+                                id="btn-print-selected-jobs"
+                                class="sales-btn-secondary"
+                                on:click=print_selected
+                            >
+                                {move || format!("Print ({})", selected.get())}
+                            </button>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
                     {move || if can_manage_materials {
                         view! {
                             <button
@@ -621,6 +733,20 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 <table class="dash-table print-jobs-table">
                     <thead>
                         <tr>
+                            <th class="sales-col-check">
+                                <label class="custom-checkbox">
+                                    <input
+                                        type="checkbox"
+                                        prop:checked=move || {
+                                            let s = selected.get();
+                                            let t = total_items();
+                                            s > 0 && s == t
+                                        }
+                                        on:change=move |e| select_all(event_target_checked(&e))
+                                    />
+                                    <span class="checkmark"></span>
+                                </label>
+                            </th>
                             <th>"Date"</th>
                             <th>"Job"</th>
                             <th>"Metres"</th>
@@ -637,7 +763,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                             if items.is_empty() {
                                 return view! {
                                     <tr>
-                                        <td colspan="8" class="dash-table-empty">"No printing jobs recorded."</td>
+                                        <td colspan="9" class="dash-table-empty">"No printing jobs recorded."</td>
                                     </tr>
                                 }.into_any();
                             }
@@ -655,15 +781,55 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                                 let txn_clone = t.clone();
                                 let txn_for_receipt = t.clone();
                                 let amount = t.amount;
+                                let is_debt = t.is_debt;
+                                let paid_display = if is_debt == 0 {
+                                    amount
+                                } else if t.amount_paid > 0.0 {
+                                    t.amount_paid
+                                } else {
+                                    0.0
+                                };
                                 let metres = t.stock_metres_used;
+                                let is_sel = move || selected_jobs.get().contains(&id);
                                 view! {
-                                    <tr class="sales-row">
+                                    <tr class=move || {
+                                        let mut cls = if is_sel() { "sales-row is-selected" } else { "sales-row" }.to_string();
+                                        if is_debt > 0 {
+                                            cls.push_str(" is-debt-row");
+                                        }
+                                        cls
+                                    }>
+                                        <td class="sales-col-check">
+                                            <label class="custom-checkbox">
+                                                <input type="checkbox" prop:checked=is_sel on:change=move |_| toggle_select(id)/>
+                                                <span class="checkmark"></span>
+                                            </label>
+                                        </td>
                                         <td class="dash-td-muted tnum">{tm}</td>
                                         <td class="dash-td-strong">{name}</td>
                                         <td class="dash-td-muted tnum">{format!("{:.1}m", metres)}</td>
                                         <td class="dash-td-muted">{mat}</td>
-                                        <td class="dash-td-strong tnum">{format!("KSh {:.0}", amount)}</td>
-                                        <td><span class="dash-status is-ok capitalize">{pm_label}</span></td>
+                                        <td class="dash-td-strong tnum">
+                                            <div class="sale-amount-cell">
+                                                <span>{format!("KSh {:.0}", paid_display)}</span>
+                                                {if is_debt > 0 && paid_display + 0.009 < amount {
+                                                    view! {
+                                                        <span class="sale-amount-of tnum">{format!("of {:.0}", amount)}</span>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
+                                            </div>
+                                        </td>
+                                        <td>
+                                            {if is_debt == 1 {
+                                                view! { <span class="dash-status is-debt">"Debt"</span> }.into_any()
+                                            } else if is_debt == 2 {
+                                                view! { <span class="dash-status is-debt-paid">"Debt paid"</span> }.into_any()
+                                            } else {
+                                                view! { <span class="dash-status is-ok capitalize">{pm_label}</span> }.into_any()
+                                            }}
+                                        </td>
                                         <td class="dash-td-muted">{cust}</td>
                                         <td>
                                             <div class="prod-actions">
@@ -683,24 +849,30 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
                                                     </svg>
                                                 </button>
-                                                <button
-                                                    type="button"
-                                                    class="prod-btn-icon"
-                                                    title="Convert to debt"
-                                                    aria-label="Convert to debt"
-                                                    on:click=move |_| {
-                                                        set_conv_cust.set(txn_clone.customer_name.clone());
-                                                        set_conv_phone.set(String::new());
-                                                        set_conv_paid.set("0".into());
-                                                        set_conv_due.set(String::new());
-                                                        set_conv_due_label.set(String::new());
-                                                        set_show_convert.set(Some(txn_clone.clone()));
-                                                    }
-                                                >
-                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                                                    </svg>
-                                                </button>
+                                                {if is_debt == 0 {
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon"
+                                                            title="Convert to debt"
+                                                            aria-label="Convert to debt"
+                                                            on:click=move |_| {
+                                                                set_conv_cust.set(txn_clone.customer_name.clone());
+                                                                set_conv_phone.set(String::new());
+                                                                set_conv_paid.set("0".into());
+                                                                set_conv_due.set(String::new());
+                                                                set_conv_due_label.set(String::new());
+                                                                set_show_convert.set(Some(txn_clone.clone()));
+                                                            }
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                                            </svg>
+                                                        </button>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
                                                 <button
                                                     type="button"
                                                     class="prod-btn-icon is-danger"
@@ -766,7 +938,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             </div>
 
         // Record Job Modal
-        {move || if show_record.get() { view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 900px;"><div class="modal-header"><h3 class="modal-title">"Record Printing Job"</h3><button class="modal-close-btn" on:click=move |_| set_show_record.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
+        {move || if show_record.get() { view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 900px;"><div class="modal-header"><h3 class="modal-title">"Record Printing Job"</h3><button class="modal-close-btn" prop:disabled=move || job_submitting.get() on:click=move |_| { if !job_submitting.get() { set_show_record.set(false); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Select Material *"</label><div>
                 <CustomDropdown items=material_items placeholder="Select material".to_string() on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_mat_id.set(Some(id)); } })/>
             </div></div>
@@ -782,13 +954,13 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             </div>
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Total Amount"</label><div class="px-3 py-2 bg-brand-500 text-white text-lg font-bold">{move || { let p: f64 = total_price.get().parse().unwrap_or(0.0); format!("KSh {:.2}", p) }}</div></div>
             <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| set_show_record.set(false)>"Cancel"</button>
-                <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_job>"Record Job"</button>
+                <button type="button" class="btn-secondary px-4 py-2 text-sm" prop:disabled=move || job_submitting.get() on:click=move |_| { if !job_submitting.get() { set_show_record.set(false); } }>"Cancel"</button>
+                <button type="button" class="btn-primary px-4 py-2 text-sm" prop:disabled=move || job_submitting.get() on:click=submit_job>{move || if job_submitting.get() { "Recording..." } else { "Record Job" }}</button>
             </div>
         </div></div></div></div>}.into_any() } else { ().into_any() }}
 
         // Add Material Modal
-        {move || if can_manage_materials && show_add_mat.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add Printing Material"</h3><button class="modal-close-btn" on:click=move |_| set_show_add_mat.set(false)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
+        {move || if can_manage_materials && show_add_mat.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add Printing Material"</h3><button class="modal-close-btn" prop:disabled=move || mat_submitting.get() on:click=move |_| { if !mat_submitting.get() { set_show_add_mat.set(false); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Material Name *"</label><input type="text" class="w-full" placeholder="e.g., White Banner Vinyl, Blue Satin Fabric" prop:value=move || mat_name.get() on:input=move |e| set_mat_name.set(event_target_value(&e))/></div>
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Width (metres) *"</label><input type="number" step="0.1" min="0.1" class="w-full" placeholder="Enter width in metres" prop:value=move || mat_width.get() on:input=move |e| set_mat_width.set(event_target_value(&e))/></div>
             <div class="grid grid-cols-2 gap-4">
@@ -797,15 +969,15 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             </div>
             <div class="bg-gray-50 border border-gray-200 p-4"><div class="text-sm"><span class="text-gray-600">"Total metres will be calculated automatically"</span></div></div>
             <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                <button type="button" class="btn-secondary px-4 py-2 text-sm" on:click=move |_| set_show_add_mat.set(false)>"Cancel"</button>
-                <button type="button" class="btn-primary px-4 py-2 text-sm" on:click=submit_add_mat>"Add Material"</button>
+                <button type="button" class="btn-secondary px-4 py-2 text-sm" prop:disabled=move || mat_submitting.get() on:click=move |_| { if !mat_submitting.get() { set_show_add_mat.set(false); } }>"Cancel"</button>
+                <button type="button" class="btn-primary px-4 py-2 text-sm" prop:disabled=move || mat_submitting.get() on:click=submit_add_mat>{move || if mat_submitting.get() { "Adding..." } else { "Add Material" }}</button>
             </div>
         </div></div></div></div>}.into_any() } else { ().into_any() }}
 
         // Add Rolls Modal
         {move || show_add_rolls.get().map(|m| {
             let mpr = m.metres_per_roll;
-            view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Printing Material"</h3><button class="modal-close-btn" on:click=move |_| set_show_add_rolls.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
+            view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Printing Material"</h3><button class="modal-close-btn" prop:disabled=move || rolls_submitting.get() on:click=move |_| { if !rolls_submitting.get() { set_show_add_rolls.set(None); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
                 <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Printing Material"</p><p class="font-semibold text-gray-900">{m.name.clone()}</p>
                     <p class="text-sm text-gray-600 mt-1"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-100 text-neutral-800">{m.material_type.clone()}</span>
                     <span class="ml-2">{format!("Width: {}m", m.width)}</span></p>
@@ -818,14 +990,14 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                         <p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || { let a: i64 = add_rolls_val.get().parse().unwrap_or(0); format!("{} rolls ({}m)", m.rolls + a, (m.total_metres + a as f64 * mpr) as u64) }}</p>
                     </div>
                 </div>
-            </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_add_rolls.set(None)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=submit_add_rolls>"Add Rolls"</button></div></div></div>}.into_any()
+            </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" prop:disabled=move || rolls_submitting.get() on:click=move |_| { if !rolls_submitting.get() { set_show_add_rolls.set(None); } }>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" prop:disabled=move || rolls_submitting.get() on:click=submit_add_rolls>{move || if rolls_submitting.get() { "Adding..." } else { "Add Rolls" }}</button></div></div></div>}.into_any()
         }).unwrap_or_else(|| ().into_any())}
 
         // Convert to Debt Modal
         {move || show_convert.get().map(|t| {
             let amount = t.amount;
             let remaining = move || { let paid: f64 = conv_paid.get().parse().unwrap_or(0.0); (amount - paid).max(0.0) };
-            view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Convert Printing Job to Debt"</h3><button class="modal-close-btn" on:click=move |_| set_show_convert.set(None)><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
+            view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Convert Printing Job to Debt"</h3><button class="modal-close-btn" prop:disabled=move || convert_submitting.get() on:click=move |_| { if !convert_submitting.get() { set_show_convert.set(None); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
                 <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Printing Job Details"</p><p class="font-semibold text-gray-900">{t.service_name.clone()}</p><p class="text-sm text-gray-600">{format!("{:.1}m - KSh {:.0}", t.stock_metres_used, amount)}</p></div>
                 <div class="space-y-4">
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Customer Name *"</label><input type="text" class="w-full" placeholder="Enter customer name" prop:value=move || conv_cust.get() on:input=move |e| set_conv_cust.set(event_target_value(&e))/></div>
@@ -834,7 +1006,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Remaining Debt"</label><div class="px-3 py-2 bg-red-50 border border-red-200 text-lg font-bold text-red-600">{move || format!("KSh {:.0}", remaining())}</div></div>
                     <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Due Date"</label><MiniCalendar date_r=conv_due date_w=set_conv_due label=set_conv_due_label/></div>
                 </div>
-            </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" on:click=move |_| set_show_convert.set(None)>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" on:click=submit_convert>"Create Debt"</button></div></div></div>}.into_any()
+            </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" prop:disabled=move || convert_submitting.get() on:click=move |_| { if !convert_submitting.get() { set_show_convert.set(None); } }>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" prop:disabled=move || convert_submitting.get() on:click=submit_convert>{move || if convert_submitting.get() { "Creating..." } else { "Create Debt" }}</button></div></div></div>}.into_any()
         }).unwrap_or_else(|| ().into_any())}
 
         <ReceiptModal

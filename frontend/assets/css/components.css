@@ -1480,13 +1480,13 @@ html.is-maximized .sidebar {
 
 .notif-item.is-action {
   cursor: pointer;
-  border-color: var(--color-info-border);
-  background: var(--color-info-bg);
+  border-color: var(--color-primary-200, rgba(101, 101, 236, 0.28));
+  background: var(--color-primary-50, rgba(101, 101, 236, 0.1));
 }
 
 .notif-item.is-action:hover:not(:disabled) {
-  background: #dbeafe;
-  border-color: #93c5fd;
+  background: var(--color-primary-100, rgba(101, 101, 236, 0.16));
+  border-color: var(--color-primary, #6565EC);
 }
 
 .notif-item.is-action:disabled {
@@ -1515,8 +1515,8 @@ html.is-maximized .sidebar {
 }
 
 .notif-item-icon.update {
-  background: #dbeafe;
-  color: #0a0a0a;
+  background: var(--color-primary-50, rgba(101, 101, 236, 0.1));
+  color: var(--color-primary, #6565EC);
 }
 
 .notif-item-body {
@@ -1574,7 +1574,7 @@ html.is-maximized .sidebar {
   margin: 4px 0 0;
   font-size: 12.5px;
   font-weight: 600;
-  color: #0a0a0a;
+  color: var(--color-primary, #6565EC);
 }
 
 .notif-pill {
@@ -1591,8 +1591,8 @@ html.is-maximized .sidebar {
 }
 
 .notif-pill.mild {
-  background: #fff7ed;
-  color: #c2410c;
+  background: var(--color-warning-bg, #fff7ed);
+  color: var(--color-warning, #c2410c);
 }
 
 .notif-pill.hot {
@@ -2159,23 +2159,24 @@ html.is-maximized .sidebar {
  * Hidden entirely on very narrow metric cells.
  */
 .dash-metric-spark {
-  flex: 0 1 96px;
-  width: 96px;
-  min-width: 0;
-  max-width: 96px;
-  height: 36px;
+  flex: 0 1 112px;
+  width: 112px;
+  min-width: 56px;
+  max-width: 128px;
+  height: 40px;
   align-self: center;
   pointer-events: none;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
   flex-shrink: 1;
+  margin-left: auto;
 }
 
 .dash-spark-svg {
   display: block;
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
   max-width: 100%;
 }
 
@@ -2441,9 +2442,53 @@ html.is-maximized .sidebar {
   border-color: var(--color-error-border);
 }
 
-.stock-metrics {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.dash-status.is-debt {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  border-color: rgba(245, 158, 11, 0.28);
 }
+
+.dash-status.is-debt-paid {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.sale-amount-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.15;
+}
+
+.sale-amount-of {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.sales-row.is-debt-row td {
+  background: rgba(245, 158, 11, 0.03);
+}
+
+[data-theme="dark"] .dash-status.is-debt {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+[data-theme="dark"] .dash-status.is-debt-paid {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+[data-theme="dark"] .sales-row.is-debt-row td {
+  background: rgba(245, 158, 11, 0.05);
+}
+
+/* stock-metrics column count is set with the shared metric strip rules below */
 
 /* Stock table: balanced 10-col layout (overrides generic dash-table widths) */
 .stock-table {
@@ -2503,13 +2548,7 @@ html.is-maximized .sidebar {
 }
 
 /* ==================== Sales page ==================== */
-.sales-metrics--3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.sales-metrics--4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
+/* Column counts for metric strips — must beat .prod-metrics (see below) */
 
 .sales-btn-secondary {
   box-sizing: border-box;
@@ -2545,6 +2584,13 @@ html.is-maximized .sidebar {
   margin: 0;
   border: none;
   background: transparent;
+}
+
+/* Debts: toolbar is a sibling above the table card, not inside it */
+.debts-toolbar {
+  padding: 0;
+  margin: 0;
+  width: 100%;
 }
 
 .sales-search {
@@ -2766,20 +2812,26 @@ html.is-maximized .sidebar {
   padding-right: 12px !important;
 }
 
+.print-jobs-table .sales-col-check,
 .print-jobs-table th:nth-child(1),
-.print-jobs-table td:nth-child(1) { width: 14%; }
+.print-jobs-table td:nth-child(1) {
+  width: 44px;
+  padding-left: 14px !important;
+  padding-right: 8px !important;
+  overflow: visible;
+}
 
 .print-jobs-table th:nth-child(2),
-.print-jobs-table td:nth-child(2) {
-  width: 18%;
+.print-jobs-table td:nth-child(2) { width: 13%; }
+
+.print-jobs-table th:nth-child(3),
+.print-jobs-table td:nth-child(3) {
+  width: 16%;
   white-space: normal;
 }
 
-.print-jobs-table th:nth-child(3),
-.print-jobs-table td:nth-child(3) { width: 9%; }
-
 .print-jobs-table th:nth-child(4),
-.print-jobs-table td:nth-child(4) { width: 14%; }
+.print-jobs-table td:nth-child(4) { width: 9%; }
 
 .print-jobs-table th:nth-child(5),
 .print-jobs-table td:nth-child(5) { width: 12%; }
@@ -2788,10 +2840,13 @@ html.is-maximized .sidebar {
 .print-jobs-table td:nth-child(6) { width: 11%; }
 
 .print-jobs-table th:nth-child(7),
-.print-jobs-table td:nth-child(7) { width: 12%; }
+.print-jobs-table td:nth-child(7) { width: 10%; }
 
 .print-jobs-table th:nth-child(8),
-.print-jobs-table td:nth-child(8) {
+.print-jobs-table td:nth-child(8) { width: 11%; }
+
+.print-jobs-table th:nth-child(9),
+.print-jobs-table td:nth-child(9) {
   width: 10%;
   overflow: visible;
 }
@@ -2826,32 +2881,135 @@ html.is-maximized .sidebar {
 }
 
 .debts-table th:nth-child(1),
-.debts-table td:nth-child(1) { width: 16%; }
+.debts-table td:nth-child(1) { width: 13%; }
 
 .debts-table th:nth-child(2),
-.debts-table td:nth-child(2) { width: 12%; }
+.debts-table td:nth-child(2) {
+  width: 18%;
+  white-space: normal;
+  overflow: visible;
+}
 
 .debts-table th:nth-child(3),
-.debts-table td:nth-child(3),
+.debts-table td:nth-child(3) { width: 10%; }
+
 .debts-table th:nth-child(4),
 .debts-table td:nth-child(4),
 .debts-table th:nth-child(5),
-.debts-table td:nth-child(5) { width: 11%; }
-
+.debts-table td:nth-child(5),
 .debts-table th:nth-child(6),
-.debts-table td:nth-child(6) { width: 11%; }
+.debts-table td:nth-child(6) { width: 10%; }
 
 .debts-table th:nth-child(7),
-.debts-table td:nth-child(7) { width: 10%; }
+.debts-table td:nth-child(7) { width: 9%; }
 
 .debts-table th:nth-child(8),
-.debts-table td:nth-child(8) {
-  width: 18%;
+.debts-table td:nth-child(8) { width: 9%; }
+
+.debts-table th:nth-child(9),
+.debts-table td:nth-child(9) {
+  width: 11%;
   overflow: visible;
 }
 
 .debts-table .is-danger-text {
   color: #dc2626;
+}
+
+/* Debts item cell — preview + title/subtitle (sales-style) */
+.debts-source-cell {
+  overflow: visible !important;
+}
+
+.debts-item-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.debts-item-preview-swatch,
+.debts-item-preview-icon,
+.debts-item-preview-print,
+.debts-item-preview-manual {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 6px;
+}
+
+.debts-item-preview-swatch {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.debts-item-preview-swatch.is-bordered {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.debts-item-preview-swatch.is-muted {
+  background: var(--color-bg-muted, #e4e4e7);
+}
+
+.debts-item-preview-icon {
+  display: block;
+}
+
+.debts-item-preview-print,
+.debts-item-preview-manual {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-muted, #f4f4f5);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.debts-item-preview-print svg,
+.debts-item-preview-manual svg {
+  width: 16px;
+  height: 16px;
+}
+
+.debts-item-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.debts-item-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.debts-item-sub {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-theme="dark"] .debts-item-preview-swatch.is-bordered {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme="dark"] .debts-item-preview-print,
+[data-theme="dark"] .debts-item-preview-manual {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #a1a1aa;
 }
 
 .debts-btn-sm {
@@ -2861,6 +3019,147 @@ html.is-maximized .sidebar {
   padding: 0 10px !important;
   font-size: 13.5px !important;
   border-radius: 6px !important;
+}
+
+/* Debts row actions — primary Pay + compact more menu */
+/*
+ * .dash-table-card uses overflow-x/y that clip absolute menus.
+ * While a row menu is open: allow overflow so the menu can paint
+ * above the pagination footer. No full-screen dismiss layer (that
+ * was intercepting Pay button clicks).
+ */
+.debts-table-card.is-menu-open {
+  overflow: visible !important;
+}
+
+/* Table above pagination footer while a menu is open */
+.debts-table-card.is-menu-open .debts-table {
+  position: relative;
+  z-index: 2;
+}
+
+.debts-table-card .dash-table-foot {
+  position: relative;
+  z-index: 1;
+}
+
+.debts-table-card.is-menu-open .dash-table-foot {
+  z-index: 0;
+}
+
+.debts-actions-cell {
+  overflow: visible !important;
+  position: relative;
+}
+
+.debts-table tr.is-menu-open {
+  position: relative;
+  z-index: 5;
+}
+
+.debts-table tr.is-menu-open .debts-actions-cell {
+  z-index: 6;
+}
+
+.debts-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  z-index: 1;
+}
+
+.debts-more {
+  position: relative;
+  display: inline-flex;
+  z-index: 1;
+}
+
+.debts-more-btn.is-open,
+.debts-more-btn:hover {
+  background: var(--color-bg-muted);
+  color: var(--color-text-primary);
+}
+
+.debts-more-menu {
+  position: absolute;
+  right: 0;
+  /* Open upward so bottom rows clear pagination and card edge */
+  top: auto;
+  bottom: calc(100% + 4px);
+  min-width: 180px;
+  padding: 4px;
+  background: var(--color-bg-elevated, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.12),
+    0 2px 6px rgba(15, 23, 42, 0.06);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.debts-more-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 13.5px;
+  font-weight: 500;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.debts-more-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.debts-more-item:hover {
+  background: var(--color-bg-muted);
+}
+
+.debts-more-item.is-danger {
+  color: #dc2626;
+}
+
+.debts-more-item.is-danger svg {
+  color: #dc2626;
+}
+
+.debts-more-item.is-danger:hover {
+  background: var(--color-error-bg, #fef2f2);
+}
+
+[data-theme="dark"] .debts-more-menu {
+  background: #0c0c0c;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] .debts-more-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .debts-more-item.is-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+[data-theme="dark"] .debts-more-btn.is-open,
+[data-theme="dark"] .debts-more-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
 }
 
 /* ==================== Settings page ==================== */
@@ -3057,9 +3356,14 @@ html.is-maximized .sidebar {
     border-color 140ms var(--ease-out);
 }
 
-.settings-action-row:hover {
+.settings-action-row:hover:not(:disabled) {
   background: var(--color-bg-subtle);
   border-color: var(--color-border-dark);
+}
+
+.settings-action-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .settings-action-left {
@@ -3428,24 +3732,64 @@ html.is-maximized .sidebar {
   font-weight: 400;
 }
 
+/*
+ * Metric strips (debts / sales / stock / products / printing).
+ * Each segment is an equal 1fr column. Count variants use higher
+ * specificity than the base so they are not overridden to 5-col.
+ */
 .prod-metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  align-items: stretch;
+  width: 100%;
   overflow: hidden;
 }
 
+.prod-metrics.sales-metrics--3,
+.sales-metrics--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.prod-metrics.sales-metrics--4,
+.sales-metrics--4,
+.prod-metrics.stock-metrics,
+.stock-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .prod-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 76px;
   padding: 16px 18px;
   border-right: 1px solid var(--color-border);
-  min-width: 0;
 }
 
 .prod-metric:last-child {
   border-right: none;
 }
 
+.prod-metric .dash-metric-label,
+.prod-metric .dash-metric-value {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 960px) {
-  .prod-metrics {
+  .prod-metrics,
+  .prod-metrics.sales-metrics--3,
+  .prod-metrics.sales-metrics--4,
+  .prod-metrics.stock-metrics,
+  .sales-metrics--3,
+  .sales-metrics--4,
+  .stock-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4236,10 +4580,13 @@ label {
 .btn-secondary:disabled,
 .btn-danger:disabled,
 .dash-btn-primary:disabled,
-.modal-footer button:disabled {
+.modal-footer button:disabled,
+.modal-close-btn:disabled,
+.settings-btn-danger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
+  pointer-events: none;
 }
 
 .btn-icon {
@@ -5766,12 +6113,140 @@ button.bg-brand-500 {
   box-shadow: none;
 }
 
-[data-theme="dark"] .notification-dropdown,
-[data-theme="dark"] .notification-dropdown-header,
-[data-theme="dark"] .notification-dropdown-footer {
-  background: var(--color-bg-elevated);
-  border-color: var(--color-border);
+/* ==================== Notifications — dark mode ==================== */
+[data-theme="dark"] .notification-dropdown {
+  background: #0c0c0c;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 20px 40px -12px rgba(0, 0, 0, 0.65);
   color: var(--color-text-primary);
+}
+
+[data-theme="dark"] .notification-dropdown-header {
+  background: #0c0c0c;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .notification-dropdown-list {
+  background: #0c0c0c;
+}
+
+[data-theme="dark"] .notification-dropdown-footer {
+  background: #0a0a0a;
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .notif-count-pill {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-secondary);
+  border: none;
+}
+
+[data-theme="dark"] .notif-count-pill.has-items {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .notif-summary {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.22);
+}
+
+[data-theme="dark"] .notif-summary-label {
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .notif-summary-value {
+  color: #f4f4f5;
+}
+
+[data-theme="dark"] .notif-item {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .notif-item.is-action {
+  background: rgba(101, 101, 236, 0.12);
+  border-color: rgba(101, 101, 236, 0.28);
+}
+
+[data-theme="dark"] .notif-item.is-action:hover:not(:disabled) {
+  background: rgba(101, 101, 236, 0.2);
+  border-color: rgba(101, 101, 236, 0.45);
+}
+
+[data-theme="dark"] .notif-item-icon.debt {
+  background: rgba(248, 113, 113, 0.14);
+  color: #f87171;
+}
+
+[data-theme="dark"] .notif-item-icon.update {
+  background: rgba(101, 101, 236, 0.18);
+  color: #8b8bf5;
+}
+
+[data-theme="dark"] .notif-item-title,
+[data-theme="dark"] .notif-item-amount {
+  color: #f4f4f5;
+}
+
+[data-theme="dark"] .notif-item-meta {
+  color: #71717a;
+}
+
+[data-theme="dark"] .notif-item-desc {
+  color: #a1a1aa;
+}
+
+[data-theme="dark"] .notif-item-cta {
+  color: #8b8bf5;
+}
+
+[data-theme="dark"] .notif-pill.mild {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+}
+
+[data-theme="dark"] .notif-pill.hot {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .notification-empty-icon {
+  background: rgba(255, 255, 255, 0.06);
+  color: #71717a;
+}
+
+[data-theme="dark"] .notification-empty-title {
+  color: #f4f4f5;
+}
+
+[data-theme="dark"] .notification-empty-sub {
+  color: #71717a;
+}
+
+[data-theme="dark"] .notification-dropdown-footer button {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #f4f4f5;
+}
+
+[data-theme="dark"] .notification-dropdown-footer button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+[data-theme="dark"] .notif-bell:hover,
+[data-theme="dark"] .notif-bell.is-open {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f4f5;
+}
+
+[data-theme="dark"] .notification-badge {
+  border-color: #0c0c0c;
+  background: #ef4444;
+  color: #fff;
 }
 
 /* Dark modals — lifted charcoal card (Clerk-like) */
@@ -5872,22 +6347,82 @@ button.bg-brand-500 {
 [data-theme="dark"] .dropdown-menu {
   background: #0f0f0f;
   border: 1px solid var(--color-border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .dropdown-item {
+  color: var(--color-text-primary);
 }
 
 [data-theme="dark"] .dropdown-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 [data-theme="dark"] .dropdown-item.selected {
   background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-primary);
+}
+
+/* Light-theme checkmark SVG uses #171717 — swap to light stroke in dark */
+[data-theme="dark"] .dropdown-item.selected::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23f4f4f5' stroke-width='2.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
 }
 
 [data-theme="dark"] .dropdown-selected-label {
   color: var(--color-text-primary);
 }
 
+[data-theme="dark"] .dropdown-placeholder {
+  color: var(--color-text-muted, #71717a);
+}
+
 [data-theme="dark"] .dropdown-arrow {
   color: var(--color-text-muted);
+}
+
+[data-theme="dark"] .dropdown-trigger:hover .dropdown-arrow,
+[data-theme="dark"] .custom-dropdown.open .dropdown-arrow {
+  color: var(--color-text-secondary, #a1a1aa);
+}
+
+/* Badges were pure light-mode chips (#F4F4F5) — look broken on dark lists */
+[data-theme="dark"] .dropdown-item-badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-secondary, #a1a1aa);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .dropdown-item-desc {
+  color: var(--color-text-muted, #71717a);
+}
+
+[data-theme="dark"] .dropdown-item-empty {
+  color: var(--color-text-muted, #71717a);
+}
+
+/* White / near-white swatches need a visible edge on charcoal menus */
+[data-theme="dark"] .dropdown-color-swatch {
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* Modal dropdowns: match inset field surface */
+[data-theme="dark"] .modal-body .dropdown-menu,
+[data-theme="dark"] .modal-container .dropdown-menu {
+  background: #141414;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] .modal-body .dropdown-item:hover,
+[data-theme="dark"] .modal-container .dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .modal-body .custom-dropdown .dropdown-trigger:hover,
+[data-theme="dark"] .modal-container .custom-dropdown .dropdown-trigger:hover {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
 }
 
 [data-theme="dark"] input[type="text"],
@@ -6147,20 +6682,21 @@ button.bg-brand-500 {
 /* Shared table min-widths so columns stay readable while cards scroll */
 .stock-table { min-width: 880px; }
 .print-jobs-table { min-width: 820px; }
-.debts-table { min-width: 780px; }
+.debts-table { min-width: 920px; }
 .sales-table,
 #page-sales .dash-table,
 .prod-table,
 #page-products .dash-table { min-width: 720px; }
 .settings-users-table { min-width: 420px; }
 
-/* Metric card rows used across pages */
+/* Metric card rows used across pages — full width, equal segments */
 .stock-metrics,
 .sales-metrics--3,
 .sales-metrics--4,
 .prod-metrics {
   width: 100%;
   min-width: 0;
+  box-sizing: border-box;
 }
 
 /* Calendar full modal */
@@ -6181,7 +6717,13 @@ button.bg-brand-500 {
 
 /* ---- ≤ 1200px: start collapsing dense metric rows ---- */
 @media (max-width: 1200px) {
+  /* 5-col products → 3 equal; keep true 3-col pages at 3 */
   .prod-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .prod-metrics.sales-metrics--3,
+  .sales-metrics--3 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -6198,6 +6740,8 @@ button.bg-brand-500 {
     border-bottom: none;
   }
 
+  .prod-metrics.stock-metrics,
+  .prod-metrics.sales-metrics--4,
   .stock-metrics,
   .sales-metrics--4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6263,11 +6807,13 @@ button.bg-brand-500 {
     font-size: 17px;
   }
 
-  .sales-metrics--3 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .prod-metrics {
+  .prod-metrics,
+  .prod-metrics.sales-metrics--3,
+  .prod-metrics.sales-metrics--4,
+  .prod-metrics.stock-metrics,
+  .sales-metrics--3,
+  .sales-metrics--4,
+  .stock-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -6356,11 +6902,14 @@ button.bg-brand-500 {
     font-size: 18px;
   }
 
+  .prod-metrics,
+  .prod-metrics.sales-metrics--3,
+  .prod-metrics.sales-metrics--4,
+  .prod-metrics.stock-metrics,
   .stock-metrics,
   .sales-metrics--3,
-  .sales-metrics--4,
-  .prod-metrics {
-    grid-template-columns: 1fr 1fr;
+  .sales-metrics--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .settings-user-form {
@@ -6491,11 +7040,14 @@ button.bg-brand-500 {
     gap: 4px;
   }
 
+  .prod-metrics,
+  .prod-metrics.sales-metrics--3,
+  .prod-metrics.sales-metrics--4,
+  .prod-metrics.stock-metrics,
   .stock-metrics,
   .sales-metrics--3,
-  .sales-metrics--4,
-  .prod-metrics {
-    grid-template-columns: 1fr;
+  .sales-metrics--4 {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stock-metrics > *,
@@ -6504,6 +7056,10 @@ button.bg-brand-500 {
   .prod-metrics > .prod-metric {
     border-right: none !important;
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .prod-metrics > .prod-metric:last-child {
+    border-bottom: none;
   }
 
   .dash-welcome {

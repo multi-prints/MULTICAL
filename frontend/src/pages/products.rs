@@ -488,11 +488,24 @@ pub fn ProductsPage() -> impl IntoView {
         </div>
 
         <Show when=move || show_add.get()>
-            <div class="modal-overlay open" on:click=move |e| { if e.target() == e.current_target() { set_show_add.set(false); } }>
+            <div class="modal-overlay open" on:click=move |e| {
+                if e.target() == e.current_target() && !add_pending.get() {
+                    set_show_add.set(false);
+                }
+            }>
                 <div class="modal-container" style="max-width:520px">
                     <div class="modal-header">
                         <h3 class="modal-title">"Add New Product"</h3>
-                        <button type="button" class="modal-close-btn" on:click=move |_| set_show_add.set(false)>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            prop:disabled=move || add_pending.get()
+                            on:click=move |_| {
+                                if !add_pending.get() {
+                                    set_show_add.set(false);
+                                }
+                            }
+                        >
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -564,11 +577,27 @@ pub fn ProductsPage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn-secondary" on:click=move |_| { set_show_add.set(false); set_add_qty.set(0); set_sel_type.set("life_saver".into()); set_sel_color.set("white_red".into()); set_sel_size.set("1x1".into()); }>"Cancel"</button>
+                        <button
+                            type="button"
+                            class="btn-secondary"
+                            prop:disabled=move || add_pending.get()
+                            on:click=move |_| {
+                                if !add_pending.get() {
+                                    set_show_add.set(false);
+                                    set_add_qty.set(0);
+                                    set_sel_type.set("life_saver".into());
+                                    set_sel_color.set("white_red".into());
+                                    set_sel_size.set("1x1".into());
+                                }
+                            }
+                        >"Cancel"</button>
                         <button
                             type="button"
                             class="btn-primary"
                             on:click=move |_| {
+                                if add_pending.get() {
+                                    return;
+                                }
                                 add_payload.set_value((sel_type.get(), sel_color.get(), sel_size.get(), add_qty.get()));
                                 set_add_trigger.set(true);
                             }
@@ -580,11 +609,24 @@ pub fn ProductsPage() -> impl IntoView {
         </Show>
 
         <Show when=move || show_stock.get()>
-            <div class="modal-overlay open" on:click=move |e| { if e.target() == e.current_target() { set_show_stock.set(false); } }>
+            <div class="modal-overlay open" on:click=move |e| {
+                if e.target() == e.current_target() && !stock_pending.get() {
+                    set_show_stock.set(false);
+                }
+            }>
                 <div class="modal-container" style="max-width:500px">
                     <div class="modal-header">
                         <h3 class="modal-title">"Add Product Stock"</h3>
-                        <button type="button" class="modal-close-btn" on:click=move |_| set_show_stock.set(false)>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            prop:disabled=move || stock_pending.get()
+                            on:click=move |_| {
+                                if !stock_pending.get() {
+                                    set_show_stock.set(false);
+                                }
+                            }
+                        >
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -603,11 +645,23 @@ pub fn ProductsPage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn-secondary" on:click=move |_| set_show_stock.set(false)>"Cancel"</button>
+                        <button
+                            type="button"
+                            class="btn-secondary"
+                            prop:disabled=move || stock_pending.get()
+                            on:click=move |_| {
+                                if !stock_pending.get() {
+                                    set_show_stock.set(false);
+                                }
+                            }
+                        >"Cancel"</button>
                         <button
                             type="button"
                             class="btn-primary"
                             on:click=move |_| {
+                                if stock_pending.get() {
+                                    return;
+                                }
                                 if let (Some(pid), qty, cur) = (stock_pid.get(), stock_qty.get(), stock_pstock.get()) {
                                     if qty > 0 {
                                         stock_payload.set_value((pid, qty, cur));
@@ -623,11 +677,24 @@ pub fn ProductsPage() -> impl IntoView {
         </Show>
 
         <Show when=move || del_id.get().is_some()>
-            <div class="modal-overlay open" on:click=move |e| { if e.target() == e.current_target() { set_del_id.set(None); } }>
+            <div class="modal-overlay open" on:click=move |e| {
+                if e.target() == e.current_target() && !del_pending.get() {
+                    set_del_id.set(None);
+                }
+            }>
                 <div class="modal-container modal-sm">
                     <div class="modal-header">
                         <h3 class="modal-title">"Delete Product?"</h3>
-                        <button type="button" class="modal-close-btn" on:click=move |_| set_del_id.set(None)>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            prop:disabled=move || del_pending.get()
+                            on:click=move |_| {
+                                if !del_pending.get() {
+                                    set_del_id.set(None);
+                                }
+                            }
+                        >
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                     </div>
@@ -635,11 +702,23 @@ pub fn ProductsPage() -> impl IntoView {
                         <p class="modal-msg">"Are you sure you want to delete this product? This action cannot be undone."</p>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn-secondary" on:click=move |_| set_del_id.set(None)>"Cancel"</button>
+                        <button
+                            type="button"
+                            class="btn-secondary"
+                            prop:disabled=move || del_pending.get()
+                            on:click=move |_| {
+                                if !del_pending.get() {
+                                    set_del_id.set(None);
+                                }
+                            }
+                        >"Cancel"</button>
                         <button
                             type="button"
                             class="btn-danger"
                             on:click=move |_| {
+                                if del_pending.get() {
+                                    return;
+                                }
                                 if let Some(id) = del_id.get() {
                                     set_del_trigger.set(Some(id));
                                 }

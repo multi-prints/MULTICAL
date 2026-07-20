@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::db::Database;
-use crate::models::*;
+use crate::models::{IdArg, *};
 
 #[tauri::command]
 pub fn get_all_service_transactions(
@@ -46,9 +46,11 @@ pub fn get_total_service_earnings(db: State<'_, Database>) -> Result<f64, String
 #[tauri::command]
 pub fn update_service_transaction(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
     updates: ServiceTransactionUpdate,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.update_service_transaction(id, updates)?;
     Ok(SuccessResponse {
         success: true,
@@ -60,8 +62,10 @@ pub fn update_service_transaction(
 #[tauri::command]
 pub fn delete_service_transaction(
     db: State<'_, Database>,
-    id: i64,
+    id: IdArg,
 ) -> Result<SuccessResponse, String> {
+    let id = id.0;
+
     db.delete_service_transaction(id)?;
     Ok(SuccessResponse {
         success: true,

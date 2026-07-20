@@ -1,9 +1,72 @@
 #![allow(dead_code)]
 
 use leptos::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+
+/// Keep entity/FK ids exact across the JS IPC hop (JS numbers are only safe to 2^53-1).
+mod lossless_i64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = i64;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an i64 as a string or integer")
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<i64, E> {
+                Ok(v)
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<i64, E> {
+                i64::try_from(v).map_err(E::custom)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<i64, E> {
+                v.parse().map_err(E::custom)
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<i64, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+mod lossless_opt_i64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => serializer.serialize_some(&v.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<i64>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Opt {
+            Str(String),
+            I64(i64),
+            U64(u64),
+        }
+        match Option::<Opt>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Opt::Str(s)) if s.is_empty() => Ok(None),
+            Some(Opt::Str(s)) => s.parse().map(Some).map_err(serde::de::Error::custom),
+            Some(Opt::I64(v)) => Ok(Some(v)),
+            Some(Opt::U64(v)) => i64::try_from(v).map(Some).map_err(serde::de::Error::custom),
+        }
+    }
+}
 
 // ==================== Tauri Invoke via window.tauriInvoke ====================
 // Uses js_sys + JsFuture for reliable Promise handling
@@ -73,6 +136,7 @@ async fn tauri_invoke_inner<T: for<'de> Deserialize<'de>>(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Product {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub product_type: String,
@@ -129,6 +193,7 @@ pub struct ProductUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockItem {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub color: String,
     pub size: String,
@@ -180,15 +245,21 @@ fn default_sticker_type() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sale {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub r#type: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub product_name: Option<String>,
     pub product_type: Option<String>,
     pub sticker_type: Option<String>,
     pub quantity: Option<String>,
     pub amount: f64,
+    /// Cash collected so far (full amount when not debt).
+    #[serde(default)]
+    pub amount_paid: f64,
     pub payment_method: String,
     pub customer_name: String,
     pub is_debt: i64,
@@ -215,7 +286,9 @@ pub struct SalesPageData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewSale {
     pub r#type: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub product_name: Option<String>,
     pub product_type: Option<String>,
@@ -243,6 +316,7 @@ fn default_customer() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Debt {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub customer_name: String,
     pub phone: Option<String>,
@@ -252,11 +326,27 @@ pub struct Debt {
     pub due_date: Option<String>,
     pub description: Option<String>,
     pub status: String,
+    #[serde(default, with = "lossless_opt_i64")]
     pub sale_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_transaction_id: Option<i64>,
     pub paid_at: Option<String>,
     pub last_payment_at: Option<String>,
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub source_label: Option<String>,
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub source_detail: Option<String>,
+    #[serde(default)]
+    pub source_sale_type: Option<String>,
+    #[serde(default)]
+    pub source_product_type: Option<String>,
+    #[serde(default)]
+    pub source_color: Option<String>,
+    #[serde(default)]
+    pub source_sticker_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,13 +376,17 @@ pub struct NewDebt {
     pub remaining_amount: Option<f64>,
     pub due_date: Option<String>,
     pub description: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub sale_id: Option<i64>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_transaction_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebtPayment {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
+    #[serde(with = "lossless_i64")]
     pub debt_id: i64,
     pub amount: f64,
     pub payment_method: String,
@@ -302,6 +396,7 @@ pub struct DebtPayment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewDebtPayment {
+    #[serde(with = "lossless_i64")]
     pub debt_id: i64,
     pub amount: f64,
     #[serde(default = "default_payment")]
@@ -311,6 +406,7 @@ pub struct NewDebtPayment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub description: Option<String>,
@@ -338,19 +434,25 @@ fn default_one() -> i64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceTransaction {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_id: Option<i64>,
     pub service_name: String,
     pub quantity: f64,
     pub price: f64,
     pub amount: f64,
+    #[serde(default)]
+    pub amount_paid: f64,
     pub payment_method: String,
     pub customer_name: String,
     pub notes: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     pub stock_metres_used: f64,
     pub material_size: Option<String>,
     pub material_type: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub printing_material_id: Option<i64>,
     pub is_debt: i64,
     pub timestamp: Option<String>,
@@ -376,6 +478,7 @@ pub struct PrintingPageData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewServiceTransaction {
+    #[serde(default, with = "lossless_opt_i64")]
     pub service_id: Option<i64>,
     pub service_name: String,
     #[serde(default = "default_f64_one")]
@@ -387,11 +490,13 @@ pub struct NewServiceTransaction {
     #[serde(default = "default_customer")]
     pub customer_name: String,
     pub notes: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub stock_id: Option<i64>,
     #[serde(default)]
     pub stock_metres_used: f64,
     pub material_size: Option<String>,
     pub material_type: Option<String>,
+    #[serde(default, with = "lossless_opt_i64")]
     pub printing_material_id: Option<i64>,
     #[serde(default)]
     pub is_debt: i64,
@@ -403,6 +508,7 @@ fn default_f64_one() -> f64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrintingMaterial {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub name: String,
     pub material_type: String,
@@ -437,6 +543,7 @@ fn default_50() -> f64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
+    #[serde(with = "lossless_i64")]
     pub id: i64,
     pub username: String,
     pub role: String,
@@ -496,6 +603,7 @@ pub struct DashboardActivityItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardTopProduct {
+    #[serde(default, with = "lossless_opt_i64")]
     pub product_id: Option<i64>,
     pub name: String,
     pub quantity: i64,
@@ -532,6 +640,16 @@ macro_rules! api_fn {
     ($name:ident, $cmd:literal, $ret:ty) => {
         pub async fn $name() -> Result<$ret, String> {
             tauri_invoke_inner($cmd, &serde_json::json!({})).await
+        }
+    };
+    ($name:ident, $cmd:literal, $arg_name:ident: i64, $ret:ty) => {
+        pub async fn $name($arg_name: i64) -> Result<$ret, String> {
+            // Send ids as strings — JS Number cannot hold full i64 distributed ids.
+            tauri_invoke_inner(
+                $cmd,
+                &serde_json::json!({ stringify!($arg_name): $arg_name.to_string() }),
+            )
+            .await
         }
     };
     ($name:ident, $cmd:literal, $arg_name:ident: $arg_ty:ty, $ret:ty) => {
@@ -571,7 +689,7 @@ api_fn!(add_debt_payment, "add_debt_payment", payment: &NewDebtPayment, DebtPaym
 pub async fn get_debt_payments(debt_id: i64) -> Result<Vec<DebtPayment>, String> {
     tauri_invoke_inner(
         "get_debt_payments",
-        &serde_json::json!({ "debtId": debt_id }),
+        &serde_json::json!({ "debtId": debt_id.to_string() }),
     )
     .await
 }
@@ -613,6 +731,8 @@ api_fn!(delete_printing_material, "delete_printing_material", id: i64, SuccessRe
 api_fn!(get_all_users, "get_all_users", Vec<User>);
 api_fn!(delete_user, "delete_user", username: String, SuccessResponse);
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
+api_fn!(export_database, "export_database", SuccessResponse);
+api_fn!(import_database, "import_database", SuccessResponse);
 api_fn!(get_app_version, "get_app_version", String);
 api_fn!(get_platform, "get_platform", String);
 api_fn!(check_for_update, "check_for_update", UpdateResult);

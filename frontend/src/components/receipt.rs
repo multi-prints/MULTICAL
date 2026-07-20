@@ -28,6 +28,14 @@ fn format_multi_receipt_date(sales: &[Sale]) -> String {
         .unwrap_or_else(|| chrono::Local::now().format("%d/%m/%Y %I:%M %p").to_string())
 }
 
+fn format_multi_printing_receipt_date(jobs: &[ServiceTransaction]) -> String {
+    jobs.iter()
+        .filter_map(|j| j.timestamp.as_deref().and_then(parse_timestamp))
+        .max()
+        .map(|d| d.format("%d/%m/%Y %I:%M %p").to_string())
+        .unwrap_or_else(|| chrono::Local::now().format("%d/%m/%Y %I:%M %p").to_string())
+}
+
 fn receipt_num(id: i64) -> String {
     format!("RCP-{:04}", id)
 }
@@ -458,5 +466,154 @@ pub fn open_printing_receipt(
 ) {
     title.set("Print Printing Receipt".into());
     html.set(build_single_printing_receipt(job));
+    show.set(true);
+}
+
+fn build_multi_printing_receipt(jobs: &[ServiceTransaction]) -> String {
+    let total: f64 = jobs.iter().map(|j| j.amount).sum();
+    let total_metres: f64 = jobs.iter().map(|j| j.stock_metres_used).sum();
+    let total_display = fmt_money(total);
+    let nums: Vec<String> = jobs.iter().map(|j| printing_receipt_num(j.id)).collect();
+    let num_display = nums.join(", ");
+    let date = format_multi_printing_receipt_date(jobs);
+    let customers: Vec<&str> = jobs
+        .iter()
+        .map(|j| {
+            if j.customer_name.trim().is_empty() {
+                "Walk-in"
+            } else {
+                j.customer_name.as_str()
+            }
+        })
+        .collect();
+    let cust_display = if customers.is_empty() {
+        "Walk-in".to_string()
+    } else if customers.iter().all(|c| *c == customers[0]) {
+        customers[0].to_string()
+    } else {
+        format!("Multiple ({})", customers.len())
+    };
+    let payments: Vec<&str> = jobs
+        .iter()
+        .map(|j| payment_label(&j.payment_method))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let pay_display = payments.join(", ");
+    let debt_jobs = jobs.iter().filter(|j| j.is_debt > 0).count();
+
+    let meta_html = format!(
+        r#"<div class="receipt-meta-row"><span>Receipt Ref</span><span class="receipt-meta-compact">{num}</span></div>
+           <div class="receipt-meta-row"><span>Date</span><span>{date}</span></div>
+           <div class="receipt-meta-row"><span>Customer</span><span>{cust}</span></div>
+           <div class="receipt-meta-row"><span>Jobs</span><span>{count}</span></div>"#,
+        num = escape_html(&num_display),
+        date = escape_html(&date),
+        cust = escape_html(&cust_display),
+        count = jobs.len(),
+    );
+
+    let items_html: String = jobs
+        .iter()
+        .map(|j| {
+            let service = if j.service_name.trim().is_empty() {
+                "Printing job"
+            } else {
+                j.service_name.as_str()
+            };
+            let material_bits: Vec<String> = [
+                j.material_size
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!("{}m", s)),
+                j.material_type
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let material_line = if material_bits.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", material_bits.join(" "))
+            };
+            let mut item_meta = format!("{:.1}m printed{}", j.stock_metres_used, material_line);
+            if j.is_debt > 0 {
+                item_meta.push_str(" · Debt");
+            }
+            format!(
+                r#"<div class="receipt-item-row">
+                    <div class="receipt-item-copy">
+                        <div class="receipt-item-name">{name}</div>
+                        <div class="receipt-item-meta">{meta}</div>
+                    </div>
+                    <div class="receipt-item-amount">{currency} {amount}</div>
+                </div>"#,
+                name = escape_html(service),
+                meta = escape_html(&item_meta),
+                currency = CURRENCY,
+                amount = fmt_money(j.amount),
+            )
+        })
+        .collect();
+
+    let debt_line = if debt_jobs > 0 {
+        format!(
+            r#"<div class="receipt-row"><span>On debt</span><span class="receipt-payment">{n} job(s)</span></div>"#,
+            n = debt_jobs
+        )
+    } else {
+        String::new()
+    };
+
+    let summary_html = format!(
+        r#"<div class="receipt-row"><span>Jobs</span><span>{count}</span></div>
+           <div class="receipt-row"><span>Metres</span><span>{metres:.1}m</span></div>
+           <div class="receipt-row"><span>Payment</span><span class="receipt-payment">{pay}</span></div>
+           {debt}
+           <div class="receipt-row"><span>Subtotal</span><span>{currency} {amount}</span></div>"#,
+        count = jobs.len(),
+        metres = total_metres,
+        pay = escape_html(&pay_display),
+        debt = debt_line,
+        currency = CURRENCY,
+        amount = total_display,
+    );
+
+    let total_html = format!(
+        r#"<span>TOTAL</span><span>{currency} {amount}</span>"#,
+        currency = CURRENCY,
+        amount = total_display,
+    );
+
+    build_receipt_shell(
+        "Printing Summary Receipt",
+        "Service Details",
+        meta_html,
+        items_html,
+        summary_html,
+        total_html,
+    )
+}
+
+pub fn open_multi_printing_receipt(
+    jobs: &[ServiceTransaction],
+    show: WriteSignal<bool>,
+    html: WriteSignal<String>,
+    title: WriteSignal<String>,
+) {
+    if jobs.is_empty() {
+        return;
+    }
+    if jobs.len() == 1 {
+        open_printing_receipt(&jobs[0], show, html, title);
+        return;
+    }
+    title.set(format!("Print {} Jobs Receipt", jobs.len()));
+    html.set(build_multi_printing_receipt(jobs));
     show.set(true);
 }
