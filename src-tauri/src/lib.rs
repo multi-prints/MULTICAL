@@ -47,9 +47,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Get app data directory for database
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                format!("Failed to get app data directory: {e}")
-            })?;
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("Failed to get app data directory: {e}"))?;
 
             std::fs::create_dir_all(&app_data_dir).map_err(|e| {
                 format!(
