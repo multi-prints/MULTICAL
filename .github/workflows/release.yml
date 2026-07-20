@@ -111,30 +111,50 @@ jobs:
           # Extract host portion we expect to find as a string in the binary
           HOST=$(echo "$TURSO_DATABASE_URL" | sed -E 's#^libsql://##; s#^https://##; s#/.*##')
           echo "Looking for host string in binary: $HOST"
+
+          # Windows ships multiprints.exe; Linux ships multiprints. Prefer .exe first
+          # so Git Bash does not latch onto a non-existent extension-less path.
           BIN=""
-          if [ -f target/release/multiprints ]; then
-            BIN=target/release/multiprints
-          elif [ -f target/release/multiprints.exe ]; then
-            BIN=target/release/multiprints.exe
-          else
-            BIN=$(find target/release -maxdepth 2 -type f \( -name multiprints -o -name multiprints.exe \) | head -1 || true)
+          for cand in \
+            target/release/multiprints.exe \
+            target/release/multiprints \
+            target/x86_64-pc-windows-msvc/release/multiprints.exe
+          do
+            if [ -f "$cand" ]; then
+              BIN="$cand"
+              break
+            fi
+          done
+          if [ -z "${BIN}" ]; then
+            BIN=$(find target/release -maxdepth 3 -type f \( -name 'multiprints.exe' -o -name 'multiprints' \) | head -1 || true)
           fi
           if [ -z "${BIN}" ] || [ ! -f "$BIN" ]; then
             echo "::error::Could not locate multiprints binary under target/release"
             find target/release -maxdepth 3 -type f | head -50 || true
             exit 1
           fi
-          echo "Checking binary: $BIN ($(wc -c < "$BIN") bytes)"
-          if ! strings "$BIN" | grep -F "$HOST" >/dev/null; then
-            echo "::error::Turso host '$HOST' not found in binary — embed failed"
-            # Show whether generated embed module had PRESENT=true
-            find target -name embedded_turso.rs | while read f; do
-              echo "---- $f ----"
-              head -5 "$f" || true
-            done
-            exit 1
-          fi
-          echo "OK: Turso host is embedded in $BIN"
+
+          # Prefer Python byte search — `strings` is unreliable/missing on Windows runners.
+          python3 - "$BIN" "$HOST" <<'PY'
+          import sys
+          from pathlib import Path
+
+          bin_path = Path(sys.argv[1])
+          host = sys.argv[2].encode("utf-8")
+          data = bin_path.read_bytes()
+          print(f"Checking binary: {bin_path} ({len(data)} bytes)")
+          if host not in data:
+              print(f"::error::Turso host {host!r} not found in binary — embed failed")
+              # Dump embed module status for diagnosis
+              for p in Path("target").rglob("embedded_turso.rs"):
+                  print(f"---- {p} ----")
+                  try:
+                      print(p.read_text()[:400])
+                  except Exception as e:
+                      print(e)
+              sys.exit(1)
+          print(f"OK: Turso host is embedded in {bin_path}")
+          PY
 
       - name: List build artifacts
         run: |
