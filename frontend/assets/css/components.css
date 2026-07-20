@@ -26,6 +26,8 @@
   color: var(--color-text-primary, #1d2129);
   border: 1px solid var(--color-frame-border, rgba(17, 24, 39, 0.1));
   border-radius: var(--window-radius);
+  /* No CSS drop-shadow — native window shadow is also disabled in tauri config */
+  box-shadow: none;
 }
 
 /* ---- Undecorated window resize grips ---- */

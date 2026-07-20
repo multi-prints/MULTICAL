@@ -67,7 +67,7 @@ pub fn run() {
 
             let db_path = app_data_dir.join("multiprints.db");
 
-            // Initialize database (local open is fast; Turso sync runs in background).
+            // Initialize database (local open is fast; first Turso pull is timed below).
             // Never hard-crash without a log — Windows release has no console.
             let database = match Database::new(db_path) {
                 Ok(db) => db,
@@ -78,10 +78,27 @@ pub fn run() {
                 }
             };
 
-            // Initialize default users (local; writes may best-effort sync later)
+            // Pull multi-PC data BEFORE seeding defaults so remote users/products appear.
+            // Cap wait so a flaky network cannot hang the window forever.
+            if database.has_turso() {
+                write_startup_log(&app_data_dir, "Starting initial Turso sync…");
+                match database.try_initial_sync(std::time::Duration::from_secs(12)) {
+                    Ok(true) => write_startup_log(&app_data_dir, "Initial Turso sync OK"),
+                    Ok(false) => write_startup_log(
+                        &app_data_dir,
+                        "Initial Turso sync timed out — continuing with local replica",
+                    ),
+                    Err(e) => write_startup_log(
+                        &app_data_dir,
+                        &format!("Initial Turso sync error (offline OK): {e}"),
+                    ),
+                }
+            }
+
+            // Seed defaults only if still missing after the pull
             auth_manager.init_default_users(&database);
 
-            // Pull/push Turso after the window can show — do not block setup on the network
+            // Keep pulling/pushing in the background for multi-PC live updates
             database.spawn_background_sync();
 
             // Store database and auth as managed state

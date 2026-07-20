@@ -198,13 +198,17 @@
 }
 
 /* ==================== GLOBAL STYLES ==================== */
-/* Transparent host so ApexShot-style rounded window corners clip correctly */
+/*
+ * Host fill matches chrome so non-transparent platforms (Windows WebView2)
+ * don't show a halo/shadow in the corners outside the rounded .app-frame.
+ * On transparent Linux windows the same chrome color is harmless.
+ */
 html {
   font-size: 16px;
   text-size-adjust: 100%;
   height: 100%;
   margin: 0;
-  background: transparent;
+  background: var(--color-chrome, #ffffff);
 }
 
 html,
@@ -214,7 +218,7 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: transparent;
+  background: var(--color-chrome, #ffffff);
 }
 
 body {

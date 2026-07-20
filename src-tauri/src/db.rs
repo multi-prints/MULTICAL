@@ -127,27 +127,33 @@ impl Database {
 
         // Prefer Turso replica path when credentials exist, but never hard-fail
         // startup if the embedded replica cannot be opened (common on Windows with
-        // file locks, corrupt replicas, or TLS/runtime issues). Fall back to local.
+        // file locks, corrupt replicas, or TLS/runtime issues). Fall back carefully
+        // so we do not abandon an existing replica that still has business data.
+        let sync_path = data_dir.join(SYNC_DB_FILE);
         let mut active_db_path = if turso_config.is_some() {
-            data_dir.join(SYNC_DB_FILE)
+            sync_path.clone()
         } else {
             db_path.clone()
         };
 
         // Build the embedded replica connection, but do NOT block startup on a full
-        // network sync. Background sync runs after the UI is up (see spawn_background_sync).
+        // network sync here. try_initial_sync / spawn_background_sync handle that.
         let mut sync_db = None;
         let mut turso_active = false;
         if let Some(config) = turso_config.clone() {
-            let sync_path = active_db_path.clone();
+            let path_for_build = active_db_path.clone();
             match tauri::async_runtime::block_on(async move {
-                Builder::new_synced_database(&sync_path, config.database_url, config.auth_token)
-                    .read_your_writes(true)
-                    .remote_writes(false)
-                    .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
-                    .build()
-                    .await
-                    .map_err(|e| e.to_string())
+                Builder::new_synced_database(
+                    &path_for_build,
+                    config.database_url,
+                    config.auth_token,
+                )
+                .read_your_writes(true)
+                .remote_writes(false)
+                .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
+                .build()
+                .await
+                .map_err(|e| e.to_string())
             }) {
                 Ok(db) => {
                     sync_db = Some(Arc::new(db));
@@ -155,10 +161,14 @@ impl Database {
                 }
                 Err(e) => {
                     eprintln!(
-                        "Turso replica init failed ({}); falling back to local SQLite so the app can start: {}",
+                        "Turso replica init failed ({}); keeping offline open so the app can start: {}",
                         turso_source, e
                     );
-                    active_db_path = db_path.clone();
+                    // Keep multiprints-sync.db if it already exists (has last-known multi-PC data).
+                    // Only fall all the way back to multiprints.db when there is no replica yet.
+                    if !sync_path.exists() {
+                        active_db_path = db_path.clone();
+                    }
                 }
             }
         }
@@ -190,6 +200,7 @@ impl Database {
             conn: Mutex::new(conn),
             sync_db,
             db_path: active_db_path.clone(),
+            // None until a real sync succeeds — first reads must be allowed to pull.
             last_sync_at: Mutex::new(None),
         };
 
@@ -206,12 +217,8 @@ impl Database {
         }
 
         if turso_active {
-            // Prevent schema/user bootstrap from forcing a network sync before the UI opens.
-            if let Ok(mut last) = db.last_sync_at.lock() {
-                *last = Some(Instant::now());
-            }
             println!(
-                "Database initialized in Turso sync mode at: {:?} (config: {}; sync deferred to background)",
+                "Database initialized in Turso sync mode at: {:?} (config: {}; awaiting initial sync)",
                 active_db_path, turso_source
             );
         } else {
@@ -223,11 +230,64 @@ impl Database {
         Ok(db)
     }
 
+    /// Whether Turso sync is configured for this process.
+    pub fn has_turso(&self) -> bool {
+        self.sync_db.is_some()
+    }
+
+    /// Best-effort first pull so multi-PC data is present before default users / UI load.
+    /// Returns Ok(true) if a sync completed, Ok(false) if Turso is not configured.
+    pub fn try_initial_sync(&self, timeout: Duration) -> Result<bool, String> {
+        let Some(sync_db) = self.sync_db.clone() else {
+            return Ok(false);
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        tauri::async_runtime::spawn(async move {
+            let result = sync_db.sync().await.map(|_| ()).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(())) => {
+                if let Ok(mut last) = self.last_sync_at.lock() {
+                    *last = Some(Instant::now());
+                }
+                // Ensure the rusqlite handle sees commits written by libsql into the same file.
+                self.checkpoint_wal();
+                println!("Initial Turso sync completed within {:?}", timeout);
+                Ok(true)
+            }
+            Ok(Err(e)) => {
+                eprintln!("Initial Turso sync failed: {}", e);
+                Err(e)
+            }
+            Err(_) => {
+                // Sync continues in the background task; do not mark last_sync_at so
+                // subsequent reads still attempt a pull until one succeeds.
+                eprintln!(
+                    "Initial Turso sync still running after {:?} — UI will show local replica and keep syncing",
+                    timeout
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    /// Force WAL checkpoint so readers on this connection see the latest pages.
+    fn checkpoint_wal(&self) {
+        if let Ok(conn) = self.local_conn() {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        }
+    }
+
     /// Kick off a non-blocking Turso pull/push after the window is shown.
     pub fn spawn_background_sync(&self) {
         let Some(sync_db) = self.sync_db.clone() else {
             return;
         };
+        // Share last_sync marker by re-syncing through a dedicated path isn't possible
+        // without Arc; background success still helps the next maybe_sync cycle.
         tauri::async_runtime::spawn(async move {
             match sync_db.sync().await {
                 Ok(_) => {
@@ -409,6 +469,8 @@ impl Database {
             if let Ok(mut last) = self.last_sync_at.lock() {
                 *last = Some(Instant::now());
             }
+            // libsql writes into the same file — checkpoint so this connection sees them.
+            self.checkpoint_wal();
             Ok(())
         } else {
             Ok(())
