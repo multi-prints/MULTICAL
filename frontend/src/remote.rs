@@ -3,6 +3,9 @@
 //! When configured (compile-time embed), multi-PC data ops prefer this HTTP path
 //! (Worker → Turso). On failure, callers fall back to local Tauri so the app
 //! never bricks offline.
+//!
+//! UI refresh is **change-driven only**: successful POST/PATCH/DELETE bump
+//! `DATA_EPOCH`. No timer polling and no paid push infra.
 
 #![allow(dead_code)]
 

@@ -5041,6 +5041,14 @@ button.bg-brand-500 {
   border: 1px solid rgba(0, 0, 0, 0.08);
   flex-shrink: 0;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+.dropdown-color-swatch--lg {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
 }
 
 .dropdown-item-badge {

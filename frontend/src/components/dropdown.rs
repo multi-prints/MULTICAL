@@ -5,7 +5,10 @@ use wasm_bindgen::{closure::Closure, JsCast};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DropdownPreview {
+    /// Solid color chip (CSS hex, e.g. `#ef4444`).
     Color(String),
+    /// Sticker stock: solid colored film, or reflective film with stripe overlay.
+    Stock { color_hex: String, reflective: bool },
     Product {
         product_type: String,
         color: Option<String>,
@@ -53,6 +56,25 @@ impl DropdownItem {
         self.color_hex = hex.map(|h| h.into());
         self
     }
+    /// Stock roll preview — uses the same reflective / colored look as the stock list.
+    pub fn with_stock_preview(
+        mut self,
+        color: &str,
+        hex: Option<&str>,
+        sticker_type: &str,
+    ) -> Self {
+        let color_hex = hex
+            .map(str::to_string)
+            .unwrap_or_else(|| get_color_hex(color).to_string());
+        let reflective = sticker_type.eq_ignore_ascii_case("reflective");
+        self.preview = Some(DropdownPreview::Stock {
+            color_hex: color_hex.clone(),
+            reflective,
+        });
+        self.color = Some(color.into());
+        self.color_hex = Some(color_hex);
+        self
+    }
     pub fn with_product_preview(mut self, product_type: &str, color: Option<&str>) -> Self {
         self.preview = Some(DropdownPreview::Product {
             product_type: product_type.into(),
@@ -60,6 +82,49 @@ impl DropdownItem {
         });
         self
     }
+}
+
+fn hex_luminance(hex: &str) -> f32 {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() < 6 {
+        return 0.5;
+    }
+    let parse = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(128) as f32 / 255.0;
+    let r = parse(0);
+    let g = parse(2);
+    let b = parse(4);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Match stock page reflective swatches (stripe overlay; visible on light bases).
+fn reflective_swatch_css(hex: &str) -> String {
+    if hex_luminance(hex) > 0.72 {
+        format!(
+            "background: \
+repeating-linear-gradient(135deg, \
+rgba(71,85,105,0.48) 0 2px, \
+rgba(255,255,255,0.7) 2px 5px, \
+rgba(148,163,184,0.42) 5px 7px, \
+rgba(255,255,255,0.2) 7px 10px), \
+linear-gradient(145deg, #ffffff 0%, {hex} 48%, #dbe3ee 100%); \
+border: 1px solid #a78bfa;"
+        )
+    } else {
+        format!(
+            "background: \
+repeating-linear-gradient(135deg, rgba(255,255,255,0.85) 0 4px, rgba(255,255,255,0.25) 4px 8px), {hex}; \
+border: 1px solid #c4b5fd;"
+        )
+    }
+}
+
+fn colored_swatch_css(hex: &str) -> String {
+    let border = if hex_luminance(hex) > 0.85 {
+        "border: 1px solid rgba(15,23,42,0.18);"
+    } else {
+        "border: 1px solid rgba(0,0,0,0.08);"
+    };
+    format!("background-color: {hex}; {border}")
 }
 
 fn get_color_hex(name: &str) -> &'static str {
@@ -105,6 +170,22 @@ fn render_dropdown_preview(preview: &DropdownPreview, compact: bool) -> AnyView 
         DropdownPreview::Color(hex) => {
             let class = "dropdown-color-swatch";
             view! { <span class=class style=format!("background-color: {}", hex)></span> }.into_any()
+        }
+        DropdownPreview::Stock {
+            color_hex,
+            reflective,
+        } => {
+            let style = if *reflective {
+                reflective_swatch_css(color_hex)
+            } else {
+                colored_swatch_css(color_hex)
+            };
+            let cls = if compact {
+                "dropdown-color-swatch"
+            } else {
+                "dropdown-color-swatch dropdown-color-swatch--lg"
+            };
+            view! { <span class=cls style=style></span> }.into_any()
         }
         DropdownPreview::Product { product_type, color } => {
             match product_type.as_str() {

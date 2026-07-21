@@ -416,7 +416,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         remaining as u64
                     ),
                 )
-                .with_color(&s.color, Some(color_hex))
+                .with_stock_preview(&s.color, Some(color_hex), &s.sticker_type)
                 .with_badge(&format!("{} rolls", (remaining / 50.0).floor() as u64))
             })
             .collect::<Vec<_>>()

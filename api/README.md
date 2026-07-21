@@ -113,7 +113,7 @@ The Leptos frontend embeds `MULTIPRINTS_API_BASE_URL` + `MULTIPRINTS_API_SECRET`
 
 - products / stock / materials / sales / printing jobs prefer **this API**
 - on network failure, **local Tauri DB still works** (offline-safe)
-- UI refetches **only after a mutation** (add/edit/delete) — no timer polling
+- UI refetches **only after a mutation on this PC** (add/edit/delete) — no timer polling, stays on free Workers
 
 ### Release CI secrets
 

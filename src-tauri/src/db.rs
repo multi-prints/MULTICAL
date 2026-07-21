@@ -637,20 +637,25 @@ impl Database {
         }
     }
 
-    /// Pull from Turso when needed. `force` always syncs (writes).
-    /// Ordinary reads only sync if the throttle window has elapsed.
-    /// Read failures never block the UI — local replica stays available offline.
+    /// Pull from Turso when needed. `force` always syncs (writes / explicit).
+    ///
+    /// Ordinary reads **never** block the UI thread on network I/O. On Windows,
+    /// `block_on(sync)` from a Tauri command after the app sat idle was a major
+    /// source of “Not Responding”. Background `spawn_background_sync` keeps the
+    /// replica fresh; reads only reopen the local handle when needed.
     fn maybe_sync(&self, force: bool) -> Result<(), String> {
         if self.sync_db.is_none() {
             return Ok(());
         }
 
         if !force {
-            if let Ok(last) = self.last_sync_at.lock() {
-                if let Some(at) = *last {
-                    if at.elapsed() < MIN_READ_SYNC_GAP {
-                        return Ok(());
-                    }
+            return Ok(());
+        }
+
+        if let Ok(last) = self.last_sync_at.lock() {
+            if let Some(at) = *last {
+                if at.elapsed() < MIN_READ_SYNC_GAP {
+                    return Ok(());
                 }
             }
         }
@@ -663,11 +668,9 @@ impl Database {
         self.conn.lock().map_err(|e| e.to_string())
     }
 
-    /// Read path: use local SQLite; occasionally best-effort pull from Turso.
+    /// Read path: local SQLite only. Network sync runs on the background thread.
     fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        // Best-effort only — never fail a read because the network is slow.
-        let _ = self.maybe_sync(false);
-        // Background sync may have pulled rows without going through maybe_sync.
+        // Reopen if background libsql rewrote the replica file (critical on Windows).
         self.apply_pending_reopen();
         self.local_conn()
     }

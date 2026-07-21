@@ -148,3 +148,5 @@ src/snippets/
 # Generated plans
 # =========================
 .plans/
+
+api/.api_secret

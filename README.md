@@ -95,10 +95,11 @@ export TURSO_AUTH_TOKEN="your-turso-auth-token"
 
 When Turso is configured, the app uses a synced local replica per PC and syncs with the shared Turso database. Local-only `multiprints.db` data is imported into the replica if the shared DB is empty.
 
-### Multi-PC live updates
-With Turso enabled on every PC:
-- Each open page auto-refreshes about every **12 seconds** (stock, products, sales, printing, debts, dashboard)
-- Writes push to Turso immediately; reads use the local replica and pull from Turso at most every ~8s (plus background replica sync)
+### Multi-PC data (free tier)
+With the Cloudflare Worker API embedded (recommended):
+- Open pages refresh **only after a successful mutation on this PC** — no timed API polling, no paid push services
+- Shared data is on Turso: other tills see it when they open/navigate a page (or after their own write)
+- Background Turso replica sync (local fallback path) continues; UI reads never block on network
 - Stock and product quantity changes use **relative atomic updates** so concurrent tills do not overwrite each other
 - Sales and printing jobs refuse insufficient stock/material instead of going negative
 
