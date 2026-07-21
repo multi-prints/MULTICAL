@@ -3,11 +3,15 @@ import { cors } from "hono/cors";
 import { requireApiSecret } from "./auth";
 import type { Env } from "./env";
 import { turso } from "./db";
+import { dashboard } from "./routes/dashboard";
+import { debts } from "./routes/debts";
 import { materials } from "./routes/materials";
 import { printing } from "./routes/printing";
 import { products } from "./routes/products";
 import { sales } from "./routes/sales";
+import { services } from "./routes/services";
 import { stock } from "./routes/stock";
+import { auth, users } from "./routes/users";
 
 type AppEnv = { Bindings: Env };
 
@@ -18,7 +22,7 @@ app.use(
   cors({
     origin: "*",
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Session-Token"],
   }),
 );
 
@@ -26,7 +30,8 @@ app.get("/", (c) =>
   c.json({
     name: c.env.APP_NAME ?? "MULTIPRINTS API",
     status: "ok",
-    docs: "See api/README.md — set TURSO_* and API_SECRET secrets, then deploy.",
+    coverage:
+      "products, stock, materials, sales, printing, debts, dashboard, users, auth, services",
   }),
 );
 
@@ -51,7 +56,7 @@ app.get("/health", async (c) => {
   }
 });
 
-// Everything below requires Authorization: Bearer <API_SECRET>
+// Shop API secret required for all /v1/*
 app.use("/v1/*", requireApiSecret);
 
 app.route("/v1/products", products);
@@ -59,6 +64,11 @@ app.route("/v1/stock", stock);
 app.route("/v1/materials", materials);
 app.route("/v1/sales", sales);
 app.route("/v1/printing", printing);
+app.route("/v1/debts", debts);
+app.route("/v1/dashboard", dashboard);
+app.route("/v1/users", users);
+app.route("/v1/auth", auth);
+app.route("/v1/services", services);
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 app.onError((err, c) => {
