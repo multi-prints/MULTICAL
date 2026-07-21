@@ -1,0 +1,22 @@
+{
+  "name": "multiprints-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Workers API for MULTIPRINTS (Turso backend)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.15",
+    "hono": "^4.9.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260721.1",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.113.0"
+  }
+}

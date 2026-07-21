@@ -36,6 +36,11 @@ yarn-error.log*
 .npm
 .yarn-integrity
 
+# Cloudflare Workers local secrets
+api/.dev.vars
+api/.wrangler/
+**/.wrangler/
+
 # =========================
 # Electron
 # =========================

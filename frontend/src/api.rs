@@ -1,10 +1,16 @@
 #![allow(dead_code)]
 
+use crate::remote;
 use leptos::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+
+/// After a successful write (local or remote), bump the live-refresh epoch.
+fn touch_live_data() {
+    remote::notify_data_changed();
+}
 
 /// Keep entity/FK ids exact across the JS IPC hop (JS numbers are only safe to 2^53-1).
 mod lossless_i64 {
@@ -567,9 +573,16 @@ pub struct UserInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessResponse {
+    #[serde(default = "default_true")]
     pub success: bool,
+    #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
     pub message: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -664,19 +677,158 @@ api_fn!(
     "get_dashboard_summary",
     DashboardSummary
 );
-api_fn!(get_all_products, "get_all_products", Vec<Product>);
-api_fn!(get_product, "get_product", id: i64, Option<Product>);
-api_fn!(add_product, "add_product", product: &NewProduct, Product);
-api_fn!(delete_product, "delete_product", id: i64, SuccessResponse);
+
+pub async fn get_all_products() -> Result<Vec<Product>, String> {
+    remote::prefer_remote_then_local(
+        "get_all_products",
+        async {
+            let page: ProductsPageData = remote::get_json("/v1/products?per_page=500").await?;
+            Ok(page.items)
+        },
+        async { tauri_invoke_inner("get_all_products", &serde_json::json!({})).await },
+    )
+    .await
+}
+
+pub async fn get_product(id: i64) -> Result<Option<Product>, String> {
+    remote::prefer_remote_then_local(
+        "get_product",
+        async {
+            match remote::get_json::<Product>(&format!("/v1/products/{id}")).await {
+                Ok(p) => Ok(Some(p)),
+                Err(e) if e.contains("404") || e.contains("Not found") => Ok(None),
+                Err(e) => Err(e),
+            }
+        },
+        async {
+            tauri_invoke_inner("get_product", &serde_json::json!({ "id": id.to_string() })).await
+        },
+    )
+    .await
+}
+
+pub async fn add_product(product: &NewProduct) -> Result<Product, String> {
+    let r = remote::prefer_remote_then_local(
+        "add_product",
+        async { remote::post_json::<_, Product>("/v1/products", product).await },
+        async {
+            tauri_invoke_inner("add_product", &serde_json::json!({ "product": product })).await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
+pub async fn delete_product(id: i64) -> Result<SuccessResponse, String> {
+    let r = remote::prefer_remote_then_local(
+        "delete_product",
+        async { remote::delete_json::<SuccessResponse>(&format!("/v1/products/{id}")).await },
+        async {
+            tauri_invoke_inner(
+                "delete_product",
+                &serde_json::json!({ "id": id.to_string() }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
 api_fn!(get_all_stock, "get_all_stock", Vec<StockItem>);
 api_fn!(get_stock, "get_stock", id: i64, Option<StockItem>);
-api_fn!(add_stock, "add_stock", item: &NewStockItem, StockItem);
-api_fn!(delete_stock, "delete_stock", id: i64, SuccessResponse);
+
+pub async fn add_stock(item: &NewStockItem) -> Result<StockItem, String> {
+    let r = remote::prefer_remote_then_local(
+        "add_stock",
+        async {
+            let body = serde_json::json!({
+                "color": item.color,
+                "size": item.size,
+                "sticker_type": item.sticker_type,
+                "rolls": item.rolls,
+                "metres_per_roll": item.metres_per_roll.unwrap_or(50.0),
+            });
+            remote::post_json::<_, StockItem>("/v1/stock", &body).await
+        },
+        async { tauri_invoke_inner("add_stock", &serde_json::json!({ "item": item })).await },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
+pub async fn delete_stock(id: i64) -> Result<SuccessResponse, String> {
+    let r = remote::prefer_remote_then_local(
+        "delete_stock",
+        async { remote::delete_json::<SuccessResponse>(&format!("/v1/stock/{id}")).await },
+        async {
+            tauri_invoke_inner("delete_stock", &serde_json::json!({ "id": id.to_string() })).await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
 api_fn!(get_all_sales, "get_all_sales", Vec<Sale>);
 api_fn!(get_today_sales, "get_today_sales", Vec<Sale>);
-api_fn!(add_sale, "add_sale", sale: &NewSale, Sale);
+
+pub async fn add_sale(sale: &NewSale) -> Result<Sale, String> {
+    let r = remote::prefer_remote_then_local(
+        "add_sale",
+        async {
+            let body = serde_json::json!({
+                "type": sale.r#type,
+                "product_id": sale.product_id,
+                "stock_id": sale.stock_id,
+                "product_name": sale.product_name,
+                "product_type": sale.product_type,
+                "sticker_type": sale.sticker_type,
+                "quantity": sale.quantity,
+                "amount": sale.amount,
+                "payment_method": sale.payment_method,
+                "customer_name": sale.customer_name,
+                "is_debt": sale.is_debt,
+                "stock_metres_used": sale.stock_metres_used,
+            });
+            remote::post_json::<_, Sale>("/v1/sales", &body).await
+        },
+        async { tauri_invoke_inner("add_sale", &serde_json::json!({ "sale": sale })).await },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
 api_fn!(get_today_total_sales, "get_today_total_sales", f64);
-api_fn!(delete_sale, "delete_sale", id: i64, SuccessResponse);
+
+pub async fn delete_sale(id: i64) -> Result<SuccessResponse, String> {
+    let r = remote::prefer_remote_then_local(
+        "delete_sale",
+        async { remote::delete_json::<SuccessResponse>(&format!("/v1/sales/{id}")).await },
+        async {
+            tauri_invoke_inner("delete_sale", &serde_json::json!({ "id": id.to_string() })).await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
 api_fn!(get_all_debts, "get_all_debts", Vec<Debt>);
 api_fn!(get_pending_debts, "get_pending_debts", Vec<Debt>);
 api_fn!(add_debt, "add_debt", debt: &NewDebt, Debt);
@@ -708,7 +860,42 @@ api_fn!(
     "get_today_service_transactions",
     Vec<ServiceTransaction>
 );
-api_fn!(add_service_transaction, "add_service_transaction", transaction: &NewServiceTransaction, ServiceTransaction);
+pub async fn add_service_transaction(
+    transaction: &NewServiceTransaction,
+) -> Result<ServiceTransaction, String> {
+    let r = remote::prefer_remote_then_local(
+        "add_service_transaction",
+        async {
+            let body = serde_json::json!({
+                "service_name": transaction.service_name,
+                "quantity": transaction.quantity,
+                "price": transaction.price,
+                "amount": transaction.amount,
+                "payment_method": transaction.payment_method,
+                "customer_name": transaction.customer_name,
+                "notes": transaction.notes,
+                "printing_material_id": transaction.printing_material_id,
+                "stock_metres_used": transaction.stock_metres_used,
+                "material_size": transaction.material_size,
+                "material_type": transaction.material_type,
+                "is_debt": transaction.is_debt,
+            });
+            remote::post_json::<_, ServiceTransaction>("/v1/printing/jobs", &body).await
+        },
+        async {
+            tauri_invoke_inner(
+                "add_service_transaction",
+                &serde_json::json!({ "transaction": transaction }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
 api_fn!(
     get_today_total_service_earnings,
     "get_today_total_service_earnings",
@@ -719,15 +906,93 @@ api_fn!(
     "get_total_service_earnings",
     f64
 );
-api_fn!(delete_service_transaction, "delete_service_transaction", id: i64, SuccessResponse);
-api_fn!(
-    get_all_printing_materials,
-    "get_all_printing_materials",
-    Vec<PrintingMaterial>
-);
+pub async fn delete_service_transaction(id: i64) -> Result<SuccessResponse, String> {
+    let r = remote::prefer_remote_then_local(
+        "delete_service_transaction",
+        async { remote::delete_json::<SuccessResponse>(&format!("/v1/printing/jobs/{id}")).await },
+        async {
+            tauri_invoke_inner(
+                "delete_service_transaction",
+                &serde_json::json!({ "id": id.to_string() }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MaterialsListResponse {
+    items: Vec<PrintingMaterial>,
+}
+
+pub async fn get_all_printing_materials() -> Result<Vec<PrintingMaterial>, String> {
+    remote::prefer_remote_then_local(
+        "get_all_printing_materials",
+        async {
+            let r: MaterialsListResponse = remote::get_json("/v1/materials").await?;
+            Ok(r.items)
+        },
+        async { tauri_invoke_inner("get_all_printing_materials", &serde_json::json!({})).await },
+    )
+    .await
+}
+
 api_fn!(get_printing_material, "get_printing_material", id: i64, Option<PrintingMaterial>);
-api_fn!(add_printing_material, "add_printing_material", material: &NewPrintingMaterial, PrintingMaterial);
-api_fn!(delete_printing_material, "delete_printing_material", id: i64, SuccessResponse);
+
+pub async fn add_printing_material(
+    material: &NewPrintingMaterial,
+) -> Result<PrintingMaterial, String> {
+    let r = remote::prefer_remote_then_local(
+        "add_printing_material",
+        async {
+            let body = serde_json::json!({
+                "name": material.name,
+                "material_type": material.material_type,
+                "width": material.width,
+                "rolls": material.rolls,
+                "metres_per_roll": material.metres_per_roll,
+                "color": material.color,
+            });
+            remote::post_json::<_, PrintingMaterial>("/v1/materials", &body).await
+        },
+        async {
+            tauri_invoke_inner(
+                "add_printing_material",
+                &serde_json::json!({ "material": material }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
+pub async fn delete_printing_material(id: i64) -> Result<SuccessResponse, String> {
+    let r = remote::prefer_remote_then_local(
+        "delete_printing_material",
+        async { remote::delete_json::<SuccessResponse>(&format!("/v1/materials/{id}")).await },
+        async {
+            tauri_invoke_inner(
+                "delete_printing_material",
+                &serde_json::json!({ "id": id.to_string() }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
 api_fn!(get_all_users, "get_all_users", Vec<User>);
 api_fn!(delete_user, "delete_user", username: String, SuccessResponse);
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
@@ -784,24 +1049,65 @@ pub async fn add_user(
 }
 
 pub async fn get_products_page(query: &ProductsPageQuery) -> Result<ProductsPageData, String> {
-    tauri_invoke_inner("get_products_page", &serde_json::json!({ "query": query })).await
+    remote::prefer_remote_then_local(
+        "get_products_page",
+        async {
+            let page = query.page.unwrap_or(1);
+            let per = query.per_page.unwrap_or(50);
+            remote::get_json(&format!("/v1/products?page={page}&per_page={per}")).await
+        },
+        async {
+            tauri_invoke_inner("get_products_page", &serde_json::json!({ "query": query })).await
+        },
+    )
+    .await
 }
 
 pub async fn update_product(id: i64, updates: &ProductUpdate) -> Result<SuccessResponse, String> {
-    tauri_invoke_inner(
+    let r = remote::prefer_remote_then_local(
         "update_product",
-        &serde_json::json!({ "id": id, "updates": updates }),
+        async {
+            remote::patch_json::<_, SuccessResponse>(&format!("/v1/products/{id}"), updates).await
+        },
+        async {
+            tauri_invoke_inner(
+                "update_product",
+                &serde_json::json!({ "id": id, "updates": updates }),
+            )
+            .await
+        },
     )
-    .await
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
 }
 
 /// Relative product stock change — safe when multiple PCs update the same item.
 pub async fn adjust_product_stock(id: i64, delta: i64) -> Result<SuccessResponse, String> {
-    tauri_invoke_inner(
+    let r = remote::prefer_remote_then_local(
         "adjust_product_stock",
-        &serde_json::json!({ "id": id, "delta": delta }),
+        async {
+            remote::post_json::<_, SuccessResponse>(
+                &format!("/v1/products/{id}/adjust-stock"),
+                &serde_json::json!({ "delta": delta }),
+            )
+            .await
+        },
+        async {
+            tauri_invoke_inner(
+                "adjust_product_stock",
+                &serde_json::json!({ "id": id, "delta": delta }),
+            )
+            .await
+        },
     )
-    .await
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
 }
 
 pub async fn get_stock_by_color_size_type(
@@ -817,28 +1123,104 @@ pub async fn get_stock_by_color_size_type(
 }
 
 pub async fn get_stock_page(query: &StockPageQuery) -> Result<StockPageData, String> {
-    tauri_invoke_inner("get_stock_page", &serde_json::json!({ "query": query })).await
+    remote::prefer_remote_then_local(
+        "get_stock_page",
+        async {
+            let page = query.page.unwrap_or(1);
+            let per = query.per_page.unwrap_or(50);
+            remote::get_json(&format!("/v1/stock?page={page}&per_page={per}")).await
+        },
+        async {
+            tauri_invoke_inner("get_stock_page", &serde_json::json!({ "query": query })).await
+        },
+    )
+    .await
 }
 
 pub async fn update_stock(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
-    tauri_invoke_inner(
+    // Stock updates still local-only on Worker (no PATCH yet); keep Tauri path.
+    let r = tauri_invoke_inner(
         "update_stock",
         &serde_json::json!({ "id": id, "updates": updates }),
     )
-    .await
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
 }
 
 /// Atomically add rolls to a stock item (safe across concurrent PCs).
 pub async fn add_stock_rolls(id: i64, rolls: i64) -> Result<SuccessResponse, String> {
-    tauri_invoke_inner(
+    let r = remote::prefer_remote_then_local(
         "add_stock_rolls",
-        &serde_json::json!({ "id": id, "rolls": rolls }),
+        async {
+            remote::post_json::<_, SuccessResponse>(
+                &format!("/v1/stock/{id}/add-rolls"),
+                &serde_json::json!({ "rolls": rolls }),
+            )
+            .await
+        },
+        async {
+            tauri_invoke_inner(
+                "add_stock_rolls",
+                &serde_json::json!({ "id": id, "rolls": rolls }),
+            )
+            .await
+        },
+    )
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
+}
+
+pub async fn get_sales_page(query: &SalesPageQuery) -> Result<SalesPageData, String> {
+    remote::prefer_remote_then_local(
+        "get_sales_page",
+        async {
+            let page = query.page.unwrap_or(1);
+            let per = query.per_page.unwrap_or(50);
+            let search = query.search.clone().unwrap_or_default();
+            let q = urlencoding_lite(&search);
+            let raw: serde_json::Value =
+                remote::get_json(&format!("/v1/sales?page={page}&per_page={per}&search={q}"))
+                    .await?;
+            // Worker returns a subset of metrics; fill the rest for UI compatibility.
+            Ok(SalesPageData {
+                items: serde_json::from_value(raw.get("items").cloned().unwrap_or_default())
+                    .unwrap_or_default(),
+                total_count: raw.get("total_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                today_total: raw
+                    .get("today_total")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                all_revenue: raw
+                    .get("all_revenue")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                product_sales_count: raw
+                    .get("product_sales_count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+            })
+        },
+        async {
+            tauri_invoke_inner("get_sales_page", &serde_json::json!({ "query": query })).await
+        },
     )
     .await
 }
 
-pub async fn get_sales_page(query: &SalesPageQuery) -> Result<SalesPageData, String> {
-    tauri_invoke_inner("get_sales_page", &serde_json::json!({ "query": query })).await
+fn urlencoding_lite(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "%20".into(),
+            _ => format!("%{:02X}", c as u32),
+        })
+        .collect()
 }
 
 pub async fn update_sale(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
@@ -893,7 +1275,23 @@ pub async fn get_service(id: i64) -> Result<Option<Service>, String> {
 }
 
 pub async fn get_printing_page(query: &PrintingPageQuery) -> Result<PrintingPageData, String> {
-    tauri_invoke_inner("get_printing_page", &serde_json::json!({ "query": query })).await
+    remote::prefer_remote_then_local(
+        "get_printing_page",
+        async {
+            let page = query.page.unwrap_or(1);
+            let per = query.per_page.unwrap_or(50);
+            let search = query.search.clone().unwrap_or_default();
+            let q = urlencoding_lite(&search);
+            remote::get_json(&format!(
+                "/v1/printing/jobs?page={page}&per_page={per}&search={q}"
+            ))
+            .await
+        },
+        async {
+            tauri_invoke_inner("get_printing_page", &serde_json::json!({ "query": query })).await
+        },
+    )
+    .await
 }
 
 pub async fn update_service_transaction(
@@ -920,11 +1318,28 @@ pub async fn update_printing_material(
 
 /// Atomically add rolls to a printing material (safe across concurrent PCs).
 pub async fn add_printing_material_rolls(id: i64, rolls: i64) -> Result<SuccessResponse, String> {
-    tauri_invoke_inner(
+    let r = remote::prefer_remote_then_local(
         "add_printing_material_rolls",
-        &serde_json::json!({ "id": id, "rolls": rolls }),
+        async {
+            remote::post_json::<_, SuccessResponse>(
+                &format!("/v1/materials/{id}/add-rolls"),
+                &serde_json::json!({ "rolls": rolls }),
+            )
+            .await
+        },
+        async {
+            tauri_invoke_inner(
+                "add_printing_material_rolls",
+                &serde_json::json!({ "id": id, "rolls": rolls }),
+            )
+            .await
+        },
     )
-    .await
+    .await;
+    if r.is_ok() {
+        touch_live_data();
+    }
+    r
 }
 
 pub async fn update_password(

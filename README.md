@@ -125,12 +125,17 @@ Releases are installed from GitHub Releases through the in-app update button.
 
 ```text
 MULTICAL/
+├── api/             # Cloudflare Workers HTTP API (Turso-backed, free edge host)
 ├── frontend/        # Leptos frontend source
-├── src-tauri/       # Tauri app shell and Rust backend
+├── src-tauri/       # Tauri app shell and local DB/sync
 ├── src/             # Generated Trunk build output
 ├── docs/            # Project notes and plans
 └── Cargo.toml       # Workspace manifest
 ```
+
+### Cloudflare API (optional multi-PC path)
+
+See [`api/README.md`](api/README.md). Host a free Worker that talks to the same Turso database — desktop clients can call HTTPS instead of dual-opening the embedded replica.
 
 ## Database Schema Highlights
 
