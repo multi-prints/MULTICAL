@@ -1,4 +1,6 @@
-use crate::api::{self, NewStockItem, StockItem, StockPageQuery};
+use crate::api::{
+    self, NewPrintingMaterial, NewStockItem, PrintingMaterial, StockItem, StockPageQuery,
+};
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
 use log::error;
@@ -1031,8 +1033,14 @@ const SYNONYMS: &[(&str, &str)] = &[
 ];
 
 #[component]
-pub fn StockPage() -> impl IntoView {
+pub fn StockPage(can_manage_materials: bool) -> impl IntoView {
+    // Page tab: stickers | materials
+    let (inventory_tab, set_inventory_tab) = signal("stickers".to_string());
+    // Modal tab when adding (can differ briefly; synced on open)
+    let (modal_tab, set_modal_tab) = signal("stickers".to_string());
+
     let (stock, set_stock) = signal(Vec::<StockItem>::new());
+    let (materials, set_materials) = signal(Vec::<PrintingMaterial>::new());
     let (total_rolls, set_total_rolls) = signal(0i64);
     let (total_metres, set_total_metres) = signal(0.0f64);
     let (remaining_metres, set_remaining_metres) = signal(0.0f64);
@@ -1050,10 +1058,19 @@ pub fn StockPage() -> impl IntoView {
     let (current_page, set_current_page) = signal(1u32);
     let (add_rolls_item, set_add_rolls_item) = signal(None::<StockItem>);
     let (add_rolls_value, set_add_rolls_value) = signal(String::new());
+    let (add_mat_rolls_item, set_add_mat_rolls_item) = signal(None::<PrintingMaterial>);
+    let (add_mat_rolls_value, set_add_mat_rolls_value) = signal(String::new());
     let (del_id, set_del_id) = signal(None::<i64>);
     let (del_label, set_del_label) = signal(String::new());
+    let (del_kind, set_del_kind) = signal("stock".to_string()); // "stock" | "material"
     let (loading, set_loading) = signal(true);
     let items_per_page = 10u32;
+
+    // Print material form fields
+    let (mat_name, set_mat_name) = signal(String::new());
+    let (mat_width, set_mat_width) = signal(String::new());
+    let (mat_rolls, set_mat_rolls) = signal("1".to_string());
+    let (mat_mpr, set_mat_mpr) = signal("50".to_string());
 
     let reload = move || {
         leptos::task::spawn_local(async move {
@@ -1072,11 +1089,14 @@ pub fn StockPage() -> impl IntoView {
                 }
                 Err(e) => error!("get_stock_page failed: {}", e),
             }
+            match api::get_all_printing_materials().await {
+                Ok(m) => set_materials.set(m),
+                Err(e) => error!("get_all_printing_materials failed: {}", e),
+            }
             set_loading.set(false);
         })
     };
 
-    // Initial load + page changes + multi-PC live refresh (syncs via Turso on each poll)
     let (live_tick, set_live_tick) = signal(0u64);
     create_effect(move |_| {
         let _ = current_page.get();
@@ -1087,7 +1107,7 @@ pub fn StockPage() -> impl IntoView {
         set_live_tick.update(|t| *t = t.wrapping_add(1));
     });
 
-    let reset_add_modal = move || {
+    let reset_sticker_form = move || {
         set_color.set(String::new());
         set_sticker_type.set("colored".into());
         set_rows.set(vec![SizeRow {
@@ -1097,6 +1117,16 @@ pub fn StockPage() -> impl IntoView {
             metres_per_roll: "50".into(),
         }]);
         set_next_row_id.set(1);
+    };
+    let reset_material_form = move || {
+        set_mat_name.set(String::new());
+        set_mat_width.set(String::new());
+        set_mat_rolls.set("1".into());
+        set_mat_mpr.set("50".into());
+    };
+    let reset_add_modal = move || {
+        reset_sticker_form();
+        reset_material_form();
     };
     let add_row = move || {
         let id = next_row_id.get();
@@ -1163,6 +1193,47 @@ pub fn StockPage() -> impl IntoView {
             ("In Stock", "status-badge--success")
         }
     };
+    let mat_remaining = |m: &PrintingMaterial| {
+        m.total_metres
+            - if m.metres_used.is_nan() {
+                0.0
+            } else {
+                m.metres_used
+            }
+    };
+    let mat_rolls_left = move |m: &PrintingMaterial| {
+        let rem = mat_remaining(m);
+        if m.metres_per_roll > 0.0 {
+            (rem / m.metres_per_roll).floor() as i64
+        } else {
+            (rem / 50.0).floor() as i64
+        }
+    };
+    let mat_status = move |m: &PrintingMaterial| {
+        let pct = if m.total_metres <= 0.0 {
+            0.0
+        } else {
+            mat_remaining(m) / m.total_metres * 100.0
+        };
+        if pct <= 0.0 {
+            ("Out of Stock", "status-badge--error")
+        } else if pct <= 20.0 {
+            ("Low Stock", "status-badge--warning")
+        } else {
+            ("In Stock", "status-badge--success")
+        }
+    };
+
+    // Materials metrics (client-side from full list)
+    let mat_metrics = move || {
+        let mats = materials.get();
+        let count = mats.len() as u32;
+        let rolls: i64 = mats.iter().map(|m| m.rolls).sum();
+        let total_m: f64 = mats.iter().map(|m| m.total_metres).sum();
+        let rem_m: f64 = mats.iter().map(mat_remaining).sum();
+        (count, rolls, total_m, rem_m)
+    };
+
     let row_total = move |r: &SizeRow| {
         r.rolls.parse::<f64>().unwrap_or(0.0)
             * if sticker_type.get() == "reflective" {
@@ -1178,12 +1249,18 @@ pub fn StockPage() -> impl IntoView {
             .sum::<i64>()
     };
     let total_metres_modal = move || rows.get().iter().map(row_total).sum::<f64>();
+    let mat_total_metres_preview = move || {
+        let rolls: f64 = mat_rolls.get().parse().unwrap_or(0.0);
+        let mpr: f64 = mat_mpr.get().parse().unwrap_or(0.0);
+        rolls * mpr
+    };
 
     let (adding_stock, set_adding_stock) = signal(false);
+    let (adding_material, set_adding_material) = signal(false);
     let (adding_rolls, set_adding_rolls) = signal(false);
-    let (deleting_stock, set_deleting_stock) = signal(false);
+    let (adding_mat_rolls, set_adding_mat_rolls) = signal(false);
+    let (deleting, set_deleting) = signal(false);
 
-    // ---- Actions ----
     let add_stock_action = {
         move |color: String, sticker_type: String, rows: Vec<SizeRow>| {
             if adding_stock.get() {
@@ -1225,21 +1302,66 @@ pub fn StockPage() -> impl IntoView {
             });
         }
     };
-    let delete_stock_action = {
-        move |id: i64| {
-            if deleting_stock.get() {
+
+    let add_material_action = {
+        move |_| {
+            if adding_material.get() {
                 return;
             }
-            set_deleting_stock.set(true);
+            let name = mat_name.get().trim().to_string();
+            let width: f64 = mat_width.get().parse().unwrap_or(0.0);
+            let rolls: i64 = mat_rolls.get().parse().unwrap_or(0);
+            let mpr: f64 = mat_mpr.get().parse().unwrap_or(0.0);
+            if name.is_empty() || width <= 0.0 || rolls <= 0 || mpr <= 0.0 {
+                return;
+            }
+            set_adding_material.set(true);
             leptos::task::spawn_local(async move {
-                let _ = api::delete_stock(id).await;
-                set_del_id.set(None);
-                set_del_label.set(String::new());
-                set_deleting_stock.set(false);
+                match api::add_printing_material(&NewPrintingMaterial {
+                    // DB still requires material_type; the name is what staff actually use.
+                    name: name.clone(),
+                    material_type: name,
+                    width,
+                    rolls,
+                    metres_per_roll: mpr,
+                    total_metres: Some(rolls as f64 * mpr),
+                    metres_used: 0.0,
+                    color: None,
+                })
+                .await
+                {
+                    Ok(_) => {
+                        set_show_add.set(false);
+                        set_inventory_tab.set("materials".into());
+                    }
+                    Err(e) => error!("add_printing_material failed: {}", e),
+                }
+                set_adding_material.set(false);
                 reload();
             });
         }
     };
+
+    let delete_action = {
+        move |id: i64, kind: String| {
+            if deleting.get() {
+                return;
+            }
+            set_deleting.set(true);
+            leptos::task::spawn_local(async move {
+                if kind == "material" {
+                    let _ = api::delete_printing_material(id).await;
+                } else {
+                    let _ = api::delete_stock(id).await;
+                }
+                set_del_id.set(None);
+                set_del_label.set(String::new());
+                set_deleting.set(false);
+                reload();
+            });
+        }
+    };
+
     let add_rolls_action = {
         move |id: i64, rolls: i64| {
             if adding_rolls.get() {
@@ -1259,8 +1381,27 @@ pub fn StockPage() -> impl IntoView {
         }
     };
 
+    let add_mat_rolls_action = {
+        move |id: i64, rolls: i64| {
+            if adding_mat_rolls.get() {
+                return;
+            }
+            set_adding_mat_rolls.set(true);
+            leptos::task::spawn_local(async move {
+                if let Err(e) = api::add_printing_material_rolls(id, rolls).await {
+                    error!("add_printing_material_rolls failed: {}", e);
+                } else {
+                    set_add_mat_rolls_item.set(None);
+                    set_add_mat_rolls_value.set(String::new());
+                }
+                set_adding_mat_rolls.set(false);
+                reload();
+            });
+        }
+    };
+
     let (query, set_query) = signal(String::new());
-    let filtered = move || {
+    let filtered_stock = move || {
         let q = query.get().trim().to_lowercase();
         let items = stock.get();
         if q.is_empty() {
@@ -1275,6 +1416,23 @@ pub fn StockPage() -> impl IntoView {
             })
             .collect::<Vec<_>>()
     };
+    let filtered_materials = move || {
+        let q = query.get().trim().to_lowercase();
+        let items = materials.get();
+        if q.is_empty() {
+            return items;
+        }
+        items
+            .into_iter()
+            .filter(|m| {
+                m.name.to_lowercase().contains(&q)
+                    || m.material_type.to_lowercase().contains(&q)
+                    || m.width.to_string().contains(&q)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let modal_busy = move || adding_stock.get() || adding_material.get();
 
     view! {
         <Show when=move || !loading.get() fallback=|| view! {
@@ -1285,8 +1443,8 @@ pub fn StockPage() -> impl IntoView {
         <div id="page-stock" class="dash">
             <div class="dash-table-head">
                 <div>
-                    <h2 class="dash-section-title">"Sticker stock"</h2>
-                    <p class="prod-sub">"Colored and reflective film inventory"</p>
+                    <h2 class="dash-section-title">"Inventory"</h2>
+                    <p class="prod-sub">"Sticker film and printing materials"</p>
                 </div>
                 <div class="dash-table-actions">
                     <label class="dash-search">
@@ -1298,287 +1456,989 @@ pub fn StockPage() -> impl IntoView {
                             placeholder="Search..."
                             prop:value=move || query.get()
                             on:input=move |ev| set_query.set(event_target_value(&ev))
-                            aria-label="Search stock"
+                            aria-label="Search inventory"
                         />
                     </label>
-                    <button
-                        type="button"
-                        id="btn-add-stock"
-                        class="dash-btn-primary"
-                        on:click=move |_| {
-                            reset_add_modal();
-                            set_show_add.set(true);
+                    {move || {
+                        let is_mat = inventory_tab.get() == "materials";
+                        let show_add_btn = !is_mat || can_manage_materials;
+                        if !show_add_btn {
+                            return ().into_any();
                         }
-                    >
-                        <span aria-hidden="true">"+"</span>
-                        " Add Stock"
-                    </button>
-                </div>
-            </div>
-
-            <div class="prod-metrics dash-card stock-metrics">
-                <div class="prod-metric">
-                    <p class="dash-metric-label">"Colors / SKUs"</p>
-                    <p class="dash-metric-value">{move || total_items()}</p>
-                </div>
-                <div class="prod-metric">
-                    <p class="dash-metric-label">"Total rolls"</p>
-                    <p class="dash-metric-value">{move || total_rolls.get()}</p>
-                </div>
-                <div class="prod-metric">
-                    <p class="dash-metric-label">"Total metres"</p>
-                    <p class="dash-metric-value">{move || format!("{}m", total_metres.get() as u64)}</p>
-                </div>
-                <div class="prod-metric">
-                    <p class="dash-metric-label">"Remaining"</p>
-                    <p class="dash-metric-value">{move || format!("{}m", remaining_metres.get() as u64)}</p>
-                </div>
-            </div>
-
-            <div class="dash-card dash-table-card">
-                <table class="dash-table stock-table">
-                    <thead>
-                        <tr>
-                            <th>"Type"</th>
-                            <th>"Color"</th>
-                            <th>"Width"</th>
-                            <th>"Rolls"</th>
-                            <th>"Total"</th>
-                            <th>"Used"</th>
-                            <th>"Remaining"</th>
-                            <th>"Rolls left"</th>
-                            <th>"Status"</th>
-                            <th>"Actions"</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {move || {
-                            let items = filtered();
-                            if items.is_empty() {
-                                return view! {
-                                    <tr>
-                                        <td colspan="10" class="dash-table-empty">
-                                            {if query.get().trim().is_empty() {
-                                                "No stock yet — add your first rolls."
-                                            } else {
-                                                "No stock matches your search."
-                                            }}
-                                        </td>
-                                    </tr>
-                                }.into_any();
-                            }
-                            items.into_iter().map(|item| {
-                                let id = item.id;
-                                let rem = remaining(&item);
-                                let left = rolls_left(&item);
-                                let (sl, sc) = status(&item);
-                                let typ = item.sticker_type.clone();
-                                let is_reflective = typ == "reflective";
-                                let type_cls = if is_reflective {
-                                    "dash-status is-warn"
-                                } else {
-                                    "dash-status is-info"
-                                };
-                                let type_label = if is_reflective { "Reflective" } else { "Colored" };
-                                let color_hex = get_hex(&item.color);
-                                let swatch_style = if is_reflective {
-                                    reflective_swatch_style(color_hex)
-                                } else {
-                                    // White / near-white need a stronger edge so the swatch isn't "empty"
-                                    let border = if hex_luminance(color_hex) > 0.85 {
-                                        "border: 1px solid rgba(15,23,42,0.18);"
+                        let label = if is_mat { " Add Material" } else { " Add Stock" };
+                        view! {
+                            <button
+                                type="button"
+                                id="btn-add-stock"
+                                class="dash-btn-primary"
+                                on:click=move |_| {
+                                    reset_add_modal();
+                                    set_modal_tab.set(if inventory_tab.get() == "materials" {
+                                        "materials".into()
                                     } else {
-                                        "border: 1px solid rgba(0,0,0,0.08);"
-                                    };
-                                    format!("background-color: {color_hex}; {border}")
-                                };
-                                let color_name = item.color.clone();
-                                let color_display = color_name.clone();
-                                let size = item.size.clone();
-                                let size_display = size.clone();
-                                let item_for_add = item.clone();
-                                let status_cls = match sc {
-                                    "status-badge--error" => "dash-status is-danger",
-                                    "status-badge--warning" => "dash-status is-warn",
-                                    _ => "dash-status is-ok",
-                                };
-                                view! {
-                                    <tr>
-                                        <td><span class=type_cls>{type_label}</span></td>
-                                        <td>
-                                            <div class="prod-color-cell">
-                                                <span class="prod-swatch" style=swatch_style></span>
-                                                <span class="dash-td-strong">{color_display}</span>
+                                        "stickers".into()
+                                    });
+                                    set_show_add.set(true);
+                                }
+                            >
+                                <span aria-hidden="true">"+"</span>
+                                {label}
+                            </button>
+                        }.into_any()
+                    }}
+                </div>
+            </div>
+
+            <div class="inventory-tabs" role="tablist" aria-label="Inventory type">
+                <button
+                    type="button"
+                    role="tab"
+                    class=move || if inventory_tab.get() == "stickers" { "is-active" } else { "" }
+                    prop:aria-selected=move || inventory_tab.get() == "stickers"
+                    on:click=move |_| {
+                        set_inventory_tab.set("stickers".into());
+                        set_query.set(String::new());
+                    }
+                >"Stickers"</button>
+                <button
+                    type="button"
+                    role="tab"
+                    class=move || if inventory_tab.get() == "materials" { "is-active" } else { "" }
+                    prop:aria-selected=move || inventory_tab.get() == "materials"
+                    on:click=move |_| {
+                        set_inventory_tab.set("materials".into());
+                        set_query.set(String::new());
+                    }
+                >"Print materials"</button>
+            </div>
+
+            // ---- Stickers tab ----
+            {move || if inventory_tab.get() == "stickers" {
+                view! {
+                    <div class="prod-metrics dash-card stock-metrics">
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Colors / SKUs"</p>
+                            <p class="dash-metric-value">{move || total_items()}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Total rolls"</p>
+                            <p class="dash-metric-value">{move || total_rolls.get()}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Total metres"</p>
+                            <p class="dash-metric-value">{move || format!("{}m", total_metres.get() as u64)}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Remaining"</p>
+                            <p class="dash-metric-value">{move || format!("{}m", remaining_metres.get() as u64)}</p>
+                        </div>
+                    </div>
+
+                    <div class="dash-card dash-table-card">
+                        <table class="dash-table stock-table">
+                            <thead>
+                                <tr>
+                                    <th>"Type"</th>
+                                    <th>"Color"</th>
+                                    <th>"Width"</th>
+                                    <th>"Rolls"</th>
+                                    <th>"Total"</th>
+                                    <th>"Used"</th>
+                                    <th>"Remaining"</th>
+                                    <th>"Rolls left"</th>
+                                    <th>"Status"</th>
+                                    <th>"Actions"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {move || {
+                                    let items = filtered_stock();
+                                    if items.is_empty() {
+                                        return view! {
+                                            <tr>
+                                                <td colspan="10" class="dash-table-empty">
+                                                    {if query.get().trim().is_empty() {
+                                                        "No stock yet — add your first rolls."
+                                                    } else {
+                                                        "No stock matches your search."
+                                                    }}
+                                                </td>
+                                            </tr>
+                                        }.into_any();
+                                    }
+                                    items.into_iter().map(|item| {
+                                        let id = item.id;
+                                        let rem = remaining(&item);
+                                        let left = rolls_left(&item);
+                                        let (sl, sc) = status(&item);
+                                        let typ = item.sticker_type.clone();
+                                        let is_reflective = typ == "reflective";
+                                        let type_cls = if is_reflective {
+                                            "dash-status is-warn"
+                                        } else {
+                                            "dash-status is-info"
+                                        };
+                                        let type_label = if is_reflective { "Reflective" } else { "Colored" };
+                                        let color_hex = get_hex(&item.color);
+                                        let swatch_style = if is_reflective {
+                                            reflective_swatch_style(color_hex)
+                                        } else {
+                                            let border = if hex_luminance(color_hex) > 0.85 {
+                                                "border: 1px solid rgba(15,23,42,0.18);"
+                                            } else {
+                                                "border: 1px solid rgba(0,0,0,0.08);"
+                                            };
+                                            format!("background-color: {color_hex}; {border}")
+                                        };
+                                        let color_name = item.color.clone();
+                                        let color_display = color_name.clone();
+                                        let size = item.size.clone();
+                                        let size_display = size.clone();
+                                        let item_for_add = item.clone();
+                                        let status_cls = match sc {
+                                            "status-badge--error" => "dash-status is-danger",
+                                            "status-badge--warning" => "dash-status is-warn",
+                                            _ => "dash-status is-ok",
+                                        };
+                                        view! {
+                                            <tr>
+                                                <td><span class=type_cls>{type_label}</span></td>
+                                                <td>
+                                                    <div class="prod-color-cell">
+                                                        <span class="prod-swatch" style=swatch_style></span>
+                                                        <span class="dash-td-strong">{color_display}</span>
+                                                    </div>
+                                                </td>
+                                                <td class="dash-td-muted tnum">{format!("{}\"", size_display)}</td>
+                                                <td class="dash-td-muted tnum">{item.rolls}</td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", item.total_metres as u64)}</td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", item.metres_used as u64)}</td>
+                                                <td class="dash-td-strong tnum">{format!("{}m", rem as u64)}</td>
+                                                <td class="dash-td-muted tnum">{left}</td>
+                                                <td><span class=status_cls>{sl}</span></td>
+                                                <td>
+                                                    <div class="prod-actions">
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-add"
+                                                            on:click=move |_| {
+                                                                set_add_rolls_value.set(String::new());
+                                                                set_add_rolls_item.set(Some(item_for_add.clone()));
+                                                            }
+                                                        >"Add Rolls"</button>
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon is-danger"
+                                                            aria-label="Delete stock"
+                                                            on:click=move |_| {
+                                                                set_del_kind.set("stock".into());
+                                                                set_del_label.set(format!(
+                                                                    "{} · {}\" {}",
+                                                                    color_name,
+                                                                    size,
+                                                                    if is_reflective { "Reflective" } else { "Colored" }
+                                                                ));
+                                                                set_del_id.set(Some(id));
+                                                            }
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        }
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                            </tbody>
+                        </table>
+                        {move || {
+                            let n = total_items();
+                            if n == 0 && query.get().trim().is_empty() {
+                                return ().into_any();
+                            }
+                            let cp = current_page.get();
+                            let tp = total_pages();
+                            let si = if n == 0 { 0 } else { (cp - 1) * items_per_page + 1 };
+                            let ei = (cp * items_per_page).min(n);
+                            let showing = filtered_stock().len();
+                            let count_label = if query.get().trim().is_empty() {
+                                if n == 0 {
+                                    "No stock".to_string()
+                                } else {
+                                    format!("Showing {}–{} of {}", si, ei, n)
+                                }
+                            } else {
+                                format!("{} match{}", showing, if showing == 1 { "" } else { "es" })
+                            };
+                            let page_label = format!("Page {} of {}", cp, tp);
+                            let prev_disabled = cp <= 1;
+                            let next_disabled = cp >= tp;
+                            let go_prev = move |_| {
+                                set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
+                            };
+                            let go_next = move |_| {
+                                set_current_page.update(move |p| {
+                                    let next = *p + 1;
+                                    *p = if next > tp { tp } else { next };
+                                });
+                            };
+                            view! {
+                                <div class="dash-table-foot">
+                                    <span class="dash-table-count">{count_label}</span>
+                                    <div class="prod-pager">
+                                        <button
+                                            type="button"
+                                            class="prod-pager-btn"
+                                            prop:disabled=prev_disabled
+                                            on:click=go_prev
+                                        >"Previous"</button>
+                                        <span class="prod-pager-meta">{page_label}</span>
+                                        <button
+                                            type="button"
+                                            class="prod-pager-btn"
+                                            prop:disabled=next_disabled
+                                            on:click=go_next
+                                        >"Next"</button>
+                                    </div>
+                                </div>
+                            }.into_any()
+                        }}
+                    </div>
+                }.into_any()
+            } else {
+                // ---- Print materials tab ----
+                let (m_count, m_rolls, m_total, m_rem) = mat_metrics();
+                view! {
+                    <div class="prod-metrics dash-card stock-metrics">
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Materials"</p>
+                            <p class="dash-metric-value">{m_count}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Total rolls"</p>
+                            <p class="dash-metric-value">{m_rolls}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Total metres"</p>
+                            <p class="dash-metric-value">{format!("{}m", m_total as u64)}</p>
+                        </div>
+                        <div class="prod-metric">
+                            <p class="dash-metric-label">"Remaining"</p>
+                            <p class="dash-metric-value">{format!("{}m", m_rem as u64)}</p>
+                        </div>
+                    </div>
+
+                    <div class="dash-card dash-table-card">
+                        <table class="dash-table stock-table materials-table">
+                            <thead>
+                                <tr>
+                                    <th>"Name"</th>
+                                    <th>"Width"</th>
+                                    <th>"m/roll"</th>
+                                    <th>"Rolls"</th>
+                                    <th>"Total"</th>
+                                    <th>"Used"</th>
+                                    <th>"Remaining"</th>
+                                    <th>"Status"</th>
+                                    <th>"Actions"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {move || {
+                                    let items = filtered_materials();
+                                    if items.is_empty() {
+                                        return view! {
+                                            <tr>
+                                                <td colspan="9" class="dash-table-empty">
+                                                    {if query.get().trim().is_empty() {
+                                                        "No print materials yet — add banner, satin, canvas, and more."
+                                                    } else {
+                                                        "No materials match your search."
+                                                    }}
+                                                </td>
+                                            </tr>
+                                        }.into_any();
+                                    }
+                                    items.into_iter().map(|m| {
+                                        let id = m.id;
+                                        let rem = mat_remaining(&m);
+                                        let left = mat_rolls_left(&m);
+                                        let (sl, sc) = mat_status(&m);
+                                        let name = m.name.clone();
+                                        let name_del = name.clone();
+                                        let m_for_add = m.clone();
+                                        let status_cls = match sc {
+                                            "status-badge--error" => "dash-status is-danger",
+                                            "status-badge--warning" => "dash-status is-warn",
+                                            _ => "dash-status is-ok",
+                                        };
+                                        view! {
+                                            <tr>
+                                                <td><span class="dash-td-strong">{name}</span></td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", m.width)}</td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", m.metres_per_roll as u64)}</td>
+                                                <td class="dash-td-muted tnum">{m.rolls}</td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", m.total_metres as u64)}</td>
+                                                <td class="dash-td-muted tnum">{format!("{}m", m.metres_used as u64)}</td>
+                                                <td class="dash-td-strong tnum">{format!("{:.1}m", rem)}
+                                                    <span class="prod-sub tnum">{format!(" ({} rolls)", left)}</span>
+                                                </td>
+                                                <td><span class=status_cls>{sl}</span></td>
+                                                <td>
+                                                    <div class="prod-actions">
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-add"
+                                                            on:click=move |_| {
+                                                                set_add_mat_rolls_value.set(String::new());
+                                                                set_add_mat_rolls_item.set(Some(m_for_add.clone()));
+                                                            }
+                                                        >"Add Rolls"</button>
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon is-danger"
+                                                            aria-label="Delete material"
+                                                            on:click=move |_| {
+                                                                set_del_kind.set("material".into());
+                                                                set_del_label.set(name_del.clone());
+                                                                set_del_id.set(Some(id));
+                                                            }
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        }
+                                    }).collect::<Vec<_>>().into_any()
+                                }}
+                            </tbody>
+                        </table>
+                        {move || {
+                            let showing = filtered_materials().len();
+                            let total = materials.get().len();
+                            if total == 0 && query.get().trim().is_empty() {
+                                return ().into_any();
+                            }
+                            let count_label = if query.get().trim().is_empty() {
+                                format!("{} material{}", total, if total == 1 { "" } else { "s" })
+                            } else {
+                                format!("{} match{}", showing, if showing == 1 { "" } else { "es" })
+                            };
+                            view! {
+                                <div class="dash-table-foot">
+                                    <span class="dash-table-count">{count_label}</span>
+                                </div>
+                            }.into_any()
+                        }}
+                    </div>
+                }.into_any()
+            }}
+
+            // ---- Add inventory modal (tabs: Stickers | Print materials) ----
+            {move || if show_add.get() {
+                let stickers_active = modal_tab.get() == "stickers";
+                let show_mat_tab = can_manage_materials;
+                view! {
+                    <div id="modal-add-stock" class="modal-overlay open">
+                        <div class="modal-container">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Add inventory"</h3>
+                                <button
+                                    class="modal-close-btn"
+                                    prop:disabled=modal_busy
+                                    on:click=move |_| {
+                                        if !modal_busy() {
+                                            set_show_add.set(false);
+                                        }
+                                    }
+                                >
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="modal-tabs">
+                                    <button
+                                        type="button"
+                                        class=move || if modal_tab.get() == "stickers" { "is-active" } else { "" }
+                                        prop:disabled=modal_busy
+                                        on:click=move |_| set_modal_tab.set("stickers".into())
+                                    >"Stickers"</button>
+                                    {if show_mat_tab {
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class=move || if modal_tab.get() == "materials" { "is-active" } else { "" }
+                                                prop:disabled=modal_busy
+                                                on:click=move |_| set_modal_tab.set("materials".into())
+                                            >"Print materials"</button>
+                                        }.into_any()
+                                    } else {
+                                        ().into_any()
+                                    }}
+                                </div>
+
+                                {if stickers_active {
+                                    view! {
+                                        <div class="space-y-5">
+                                            <div>
+                                                <label>"Sticker Type"</label>
+                                                <div class="flex gap-2 mt-1">
+                                                    <button
+                                                        type="button"
+                                                        on:click=move |_| set_sticker_type.set("colored".into())
+                                                        class=move || format!(
+                                                            "sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all",
+                                                            if sticker_type.get()=="colored" {
+                                                                "border border-brand-500 bg-brand-50 text-brand-600"
+                                                            } else {
+                                                                "border border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                                                            }
+                                                        )
+                                                    >"Colored"</button>
+                                                    <button
+                                                        type="button"
+                                                        on:click=move |_| set_sticker_type.set("reflective".into())
+                                                        class=move || format!(
+                                                            "sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all",
+                                                            if sticker_type.get()=="reflective" {
+                                                                "border border-brand-500 bg-brand-50 text-brand-600"
+                                                            } else {
+                                                                "border border-gray-200 bg-white text-gray-500 hover:border-gray-300"
+                                                            }
+                                                        )
+                                                    >"Reflective"</button>
+                                                </div>
                                             </div>
-                                        </td>
-                                        <td class="dash-td-muted tnum">{format!("{}\"", size_display)}</td>
-                                        <td class="dash-td-muted tnum">{item.rolls}</td>
-                                        <td class="dash-td-muted tnum">{format!("{}m", item.total_metres as u64)}</td>
-                                        <td class="dash-td-muted tnum">{format!("{}m", item.metres_used as u64)}</td>
-                                        <td class="dash-td-strong tnum">{format!("{}m", rem as u64)}</td>
-                                        <td class="dash-td-muted tnum">{left}</td>
-                                        <td><span class=status_cls>{sl}</span></td>
-                                        <td>
-                                            <div class="prod-actions">
+                                            <div>
+                                                <label>"Color"</label>
+                                                <div class="relative mt-1">
+                                                    <input
+                                                        type="text"
+                                                        class="w-full pr-12"
+                                                        placeholder=move || if sticker_type.get()=="reflective" {
+                                                            "e.g. Red, White, Yellow"
+                                                        } else {
+                                                            "e.g. Red Dark, Black Matte"
+                                                        }
+                                                        autocomplete="off"
+                                                        prop:value=move || color.get()
+                                                        on:input=move |e| set_color.set(event_target_value(&e))
+                                                    />
+                                                    <div
+                                                        class="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 border border-gray-200"
+                                                        style=move || format!("background-color: {};", get_hex(&color.get()))
+                                                    ></div>
+                                                </div>
+                                                <p class="text-xs text-gray-400 mt-1">
+                                                    {move || if sticker_type.get()=="reflective" {
+                                                        "Enter reflective color"
+                                                    } else {
+                                                        "Enter color with variant (dark, light, matte, gloss)"
+                                                    }}
+                                                </p>
+                                            </div>
+                                            <div>
+                                                <label>"Size Variants"</label>
+                                                <div class="space-y-3 mt-2">
+                                                    <For
+                                                        each=move || rows.get()
+                                                        key=|r| r.id
+                                                        children=move |r| {
+                                                            let id = r.id;
+                                                            view! {
+                                                                <div class="grid grid-cols-2 gap-3" data-row-id=id>
+                                                                    <div>
+                                                                        <label>{if id==0 {"Width (inches) *"} else {"Width (inches)"}}</label>
+                                                                        <input
+                                                                            type="number"
+                                                                            class="w-full size-input"
+                                                                            step="1"
+                                                                            min="1"
+                                                                            placeholder="e.g. 24"
+                                                                            prop:value=r.size
+                                                                            on:input=move |e| update_row(id,"size",event_target_value(&e))
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label>{if id==0 {"Rolls *"} else {"Rolls"}}</label>
+                                                                        <input
+                                                                            type="number"
+                                                                            class="w-full rolls-input"
+                                                                            min="1"
+                                                                            placeholder="e.g. 5"
+                                                                            prop:value=r.rolls
+                                                                            on:input=move |e| update_row(id,"rolls",event_target_value(&e))
+                                                                        />
+                                                                    </div>
+                                                                    {move || if sticker_type.get()=="reflective" {
+                                                                        view! {
+                                                                            <div>
+                                                                                <label>{if id==0 {"Metres per Roll *"} else {"Metres per Roll"}}</label>
+                                                                                <input
+                                                                                    type="number"
+                                                                                    class="w-full metres-per-roll-input"
+                                                                                    step="0.1"
+                                                                                    min="1"
+                                                                                    prop:value=r.metres_per_roll.clone()
+                                                                                    on:input=move |e| update_row(id,"mpr",event_target_value(&e))
+                                                                                />
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    } else {
+                                                                        ().into_any()
+                                                                    }}
+                                                                    <div>
+                                                                        <label>"Total Metres"</label>
+                                                                        <div class="px-3 py-2 bg-gray-50 border border-gray-200 text-gray-600 text-sm">
+                                                                            <span class="metres-display font-medium">
+                                                                                {move || rows.get().iter().find(|x| x.id==id).map(row_total).unwrap_or(0.0) as u64}
+                                                                            </span>
+                                                                            "m"
+                                                                        </div>
+                                                                    </div>
+                                                                    {if id!=0 {
+                                                                        view! {
+                                                                            <div class="col-span-2 flex justify-end">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    class="remove-row-btn text-xs text-gray-400 hover:text-red-500 font-medium"
+                                                                                    on:click=move |_| set_rows.update(|rs| rs.retain(|x| x.id!=id))
+                                                                                >"Remove"</button>
+                                                                            </div>
+                                                                        }.into_any()
+                                                                    } else {
+                                                                        ().into_any()
+                                                                    }}
+                                                                </div>
+                                                            }
+                                                        }
+                                                    />
+                                                </div>
                                                 <button
                                                     type="button"
-                                                    class="prod-btn-add"
-                                                    on:click=move |_| {
-                                                        set_add_rolls_value.set(String::new());
-                                                        set_add_rolls_item.set(Some(item_for_add.clone()));
-                                                    }
-                                                >"Add Rolls"</button>
-                                                <button
-                                                    type="button"
-                                                    class="prod-btn-icon is-danger"
-                                                    aria-label="Delete stock"
-                                                    on:click=move |_| {
-                                                        set_del_label.set(format!(
-                                                            "{} · {}\" {}",
-                                                            color_name,
-                                                            size,
-                                                            if is_reflective { "Reflective" } else { "Colored" }
-                                                        ));
-                                                        set_del_id.set(Some(id));
-                                                    }
+                                                    class="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium flex items-center gap-1"
+                                                    on:click=move |_| add_row()
                                                 >
-                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                                     </svg>
+                                                    "Add size"
                                                 </button>
                                             </div>
-                                        </td>
-                                    </tr>
-                                }
-                            }).collect::<Vec<_>>().into_any()
-                        }}
-                    </tbody>
-                </table>
-                {move || {
-                    let n = total_items();
-                    if n == 0 && query.get().trim().is_empty() {
-                        return ().into_any();
-                    }
-                    let cp = current_page.get();
-                    let tp = total_pages();
-                    let si = if n == 0 { 0 } else { (cp - 1) * items_per_page + 1 };
-                    let ei = (cp * items_per_page).min(n);
-                    let showing = filtered().len();
-                    let count_label = if query.get().trim().is_empty() {
-                        if n == 0 {
-                            "No stock".to_string()
-                        } else {
-                            format!("Showing {}–{} of {}", si, ei, n)
-                        }
-                    } else {
-                        format!("{} match{}", showing, if showing == 1 { "" } else { "es" })
-                    };
-                    let page_label = format!("Page {} of {}", cp, tp);
-                    // Avoid `>` / `>=` inside view! attributes (breaks the macro)
-                    let prev_disabled = cp <= 1;
-                    let next_disabled = cp >= tp;
-                    let go_prev = move |_| {
-                        set_current_page.update(|p| *p = p.saturating_sub(1).max(1));
-                    };
-                    let go_next = move |_| {
-                        set_current_page.update(move |p| {
-                            let next = *p + 1;
-                            *p = if next > tp { tp } else { next };
-                        });
-                    };
-                    view! {
-                        <div class="dash-table-foot">
-                            <span class="dash-table-count">{count_label}</span>
-                            <div class="prod-pager">
+                                            <div class="bg-gray-50 border border-gray-100 p-4">
+                                                <div class="flex justify-between items-center text-sm">
+                                                    <span class="font-medium text-gray-600">"Total"</span>
+                                                    <div class="flex gap-6">
+                                                        <span class="text-gray-500">
+                                                            <span class="font-semibold text-gray-900">{move || total_rolls_modal()}</span>
+                                                            " rolls"
+                                                        </span>
+                                                        <span class="text-gray-500">
+                                                            <span class="font-semibold text-gray-900">{move || total_metres_modal() as u64}</span>
+                                                            "m"
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    // Print materials form — metres per roll is always manual
+                                    view! {
+                                        <div class="space-y-4">
+                                            <div>
+                                                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                                    "Material Name *"
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    class="w-full"
+                                                    placeholder="e.g., White Banner Vinyl, Blue Satin Fabric"
+                                                    prop:value=move || mat_name.get()
+                                                    on:input=move |e| set_mat_name.set(event_target_value(&e))
+                                                />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                                    "Width (metres) *"
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    step="0.1"
+                                                    min="0.1"
+                                                    class="w-full"
+                                                    placeholder="Enter width in metres"
+                                                    prop:value=move || mat_width.get()
+                                                    on:input=move |e| set_mat_width.set(event_target_value(&e))
+                                                />
+                                            </div>
+                                            <div class="grid grid-cols-2 gap-4">
+                                                <div>
+                                                    <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                                        "Rolls *"
+                                                    </label>
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        class="w-full"
+                                                        prop:value=move || mat_rolls.get()
+                                                        on:input=move |e| set_mat_rolls.set(event_target_value(&e))
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                                        "Metres per Roll *"
+                                                    </label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.1"
+                                                        min="1"
+                                                        class="w-full"
+                                                        prop:value=move || mat_mpr.get()
+                                                        on:input=move |e| set_mat_mpr.set(event_target_value(&e))
+                                                    />
+                                                    <p class="text-xs text-gray-400 mt-1">
+                                                        "Required — print media rolls vary (not always 50m)"
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <div class="bg-gray-50 border border-gray-200 p-4">
+                                                <div class="flex justify-between items-center text-sm">
+                                                    <span class="text-gray-600">"Total metres"</span>
+                                                    <span class="font-semibold text-gray-900">
+                                                        {move || format!("{}m", mat_total_metres_preview() as u64)}
+                                                    </span>
+                                                </div>
+                                                <p class="text-xs text-gray-400 mt-1">
+                                                    "Calculated as rolls × metres per roll"
+                                                </p>
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                }}
+                            </div>
+                            <div class="modal-footer">
                                 <button
                                     type="button"
-                                    class="prod-pager-btn"
-                                    prop:disabled=prev_disabled
-                                    on:click=go_prev
-                                >"Previous"</button>
-                                <span class="prod-pager-meta">{page_label}</span>
-                                <button
-                                    type="button"
-                                    class="prod-pager-btn"
-                                    prop:disabled=next_disabled
-                                    on:click=go_next
-                                >"Next"</button>
+                                    class="btn-secondary"
+                                    prop:disabled=modal_busy
+                                    on:click=move |_| {
+                                        if !modal_busy() {
+                                            set_show_add.set(false);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                {if stickers_active {
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="btn-primary"
+                                            prop:disabled=move || adding_stock.get()
+                                            on:click=move |_| {
+                                                add_stock_action(color.get(), sticker_type.get(), rows.get());
+                                            }
+                                        >
+                                            {move || if adding_stock.get() { "Adding..." } else { "Add Stock" }}
+                                        </button>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="btn-primary"
+                                            prop:disabled=move || adding_material.get()
+                                            on:click=add_material_action
+                                        >
+                                            {move || if adding_material.get() { "Adding..." } else { "Add Material" }}
+                                        </button>
+                                    }.into_any()
+                                }}
                             </div>
                         </div>
-                    }.into_any()
-                }}
-            </div>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
 
-        {move || if show_add.get() { view!{<div id="modal-add-stock" class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add New Stock"</h3><button class="modal-close-btn" prop:disabled=move || adding_stock.get() on:click=move |_| { if !adding_stock.get() { set_show_add.set(false); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><form action="javascript:void(0);"><div class="modal-body"><div class="space-y-5"><div><label>"Sticker Type"</label><div class="flex gap-2 mt-1"><button type="button" on:click=move |_| set_sticker_type.set("colored".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="colored" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Colored"</button><button type="button" on:click=move |_| set_sticker_type.set("reflective".into()) class=move || format!("sticker-type-btn flex-1 px-4 py-2 {} font-medium text-sm transition-all", if sticker_type.get()=="reflective" {"border border-brand-500 bg-brand-50 text-brand-600"} else {"border border-gray-200 bg-white text-gray-500 hover:border-gray-300"})>"Reflective"</button></div></div><div><label>"Color"</label><div class="relative mt-1"><input type="text" class="w-full pr-12" placeholder=move || if sticker_type.get()=="reflective" {"e.g. Red, White, Yellow"} else {"e.g. Red Dark, Black Matte"} autocomplete="off" prop:value=move || color.get() on:input=move |e| set_color.set(event_target_value(&e)) /><div class="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 border border-gray-200" style=move || format!("background-color: {};", get_hex(&color.get()))></div></div><p class="text-xs text-gray-400 mt-1">{move || if sticker_type.get()=="reflective" {"Enter reflective color"} else {"Enter color with variant (dark, light, matte, gloss)"}}</p></div><div><label>"Size Variants"</label><div class="space-y-3 mt-2"><For each=move || rows.get() key=|r| r.id children=move |r| { let id=r.id; view!{<div class="grid grid-cols-2 gap-3" data-row-id=id><div><label>{if id==0 {"Width (inches) *"} else {"Width (inches)"}}</label><input type="number" class="w-full size-input" step="1" min="1" placeholder="e.g. 24" prop:value=r.size on:input=move |e| update_row(id,"size",event_target_value(&e))/></div><div><label>{if id==0 {"Rolls *"} else {"Rolls"}}</label><input type="number" class="w-full rolls-input" min="1" placeholder="e.g. 5" prop:value=r.rolls on:input=move |e| update_row(id,"rolls",event_target_value(&e))/></div>{move || if sticker_type.get()=="reflective" { view!{<div><label>{if id==0 {"Metres per Roll *"} else {"Metres per Roll"}}</label><input type="number" class="w-full metres-per-roll-input" step="0.1" min="1" prop:value=r.metres_per_roll.clone() on:input=move |e| update_row(id,"mpr",event_target_value(&e))/></div>}.into_any() } else {().into_any()} }<div><label>"Total Metres"</label><div class="px-3 py-2 bg-gray-50 border border-gray-200 text-gray-600 text-sm"><span class="metres-display font-medium">{move || rows.get().iter().find(|x| x.id==id).map(row_total).unwrap_or(0.0) as u64}</span>"m"</div></div>{if id!=0 {view!{<div class="col-span-2 flex justify-end"><button type="button" class="remove-row-btn text-xs text-gray-400 hover:text-red-500 font-medium" on:click=move |_| set_rows.update(|rs| rs.retain(|x| x.id!=id))>"Remove"</button></div>}.into_any()} else {().into_any()}}</div>}}/></div><button type="button" class="mt-3 text-sm text-brand-500 hover:text-brand-600 font-medium flex items-center gap-1" on:click=move |_| add_row()><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>"Add size"</button></div><div class="bg-gray-50 border border-gray-100 p-4"><div class="flex justify-between items-center text-sm"><span class="font-medium text-gray-600">"Total"</span><div class="flex gap-6"><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_rolls_modal()}</span>" rolls"</span><span class="text-gray-500"><span class="font-semibold text-gray-900">{move || total_metres_modal() as u64}</span>"m"</span></div></div></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary" prop:disabled=move || adding_stock.get() on:click=move |_| { if !adding_stock.get() { set_show_add.set(false); } }>"Cancel"</button><button type="button" class="btn-primary" prop:disabled=move || adding_stock.get() on:click=move |_| { add_stock_action(color.get(), sticker_type.get(), rows.get()); } >{move || if adding_stock.get() { "Adding..." } else { "Add Stock" }}</button></div></form></div></div>}.into_any()} else {().into_any()} }
-        {move || add_rolls_item.get().map(|item| { let added=move || add_rolls_value.get().parse::<i64>().unwrap_or(0); let new_rolls=move || item.rolls + added(); let new_metres=move || item.total_metres + added() as f64 * item.metres_per_roll; view!{<div id="modal-add-rolls" class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Stock"</h3><button type="button" class="modal-close-btn" prop:disabled=move || adding_rolls.get() on:click=move |_| { if !adding_rolls.get() { set_add_rolls_item.set(None); } }><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Stock Item"</p><p class="font-semibold text-gray-900">{format!("{} - {}\" {}", item.color, item.size, if item.sticker_type=="reflective" {"Reflective"} else {"Colored"})}</p><p class="text-sm text-gray-600 mt-1">{format!("Current: {}m remaining ({} rolls)", remaining(&item) as u64, rolls_left(&item))}</p></div><div class="space-y-4"><div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Number of Rolls to Add *"</label><input type="number" min="1" step="1" class="w-full" placeholder="Enter rolls to add" prop:value=move || add_rolls_value.get() on:input=move |e| set_add_rolls_value.set(event_target_value(&e))/><p class="text-xs text-gray-500 mt-1">{format!("Each roll = {}m", item.metres_per_roll as u64)}</p></div><div class="bg-neutral-50 border border-neutral-200 p-3"><p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || format!("{} rolls ({}m)", new_rolls(), new_metres() as u64)}</p></div></div></div><div class="modal-footer"><button type="button" class="btn-secondary" prop:disabled=move || adding_rolls.get() on:click=move |_| { if !adding_rolls.get() { set_add_rolls_item.set(None); } }>"Cancel"</button><button type="button" class="btn-primary" prop:disabled=move || adding_rolls.get() on:click=move |_| { let id=item.id; let rolls=added(); if rolls>0 { add_rolls_action(id, rolls); } }>{move || if adding_rolls.get() { "Adding..." } else { "Add Rolls" }}</button></div></div></div>}.into_any() }).unwrap_or_else(|| ().into_any())}
+            // Add rolls — stickers
+            {move || add_rolls_item.get().map(|item| {
+                let added = move || add_rolls_value.get().parse::<i64>().unwrap_or(0);
+                let new_rolls = move || item.rolls + added();
+                let new_metres = move || item.total_metres + added() as f64 * item.metres_per_roll;
+                view! {
+                    <div id="modal-add-rolls" class="modal-overlay open">
+                        <div class="modal-container" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Add Rolls to Stock"</h3>
+                                <button
+                                    type="button"
+                                    class="modal-close-btn"
+                                    prop:disabled=move || adding_rolls.get()
+                                    on:click=move |_| {
+                                        if !adding_rolls.get() {
+                                            set_add_rolls_item.set(None);
+                                        }
+                                    }
+                                >
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="bg-gray-50 p-4 mb-4">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wide">"Stock Item"</p>
+                                    <p class="font-semibold text-gray-900">
+                                        {format!(
+                                            "{} - {}\" {}",
+                                            item.color,
+                                            item.size,
+                                            if item.sticker_type=="reflective" {"Reflective"} else {"Colored"}
+                                        )}
+                                    </p>
+                                    <p class="text-sm text-gray-600 mt-1">
+                                        {format!("Current: {}m remaining ({} rolls)", remaining(&item) as u64, rolls_left(&item))}
+                                    </p>
+                                </div>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                            "Number of Rolls to Add *"
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            step="1"
+                                            class="w-full"
+                                            placeholder="Enter rolls to add"
+                                            prop:value=move || add_rolls_value.get()
+                                            on:input=move |e| set_add_rolls_value.set(event_target_value(&e))
+                                        />
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            {format!("Each roll = {}m", item.metres_per_roll as u64)}
+                                        </p>
+                                    </div>
+                                    <div class="bg-neutral-50 border border-neutral-200 p-3">
+                                        <p class="text-sm text-gray-700">
+                                            <span class="font-medium">"New Total:"</span>
+                                            {move || format!(" {} rolls ({}m)", new_rolls(), new_metres() as u64)}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    prop:disabled=move || adding_rolls.get()
+                                    on:click=move |_| {
+                                        if !adding_rolls.get() {
+                                            set_add_rolls_item.set(None);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-primary"
+                                    prop:disabled=move || adding_rolls.get()
+                                    on:click=move |_| {
+                                        let id = item.id;
+                                        let rolls = added();
+                                        if rolls > 0 {
+                                            add_rolls_action(id, rolls);
+                                        }
+                                    }
+                                >
+                                    {move || if adding_rolls.get() { "Adding..." } else { "Add Rolls" }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            }).unwrap_or_else(|| ().into_any())}
 
-        <Show when=move || del_id.get().is_some()>
-            <div
-                class="modal-overlay open"
-                on:click=move |e| {
-                    if e.target() == e.current_target() && !deleting_stock.get() {
-                        set_del_id.set(None);
-                        set_del_label.set(String::new());
+            // Add rolls — print materials (uses stored metres_per_roll)
+            {move || add_mat_rolls_item.get().map(|m| {
+                let mpr = m.metres_per_roll;
+                let added = move || add_mat_rolls_value.get().parse::<i64>().unwrap_or(0);
+                view! {
+                    <div id="modal-add-mat-rolls" class="modal-overlay open">
+                        <div class="modal-container" style="max-width: 500px;">
+                            <div class="modal-header">
+                                <h3 class="modal-title">"Add Rolls to Printing Material"</h3>
+                                <button
+                                    class="modal-close-btn"
+                                    prop:disabled=move || adding_mat_rolls.get()
+                                    on:click=move |_| {
+                                        if !adding_mat_rolls.get() {
+                                            set_add_mat_rolls_item.set(None);
+                                        }
+                                    }
+                                >
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="bg-gray-50 p-4 mb-4">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wide">"Printing Material"</p>
+                                    <p class="font-semibold text-gray-900">{m.name.clone()}</p>
+                                    <p class="text-sm text-gray-600 mt-1">
+                                        {format!("Width: {}m · {}m per roll", m.width, m.metres_per_roll as u64)}
+                                    </p>
+                                    <p class="text-sm text-gray-600 mt-1">
+                                        {format!(
+                                            "Current: {:.1}m remaining ({} rolls)",
+                                            mat_remaining(&m),
+                                            mat_rolls_left(&m)
+                                        )}
+                                    </p>
+                                </div>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                            "Number of Rolls to Add *"
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            step="1"
+                                            class="w-full"
+                                            placeholder="Enter rolls to add"
+                                            prop:value=move || add_mat_rolls_value.get()
+                                            on:input=move |e| set_add_mat_rolls_value.set(event_target_value(&e))
+                                        />
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            {format!("Each roll = {}m (from this material)", mpr as u64)}
+                                        </p>
+                                    </div>
+                                    <div class="bg-neutral-50 border border-neutral-200 p-3">
+                                        <p class="text-sm text-gray-700">
+                                            <span class="font-medium">"New Total:"</span>
+                                            {move || {
+                                                let a = added();
+                                                format!(
+                                                    " {} rolls ({}m)",
+                                                    m.rolls + a,
+                                                    (m.total_metres + a as f64 * mpr) as u64
+                                                )
+                                            }}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button
+                                    type="button"
+                                    class="btn-secondary px-4 py-2"
+                                    prop:disabled=move || adding_mat_rolls.get()
+                                    on:click=move |_| {
+                                        if !adding_mat_rolls.get() {
+                                            set_add_mat_rolls_item.set(None);
+                                        }
+                                    }
+                                >"Cancel"</button>
+                                <button
+                                    type="button"
+                                    class="btn-primary px-4 py-2"
+                                    prop:disabled=move || adding_mat_rolls.get()
+                                    on:click=move |_| {
+                                        let id = m.id;
+                                        let rolls = added();
+                                        if rolls > 0 {
+                                            add_mat_rolls_action(id, rolls);
+                                        }
+                                    }
+                                >
+                                    {move || if adding_mat_rolls.get() { "Adding..." } else { "Add Rolls" }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            }).unwrap_or_else(|| ().into_any())}
+
+            <Show when=move || del_id.get().is_some()>
+                <div
+                    class="modal-overlay open"
+                    on:click=move |e| {
+                        if e.target() == e.current_target() && !deleting.get() {
+                            set_del_id.set(None);
+                            set_del_label.set(String::new());
+                        }
                     }
-                }
-            >
-                <div class="modal-container modal-sm">
-                    <div class="modal-header">
-                        <h3 class="modal-title">"Delete Stock?"</h3>
-                        <button
-                            type="button"
-                            class="modal-close-btn"
-                            prop:disabled=move || deleting_stock.get()
-                            on:click=move |_| {
-                                if !deleting_stock.get() {
-                                    set_del_id.set(None);
-                                    set_del_label.set(String::new());
+                >
+                    <div class="modal-container modal-sm">
+                        <div class="modal-header">
+                            <h3 class="modal-title">
+                                {move || if del_kind.get() == "material" {
+                                    "Delete Material?"
+                                } else {
+                                    "Delete Stock?"
+                                }}
+                            </h3>
+                            <button
+                                type="button"
+                                class="modal-close-btn"
+                                prop:disabled=move || deleting.get()
+                                on:click=move |_| {
+                                    if !deleting.get() {
+                                        set_del_id.set(None);
+                                        set_del_label.set(String::new());
+                                    }
                                 }
-                            }
-                        >
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                            </svg>
-                        </button>
-                    </div>
-                    <div class="modal-body">
-                        <p class="modal-msg">
-                            "Are you sure you want to delete "
-                            <span class="modal-entity">{move || del_label.get()}</span>
-                            "? This action cannot be undone."
-                        </p>
-                    </div>
-                    <div class="modal-footer">
-                        <button
-                            type="button"
-                            class="btn-secondary"
-                            prop:disabled=move || deleting_stock.get()
-                            on:click=move |_| {
-                                if !deleting_stock.get() {
-                                    set_del_id.set(None);
-                                    set_del_label.set(String::new());
+                            >
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="modal-body">
+                            <p class="modal-msg">
+                                "Are you sure you want to delete "
+                                <span class="modal-entity">{move || del_label.get()}</span>
+                                "? This action cannot be undone."
+                            </p>
+                        </div>
+                        <div class="modal-footer">
+                            <button
+                                type="button"
+                                class="btn-secondary"
+                                prop:disabled=move || deleting.get()
+                                on:click=move |_| {
+                                    if !deleting.get() {
+                                        set_del_id.set(None);
+                                        set_del_label.set(String::new());
+                                    }
                                 }
-                            }
-                        >"Cancel"</button>
-                        <button
-                            type="button"
-                            class="btn-danger"
-                            prop:disabled=move || deleting_stock.get()
-                            on:click=move |_| {
-                                if let Some(id) = del_id.get() {
-                                    delete_stock_action(id);
+                            >"Cancel"</button>
+                            <button
+                                type="button"
+                                class="btn-danger"
+                                prop:disabled=move || deleting.get()
+                                on:click=move |_| {
+                                    if let Some(id) = del_id.get() {
+                                        delete_action(id, del_kind.get());
+                                    }
                                 }
-                            }
-                        >{move || if deleting_stock.get() { "Deleting..." } else { "Delete" }}</button>
+                            >{move || if deleting.get() { "Deleting..." } else { "Delete" }}</button>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </Show>
-    </div>
+            </Show>
+        </div>
         </Show>
     }
 }
-
 fn resolve_synonym(input: &str) -> &str {
     let lower = input.to_lowercase();
     for (from, to) in SYNONYMS {

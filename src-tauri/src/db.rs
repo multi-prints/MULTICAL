@@ -3,6 +3,7 @@ use rand::Rng;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -87,6 +88,9 @@ pub struct Database {
     turso_source: String,
     /// If credentials existed but the libsql engine failed to open.
     turso_engine_error: Option<String>,
+    /// Set after a background libsql sync so the next read reopens rusqlite
+    /// (libsql rewrites the replica file; Windows especially keeps a stale handle).
+    needs_reopen: Arc<AtomicBool>,
 }
 
 fn infer_debt_payment_method(
@@ -235,6 +239,7 @@ impl Database {
             last_sync_at: Mutex::new(None),
             turso_source: turso_source.clone(),
             turso_engine_error,
+            needs_reopen: Arc::new(AtomicBool::new(false)),
         };
 
         // Schema work is purely local — never force a Turso round-trip during boot.
@@ -389,21 +394,55 @@ impl Database {
         Ok(())
     }
 
-    /// Kick off a non-blocking Turso pull/push after the window is shown.
+    /// Continuous Turso pull/push so multi-PC changes appear without restarting.
+    ///
+    /// libsql may also run its own `sync_interval`, but that does not reopen our
+    /// rusqlite handle — we flag `needs_reopen` after each successful sync so the
+    /// next page load sees new rows (critical on Windows).
     pub fn spawn_background_sync(&self) {
         let Some(sync_db) = self.sync_db.clone() else {
             return;
         };
-        tauri::async_runtime::spawn(async move {
-            match sync_db.sync().await {
-                Ok(_) => {
-                    println!("Background Turso sync completed");
+        let needs_reopen = Arc::clone(&self.needs_reopen);
+        // Dedicated thread: avoids needing a direct tokio dependency and keeps
+        // the UI runtime free of long-lived sleep tasks.
+        std::thread::Builder::new()
+            .name("multiprints-turso-sync".into())
+            .spawn(move || {
+                let run_sync = |label: &str| match tauri::async_runtime::block_on(async {
+                    sync_db.sync().await
+                }) {
+                    Ok(_) => {
+                        needs_reopen.store(true, Ordering::SeqCst);
+                        println!("{label} Turso sync completed");
+                    }
+                    Err(e) => {
+                        eprintln!("{label} Turso sync failed (will retry): {e}");
+                    }
+                };
+
+                // One immediate pass after startup (initial sync may have timed out).
+                run_sync("Background");
+
+                loop {
+                    std::thread::sleep(Duration::from_secs(SYNC_INTERVAL_SECS));
+                    run_sync("Periodic");
                 }
-                Err(e) => {
-                    eprintln!("Background Turso sync failed (will retry later): {}", e);
-                }
-            }
-        });
+            })
+            .ok();
+    }
+
+    /// If a background sync rewrote the replica, reopen rusqlite before reading.
+    fn apply_pending_reopen(&self) {
+        if !self.needs_reopen.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        if let Err(e) = self.reopen_local_connection() {
+            eprintln!("Reopen after background sync failed: {}", e);
+            // Retry on the next read.
+            self.needs_reopen.store(true, Ordering::SeqCst);
+            self.checkpoint_wal();
+        }
     }
 
     /// Resolve Turso credentials automatically, in priority order:
@@ -628,24 +667,32 @@ impl Database {
     fn synced_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         // Best-effort only — never fail a read because the network is slow.
         let _ = self.maybe_sync(false);
+        // Background sync may have pulled rows without going through maybe_sync.
+        self.apply_pending_reopen();
         self.local_conn()
     }
 
     /// Write path: data is already on disk. Push to Turso in the background so the
     /// UI (and first-launch setup) never blocks on the network. Periodic
-    /// `sync_interval` on the replica covers retries.
+    /// background sync covers retries.
     fn finish_write<T>(&self, value: T) -> Result<T, String> {
         if let Some(sync_db) = self.sync_db.clone() {
-            // Mark throttle so concurrent reads don't also kick a sync immediately.
-            if let Ok(mut last) = self.last_sync_at.lock() {
-                *last = Some(Instant::now());
-            }
+            // Writes go through rusqlite while sync goes through libsql on the same
+            // file. Checkpoint WAL so libsql's push actually sees the new rows.
+            // Without this, other PCs only catch up after restart (initial sync).
+            self.checkpoint_wal();
+            let needs_reopen = Arc::clone(&self.needs_reopen);
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = sync_db.sync().await {
-                    eprintln!(
-                        "Database change was saved locally, but could not sync to Turso: {}",
-                        e
-                    );
+                match sync_db.sync().await {
+                    Ok(_) => {
+                        needs_reopen.store(true, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Database change was saved locally, but could not sync to Turso: {}",
+                            e
+                        );
+                    }
                 }
             });
         }

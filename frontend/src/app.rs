@@ -247,9 +247,9 @@ pub fn App() -> impl IntoView {
                                                 }
                                             },
                                             Page::Products => view! { <ProductsPageView /> }.into_any(),
-                                            Page::Stock => view! { <StockPageView /> }.into_any(),
+                                            Page::Stock => view! { <StockPageView can_manage_materials=role == "admin" /> }.into_any(),
                                             Page::Sales => view! { <SalesPageView show_revenue_stats=role == "admin" /> }.into_any(),
-                                            Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" can_manage_materials=role == "admin" /> }.into_any(),
+                                            Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" /> }.into_any(),
                                             Page::Debts => view! { <DebtsPageView /> }.into_any(),
                                             Page::Settings => view! { <SettingsPageView user=user set_user=set_user /> }.into_any(),
                                         }}

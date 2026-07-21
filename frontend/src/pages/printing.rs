@@ -1,6 +1,5 @@
 use crate::api::{
-    self, NewDebt, NewPrintingMaterial, NewServiceTransaction, PrintingMaterial, PrintingPageQuery,
-    ServiceTransaction,
+    self, NewDebt, NewServiceTransaction, PrintingMaterial, PrintingPageQuery, ServiceTransaction,
 };
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
 use leptos::prelude::*;
@@ -43,7 +42,7 @@ fn format_printing_timestamp(ts: &Option<String>) -> String {
 }
 
 #[component]
-pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> impl IntoView {
+pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
     let (jobs, set_jobs) = signal(Vec::<ServiceTransaction>::new());
     let (materials, set_materials) = signal(Vec::<PrintingMaterial>::new());
     let (today_earnings, set_today_earnings) = signal(0.0f64);
@@ -52,28 +51,17 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (total_revenue, set_total_revenue) = signal(0.0f64);
     let (total_count, set_total_count) = signal(0u32);
     let (show_record, set_show_record) = signal(false);
-    let (show_add_mat, set_show_add_mat) = signal(false);
     let (current_page, set_current_page) = signal(1u32);
     let (search, set_search) = signal(String::new());
     let (sort_by, set_sort_by) = signal("newest".to_string());
     let items_per_page = 10u32;
 
-    // Record job state
+    // Record job state (materials list is for the job picker only — manage inventory on Stock)
     let (mat_id, set_mat_id) = signal(None::<i64>);
     let (metres_printed, set_metres_printed) = signal("1".to_string());
     let (total_price, set_total_price) = signal(String::new());
     let (payment, set_payment) = signal("cash".to_string());
     let (customer, set_customer) = signal("Walk-in".to_string());
-
-    // Add material state
-    let (mat_name, set_mat_name) = signal(String::new());
-    let (mat_width, set_mat_width) = signal(String::new());
-    let (mat_rolls, set_mat_rolls) = signal("1".to_string());
-    let (mat_mpr, set_mat_mpr) = signal("50".to_string());
-
-    // Add rolls modal
-    let (show_add_rolls, set_show_add_rolls) = signal(None::<PrintingMaterial>);
-    let (add_rolls_val, set_add_rolls_val) = signal(String::new());
 
     // Convert to debt
     let (show_convert, set_show_convert) = signal(None::<ServiceTransaction>);
@@ -91,8 +79,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     let (selected_jobs, set_selected_jobs) = signal(Vec::<i64>::new());
     let (loading, set_loading) = signal(true);
     let (job_submitting, set_job_submitting) = signal(false);
-    let (mat_submitting, set_mat_submitting) = signal(false);
-    let (rolls_submitting, set_rolls_submitting) = signal(false);
     let (convert_submitting, set_convert_submitting) = signal(false);
 
     let reload = {
@@ -262,23 +248,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
     };
     let paginated = move || jobs.get();
 
-    let remaining = |m: &PrintingMaterial| {
-        m.total_metres
-            - if m.metres_used.is_nan() {
-                0.0
-            } else {
-                m.metres_used
-            }
-    };
-    let rolls_remaining = move |m: &PrintingMaterial| {
-        let rem = remaining(m);
-        if m.metres_per_roll > 0.0 {
-            rem / m.metres_per_roll
-        } else {
-            rem / 50.0
-        }
-    };
-
     // Submit record job
     let submit_job = {
         let l = reload;
@@ -317,7 +286,8 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     stock_id: None,
                     stock_metres_used: metres,
                     material_size: m.as_ref().map(|m| m.width.to_string()),
-                    material_type: m.as_ref().map(|m| m.material_type.clone()),
+                    // Store material name here (legacy column; was always "Custom" before)
+                    material_type: m.as_ref().map(|m| m.name.clone()),
                     printing_material_id: mid,
                     is_debt: 0,
                 })
@@ -327,68 +297,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                     set_show_record.set(false);
                 }
                 set_job_submitting.set(false);
-                l();
-            });
-        }
-    };
-
-    // Submit add material
-    let submit_add_mat = {
-        let l = reload;
-        move |_| {
-            if mat_submitting.get() {
-                return;
-            }
-            let name = mat_name.get();
-            let width: f64 = mat_width.get().parse().unwrap_or(0.0);
-            let rolls: i64 = mat_rolls.get().parse().unwrap_or(0);
-            let mpr: f64 = mat_mpr.get().parse().unwrap_or(50.0);
-            if name.is_empty() || width <= 0.0 || rolls <= 0 {
-                return;
-            }
-            set_mat_submitting.set(true);
-            leptos::task::spawn_local(async move {
-                let ok = api::add_printing_material(&NewPrintingMaterial {
-                    name,
-                    material_type: "Custom".into(),
-                    width,
-                    rolls,
-                    metres_per_roll: mpr,
-                    total_metres: Some(rolls as f64 * mpr),
-                    metres_used: 0.0,
-                    color: None,
-                })
-                .await
-                .is_ok();
-                if ok {
-                    set_show_add_mat.set(false);
-                }
-                set_mat_submitting.set(false);
-                l();
-            });
-        }
-    };
-
-    // Submit add rolls
-    let submit_add_rolls = {
-        let l = reload;
-        move |_| {
-            if rolls_submitting.get() {
-                return;
-            }
-            let mat = show_add_rolls.get();
-            let added: i64 = add_rolls_val.get().parse().unwrap_or(0);
-            if mat.is_none() || added <= 0 {
-                return;
-            }
-            let m = mat.unwrap();
-            set_rolls_submitting.set(true);
-            leptos::task::spawn_local(async move {
-                let ok = api::add_printing_material_rolls(m.id, added).await.is_ok();
-                if ok {
-                    set_show_add_rolls.set(None);
-                }
-                set_rolls_submitting.set(false);
                 l();
             });
         }
@@ -508,14 +416,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         });
     };
 
-    let delete_material = move |id: i64| {
-        let l = reload;
-        leptos::task::spawn_local(async move {
-            let _ = api::delete_printing_material(id).await;
-            l();
-        });
-    };
-
     view! {
         <Show when=move || !loading.get() fallback=|| view! {
             <div id="page-printing" class="dash">
@@ -526,7 +426,7 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
             <div class="dash-table-head">
                 <div>
                     <h2 class="dash-section-title">"Printing jobs"</h2>
-                    <p class="prod-sub">"Materials, metres, and service income"</p>
+                    <p class="prod-sub">"Record jobs, metres used, and service income"</p>
                 </div>
                 <div class="dash-table-actions">
                     {move || if selected.get() > 0 {
@@ -539,23 +439,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                             >
                                 {move || format!("Print ({})", selected.get())}
                             </button>
-                        }.into_any()
-                    } else {
-                        ().into_any()
-                    }}
-                    {move || if can_manage_materials {
-                        view! {
-                            <button
-                                type="button"
-                                class="sales-btn-secondary"
-                                on:click=move |_| {
-                                    set_mat_name.set(String::new());
-                                    set_mat_width.set(String::new());
-                                    set_mat_rolls.set("1".into());
-                                    set_mat_mpr.set("50".into());
-                                    set_show_add_mat.set(true);
-                                }
-                            >"+ Material"</button>
                         }.into_any()
                     } else {
                         ().into_any()
@@ -609,102 +492,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 } else {
                     ().into_any()
                 }}
-            </div>
-
-            // Materials
-            <div class="dash-card print-materials-card">
-                <div class="print-section-head">
-                    <div>
-                        <h3 class="dash-chart-title">"Materials inventory"</h3>
-                        <p class="prod-sub">"Banner, satin, canvas, and more"</p>
-                    </div>
-                </div>
-                <div class="print-materials-list">
-                    {move || {
-                        let mats = materials.get();
-                        if mats.is_empty() {
-                            return view! {
-                                <div class="dash-table-empty print-materials-empty">"No materials yet."</div>
-                            }.into_any();
-                        }
-                        mats.into_iter().map(|m| {
-                            let rem = remaining(&m);
-                            let rr = rolls_remaining(&m);
-                            let pct = if m.total_metres > 0.0 {
-                                rem / m.total_metres * 100.0
-                            } else {
-                                0.0
-                            };
-                            let (status_label, status_cls, bar_cls) = if pct > 20.0 {
-                                ("Healthy", "dash-status is-ok", "print-progress-fill is-ok")
-                            } else if pct > 10.0 {
-                                ("Low", "dash-status is-warn", "print-progress-fill is-warn")
-                            } else {
-                                ("Critical", "dash-status is-danger", "print-progress-fill is-danger")
-                            };
-                            let mid = m.id;
-                            let m_clone = m.clone();
-                            view! {
-                                <div class="print-mat-row">
-                                    <div class="print-mat-main">
-                                        <div class="print-mat-title-row">
-                                            <span class="dash-td-strong">{m.name.clone()}</span>
-                                            <span class="dash-status is-info">{m.material_type.clone()}</span>
-                                            <span class=status_cls>{status_label}</span>
-                                        </div>
-                                        <div class="print-mat-stats">
-                                            <div class="print-mat-stat">
-                                                <span class="dash-metric-label">"Width"</span>
-                                                <span class="dash-td-strong tnum">{format!("{}m", m.width)}</span>
-                                            </div>
-                                            <div class="print-mat-stat">
-                                                <span class="dash-metric-label">"Rolls"</span>
-                                                <span class="dash-td-strong tnum">{m.rolls}</span>
-                                            </div>
-                                            <div class="print-mat-stat">
-                                                <span class="dash-metric-label">"Remaining"</span>
-                                                <span class="dash-td-strong tnum">{format!("{:.1} rolls", rr)}</span>
-                                                <span class="prod-sub tnum">{format!("{:.1}m left", rem)}</span>
-                                            </div>
-                                        </div>
-                                        <div class="print-progress">
-                                            <div class="print-progress-meta">
-                                                <span class="dash-metric-label">"Stock level"</span>
-                                                <span class="prod-sub tnum">{format!("{:.0}%", pct.max(0.0))}</span>
-                                            </div>
-                                            <div class="print-progress-track">
-                                                <div
-                                                    class=bar_cls
-                                                    style=format!("width:{:.1}%", pct.clamp(0.0, 100.0))
-                                                ></div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="prod-actions">
-                                        <button
-                                            type="button"
-                                            class="prod-btn-add"
-                                            on:click=move |_| {
-                                                set_add_rolls_val.set(String::new());
-                                                set_show_add_rolls.set(Some(m_clone.clone()));
-                                            }
-                                        >"Add Rolls"</button>
-                                        <button
-                                            type="button"
-                                            class="prod-btn-icon is-danger"
-                                            aria-label="Delete material"
-                                            on:click=move |_| delete_material(mid)
-                                        >
-                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                            </svg>
-                                        </button>
-                                    </div>
-                                </div>
-                            }
-                        }).collect::<Vec<_>>().into_any()
-                    }}
-                </div>
             </div>
 
             // Jobs table — toolbar separate from table card
@@ -770,10 +557,19 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                             items.into_iter().map(|t| {
                                 let id = t.id;
                                 let tm = format_printing_timestamp(&t.timestamp);
-                                let mat = if let Some(ref sz) = t.material_size {
-                                    format!("{}m {}", sz, t.material_type.as_deref().unwrap_or(""))
-                                } else {
-                                    "N/A".into()
+                                let mat = match (
+                                    t.material_type.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                                    t.material_size.as_deref(),
+                                ) {
+                                    (Some(name), Some(sz)) if name.eq_ignore_ascii_case("custom") => {
+                                        format!("{}m wide", sz)
+                                    }
+                                    (Some(name), Some(sz)) => format!("{} · {}m", name, sz),
+                                    (Some(name), None) if !name.eq_ignore_ascii_case("custom") => {
+                                        name.to_string()
+                                    }
+                                    (None, Some(sz)) => format!("{}m wide", sz),
+                                    _ => "N/A".into(),
                                 };
                                 let name = t.service_name.clone();
                                 let pm_label = t.payment_method.clone();
@@ -941,6 +737,15 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
         {move || if show_record.get() { view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 900px;"><div class="modal-header"><h3 class="modal-title">"Record Printing Job"</h3><button class="modal-close-btn" prop:disabled=move || job_submitting.get() on:click=move |_| { if !job_submitting.get() { set_show_record.set(false); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
             <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Select Material *"</label><div>
                 <CustomDropdown items=material_items placeholder="Select material".to_string() on_select=Callback::new(move |v: String| { if let Ok(id) = v.parse() { set_mat_id.set(Some(id)); } })/>
+                {move || if materials.get().is_empty() {
+                    view! {
+                        <p class="text-xs text-gray-400 mt-1">
+                            "No materials in stock. Add them under Inventory → Print materials."
+                        </p>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
             </div></div>
             <div class="grid grid-cols-2 gap-4">
                 <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Metres Printed *"</label><input type="number" min="0.1" step="0.1" class="w-full" placeholder="Metres" prop:value=move || metres_printed.get() on:input=move |e| set_metres_printed.set(event_target_value(&e))/></div>
@@ -958,40 +763,6 @@ pub fn PrintingPage(show_revenue_stats: bool, can_manage_materials: bool) -> imp
                 <button type="button" class="btn-primary px-4 py-2 text-sm" prop:disabled=move || job_submitting.get() on:click=submit_job>{move || if job_submitting.get() { "Recording..." } else { "Record Job" }}</button>
             </div>
         </div></div></div></div>}.into_any() } else { ().into_any() }}
-
-        // Add Material Modal
-        {move || if can_manage_materials && show_add_mat.get() { view!{<div class="modal-overlay open"><div class="modal-container"><div class="modal-header"><h3 class="modal-title">"Add Printing Material"</h3><button class="modal-close-btn" prop:disabled=move || mat_submitting.get() on:click=move |_| { if !mat_submitting.get() { set_show_add_mat.set(false); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body"><div class="space-y-4">
-            <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Material Name *"</label><input type="text" class="w-full" placeholder="e.g., White Banner Vinyl, Blue Satin Fabric" prop:value=move || mat_name.get() on:input=move |e| set_mat_name.set(event_target_value(&e))/></div>
-            <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Width (metres) *"</label><input type="number" step="0.1" min="0.1" class="w-full" placeholder="Enter width in metres" prop:value=move || mat_width.get() on:input=move |e| set_mat_width.set(event_target_value(&e))/></div>
-            <div class="grid grid-cols-2 gap-4">
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Rolls *"</label><input type="number" min="1" class="w-full" prop:value=move || mat_rolls.get() on:input=move |e| set_mat_rolls.set(event_target_value(&e))/></div>
-                <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Metres per Roll *"</label><input type="number" step="0.1" min="1" class="w-full" prop:value=move || mat_mpr.get() on:input=move |e| set_mat_mpr.set(event_target_value(&e))/></div>
-            </div>
-            <div class="bg-gray-50 border border-gray-200 p-4"><div class="text-sm"><span class="text-gray-600">"Total metres will be calculated automatically"</span></div></div>
-            <div class="modal-footer mt-4 pt-4 border-t border-gray-100">
-                <button type="button" class="btn-secondary px-4 py-2 text-sm" prop:disabled=move || mat_submitting.get() on:click=move |_| { if !mat_submitting.get() { set_show_add_mat.set(false); } }>"Cancel"</button>
-                <button type="button" class="btn-primary px-4 py-2 text-sm" prop:disabled=move || mat_submitting.get() on:click=submit_add_mat>{move || if mat_submitting.get() { "Adding..." } else { "Add Material" }}</button>
-            </div>
-        </div></div></div></div>}.into_any() } else { ().into_any() }}
-
-        // Add Rolls Modal
-        {move || show_add_rolls.get().map(|m| {
-            let mpr = m.metres_per_roll;
-            view!{<div class="modal-overlay open"><div class="modal-container" style="max-width: 500px;"><div class="modal-header"><h3 class="modal-title">"Add Rolls to Printing Material"</h3><button class="modal-close-btn" prop:disabled=move || rolls_submitting.get() on:click=move |_| { if !rolls_submitting.get() { set_show_add_rolls.set(None); } }><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button></div><div class="modal-body">
-                <div class="bg-gray-50 p-4 mb-4"><p class="text-xs text-gray-500 uppercase tracking-wide">"Printing Material"</p><p class="font-semibold text-gray-900">{m.name.clone()}</p>
-                    <p class="text-sm text-gray-600 mt-1"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-100 text-neutral-800">{m.material_type.clone()}</span>
-                    <span class="ml-2">{format!("Width: {}m", m.width)}</span></p>
-                    <p class="text-sm text-gray-600 mt-1">{format!("Current: {:.1}m remaining ({:.1} rolls)", remaining(&m), rolls_remaining(&m))}</p>
-                </div>
-                <div class="space-y-4">
-                    <div><label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">"Number of Rolls to Add *"</label><input type="number" min="1" step="1" class="w-full" placeholder="Enter rolls to add" prop:value=move || add_rolls_val.get() on:input=move |e| set_add_rolls_val.set(event_target_value(&e))/>
-                        <p class="text-xs text-gray-500 mt-1">{format!("Each roll = {}m", mpr as u64)}</p></div>
-                    <div class="bg-neutral-50 border border-neutral-200 p-3">
-                        <p class="text-sm text-gray-700"><span class="font-medium">"New Total:"</span> {move || { let a: i64 = add_rolls_val.get().parse().unwrap_or(0); format!("{} rolls ({}m)", m.rolls + a, (m.total_metres + a as f64 * mpr) as u64) }}</p>
-                    </div>
-                </div>
-            </div><div class="modal-footer"><button type="button" class="btn-secondary px-4 py-2" prop:disabled=move || rolls_submitting.get() on:click=move |_| { if !rolls_submitting.get() { set_show_add_rolls.set(None); } }>"Cancel"</button><button type="button" class="btn-primary px-4 py-2" prop:disabled=move || rolls_submitting.get() on:click=submit_add_rolls>{move || if rolls_submitting.get() { "Adding..." } else { "Add Rolls" }}</button></div></div></div>}.into_any()
-        }).unwrap_or_else(|| ().into_any())}
 
         // Convert to Debt Modal
         {move || show_convert.get().map(|t| {

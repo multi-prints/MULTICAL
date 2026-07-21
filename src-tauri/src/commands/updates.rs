@@ -129,13 +129,42 @@ fn download_installer(url: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Hide console windows for child processes on Windows (PowerShell, silent installer).
+#[cfg(windows)]
+fn windows_hide_console(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW — no console allocated for the child
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn windows_hide_console(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
 fn download_file(url: &str, path: &Path) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         let path_str = powershell_quote(&path.to_string_lossy());
         let url_str = powershell_quote(url);
-        let status = Command::new("powershell")
+        // Prefer curl.exe (ships with Windows 10+) — no PowerShell console flash.
+        let mut curl = Command::new("curl.exe");
+        windows_hide_console(&mut curl);
+        let curl_status = curl.arg("-LfsS").arg(url).arg("-o").arg(path).status();
+        if let Ok(status) = curl_status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        // Fallback: PowerShell with no window
+        let mut ps = Command::new("powershell");
+        windows_hide_console(&mut ps);
+        let status = ps
             .arg("-NoProfile")
             .arg("-NonInteractive")
+            .arg("-WindowStyle")
+            .arg("Hidden")
             .arg("-Command")
             .arg(format!(
                 "Invoke-WebRequest -Uri '{url_str}' -OutFile '{path_str}'"
@@ -181,10 +210,10 @@ fn powershell_quote(value: &str) -> String {
 
 fn run_installer(path: &Path) -> Result<(), String> {
     if cfg!(target_os = "windows") {
-        let status = Command::new(path)
-            .arg("/S")
-            .status()
-            .map_err(|e| e.to_string())?;
+        // Silent NSIS install; CREATE_NO_WINDOW avoids a black console flash.
+        let mut cmd = Command::new(path);
+        windows_hide_console(&mut cmd);
+        let status = cmd.arg("/S").status().map_err(|e| e.to_string())?;
         if status.success() {
             Ok(())
         } else {
