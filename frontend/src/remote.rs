@@ -13,14 +13,8 @@ mod embedded {
     include!(concat!(env!("OUT_DIR"), "/embedded_api.rs"));
 }
 
-/// Bumped after successful remote mutations so open pages can refresh immediately.
+/// Bumped after successful mutations so open pages can refresh (no timer polling).
 static DATA_EPOCH: AtomicU64 = AtomicU64::new(0);
-
-/// Poll interval when remote multi-PC API is active (near real-time).
-pub const REMOTE_LIVE_REFRESH_MS: u32 = 4_000;
-
-/// Poll interval for local-only / Turso-replica mode (unchanged behaviour).
-pub const LOCAL_LIVE_REFRESH_MS: u32 = 12_000;
 
 pub fn is_enabled() -> bool {
     embedded::EMBEDDED_API_PRESENT
@@ -30,14 +24,6 @@ pub fn is_enabled() -> bool {
 
 pub fn base_url() -> &'static str {
     embedded::EMBEDDED_API_BASE_URL
-}
-
-pub fn live_refresh_ms() -> u32 {
-    if is_enabled() {
-        REMOTE_LIVE_REFRESH_MS
-    } else {
-        LOCAL_LIVE_REFRESH_MS
-    }
 }
 
 pub fn data_epoch() -> u64 {

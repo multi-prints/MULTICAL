@@ -1,9 +1,7 @@
-//! Live multi-PC refresh: poll while a page is mounted so changes from other
-//! PCs show up without a manual reload.
+//! Refresh open pages **only after a data change** (add / edit / delete), not on a timer.
 //!
-//! - Local / Turso-replica mode: ~12s (existing behaviour)
-//! - Cloudflare remote API mode: ~4s for near real-time multi-till updates
-//! - Also watches a local data-epoch so same-PC mutations refresh all open pages
+//! `remote::notify_data_changed()` is called after successful mutations; this hook
+//! watches that epoch and re-runs the page load. No periodic HTTP polling.
 
 use crate::remote;
 use gloo_timers::future::TimeoutFuture;
@@ -11,41 +9,27 @@ use leptos::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Default poll when remote API is not configured (legacy multi-PC via Turso).
-pub const LIVE_REFRESH_MS: u32 = remote::LOCAL_LIVE_REFRESH_MS;
+/// Kept for call-site compatibility. Interval polling is disabled.
+pub const LIVE_REFRESH_MS: u32 = 0;
 
-/// Call `callback` on an interval (and when the remote data-epoch bumps) until unmount.
-pub fn use_auto_refresh(interval_ms: u32, callback: impl Fn() + 'static) {
+/// Re-run `callback` when app data changes (mutations), until the page unmounts.
+///
+/// `interval_ms` is ignored — we do **not** poll the API on a timer.
+pub fn use_auto_refresh(_interval_ms: u32, callback: impl Fn() + 'static) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&cancelled);
 
-    // Use remote-aware interval when multi-PC API is embedded (faster live load).
-    let interval = if remote::is_enabled() {
-        remote::live_refresh_ms().min(interval_ms)
-    } else {
-        interval_ms
-    };
-
     leptos::task::spawn_local(async move {
         let mut last_epoch = remote::data_epoch();
-        // Slice long polls so epoch bumps are noticed within ~500ms
-        let slice = 500u32;
-        let mut elapsed = 0u32;
+        // Light sleep only to notice epoch bumps from other pages on this PC.
         loop {
-            TimeoutFuture::new(slice).await;
+            TimeoutFuture::new(400).await;
             if flag.load(Ordering::Relaxed) {
                 break;
             }
             let epoch = remote::data_epoch();
             if epoch != last_epoch {
                 last_epoch = epoch;
-                elapsed = 0;
-                callback();
-                continue;
-            }
-            elapsed = elapsed.saturating_add(slice);
-            if elapsed >= interval {
-                elapsed = 0;
                 callback();
             }
         }

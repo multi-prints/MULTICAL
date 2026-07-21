@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-schema/master/tauri-conf.schema.json",
   "productName": "MULTIPRINTS",
-  "version": "1.1.14",
+  "version": "1.1.15",
   "identifier": "com.multiprints.desktop",
   "app": {
     "withGlobalTauri": true,
@@ -28,8 +28,14 @@
   "build": {
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../src",
-    "beforeDevCommand": "cd frontend && trunk serve --release --port 1420",
-    "beforeBuildCommand": "cd frontend && trunk build"
+    "beforeDevCommand": {
+      "script": "trunk serve --release --port 1420",
+      "cwd": "../frontend"
+    },
+    "beforeBuildCommand": {
+      "script": "trunk build",
+      "cwd": "../frontend"
+    }
   },
   "bundle": {
     "active": true,
