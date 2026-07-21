@@ -82,6 +82,11 @@ jobs:
             *) echo "::error::TURSO_DATABASE_URL must start with libsql:// or https://"; exit 1 ;;
           esac
           echo "Turso secrets present (url length=${#MULTIPRINTS_TURSO_DATABASE_URL}, token length=${#MULTIPRINTS_TURSO_AUTH_TOKEN})"
+          # Full Turso DB tokens are JWTs (~250-300 chars). A short value is almost always a bad paste.
+          if [ "${#MULTIPRINTS_TURSO_AUTH_TOKEN}" -lt 200 ]; then
+            echo "::error::TURSO_AUTH_TOKEN looks truncated (len=${#MULTIPRINTS_TURSO_AUTH_TOKEN}). Expected a full JWT (~280 chars). Update the secret from your working turso.json."
+            exit 1
+          fi
 
       - name: Force rebuild multiprints with Turso embeds
         # Avoid shipping a cached binary compiled without secrets.
