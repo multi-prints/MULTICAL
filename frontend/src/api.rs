@@ -906,6 +906,20 @@ struct ItemsUser {
 struct MetricsDebt {
     total_outstanding: f64,
     paid_this_month: f64,
+    #[serde(default)]
+    overdue_count: i64,
+    #[serde(default)]
+    overdue_total: f64,
+}
+
+/// Worker notification feed (`GET /v1/notifications` or `/v1/debts/overdue`).
+#[derive(Debug, Clone, Deserialize)]
+struct NotificationsFeed {
+    items: Vec<Debt>,
+    #[serde(default)]
+    overdue_count: i64,
+    #[serde(default)]
+    overdue_total: f64,
 }
 
 pub async fn get_all_debts() -> Result<Vec<Debt>, String> {
@@ -1013,7 +1027,11 @@ pub async fn get_overdue_debts() -> Result<Vec<Debt>, String> {
     remote::prefer_remote_then_local(
         "get_overdue_debts",
         async {
-            let r: ItemsDebt = remote::get_json("/v1/debts/overdue").await?;
+            // Prefer dedicated notifications feed; fall back to debts/overdue.
+            if let Ok(r) = remote::get_json::<NotificationsFeed>("/v1/notifications").await {
+                return Ok(r.items);
+            }
+            let r: NotificationsFeed = remote::get_json("/v1/debts/overdue").await?;
             Ok(r.items)
         },
         async { tauri_invoke_inner("get_overdue_debts", &serde_json::json!({})).await },

@@ -6,6 +6,7 @@ import { turso } from "./db";
 import { dashboard } from "./routes/dashboard";
 import { debts } from "./routes/debts";
 import { materials } from "./routes/materials";
+import { notifications } from "./routes/notifications";
 import { printing } from "./routes/printing";
 import { products } from "./routes/products";
 import { sales } from "./routes/sales";
@@ -31,7 +32,7 @@ app.get("/", (c) =>
     name: c.env.APP_NAME ?? "MULTIPRINTS API",
     status: "ok",
     coverage:
-      "products, stock, materials, sales, printing, debts, dashboard, users, auth, services",
+      "products, stock, materials, sales, printing, debts, notifications, dashboard, users, auth, services",
   }),
 );
 
@@ -65,6 +66,7 @@ app.route("/v1/materials", materials);
 app.route("/v1/sales", sales);
 app.route("/v1/printing", printing);
 app.route("/v1/debts", debts);
+app.route("/v1/notifications", notifications);
 app.route("/v1/dashboard", dashboard);
 app.route("/v1/users", users);
 app.route("/v1/auth", auth);

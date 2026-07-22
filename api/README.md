@@ -90,6 +90,17 @@ Authorization: Bearer <API_SECRET>
 | GET | `/v1/printing/jobs` | Printing jobs + metrics |
 | POST | `/v1/printing/jobs` | Record job (+ deduct material) |
 | DELETE | `/v1/printing/jobs/:id` | Delete |
+| GET | `/v1/debts` | Debts page (+ metrics, search) |
+| GET | `/v1/debts/overdue` | Overdue debts (notification source) |
+| GET | `/v1/debts/pending` | Pending debts |
+| GET | `/v1/debts/metrics` | Outstanding / paid / overdue totals |
+| POST | `/v1/debts` | Create debt (marks linked sale/job) |
+| GET | `/v1/notifications` | Titlebar feed: overdue items + totals |
+| GET | `/v1/dashboard/summary` | Dashboard KPIs |
+| GET | `/v1/dashboard/chart` | Revenue chart (`period=week\|month\|year`) |
+| GET | `/v1/users` | Users (admin) |
+| POST | `/v1/auth/login` | Session login |
+| GET | `/v1/services` | Print services catalog |
 
 ## Quick test
 
@@ -111,7 +122,8 @@ curl -s -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/js
 The Leptos frontend embeds `MULTIPRINTS_API_BASE_URL` + `MULTIPRINTS_API_SECRET` at build time
 (see `frontend/build.rs`). When present:
 
-- products / stock / materials / sales / printing jobs prefer **this API**
+- products / stock / materials / sales / printing / debts / notifications / dashboard / users / services prefer **this API**
+- admin titlebar overdue notifications use **`GET /v1/notifications`** (falls back to `/v1/debts/overdue`, then local Tauri)
 - on network failure, **local Tauri DB still works** (offline-safe)
 - UI refetches **only after a mutation on this PC** (add/edit/delete) — no timer polling, stays on free Workers
 

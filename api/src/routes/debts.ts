@@ -6,9 +6,19 @@ type AppEnv = { Bindings: Env };
 
 export const debts = new Hono<AppEnv>();
 
-function mapDebt(row: Record<string, unknown>) {
+/** Normalize debt rows for desktop (string ids, numbers) — same as sales/printing. */
+export function mapDebt(row: Record<string, unknown>) {
   return {
     ...row,
+    id: row.id != null ? String(row.id) : row.id,
+    sale_id: row.sale_id != null ? String(row.sale_id) : null,
+    service_transaction_id:
+      row.service_transaction_id != null
+        ? String(row.service_transaction_id)
+        : null,
+    amount: Number(row.amount ?? 0),
+    paid_amount: Number(row.paid_amount ?? 0),
+    remaining_amount: Number(row.remaining_amount ?? 0),
     source_label: row.source_label ?? row.description ?? null,
     source_kind:
       row.source_kind ??
@@ -30,7 +40,7 @@ function mapDebt(row: Record<string, unknown>) {
  * Full debt row + sale/product/stock/print joins so the UI can show the same
  * previews as the desktop Tauri list (color swatches, product type, etc.).
  */
-const debtSelect = `
+export const debtSelect = `
 SELECT
   d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount,
   d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id,
@@ -197,8 +207,15 @@ debts.get("/overdue", async (c) => {
        AND date(d.due_date) < date('now', 'localtime')
      ORDER BY d.due_date ASC`,
   );
+  const items = res.rows.map((r) => mapDebt(r as Record<string, unknown>));
+  const overdue_total = items.reduce(
+    (sum, d) => sum + Number((d as { remaining_amount?: number }).remaining_amount ?? 0),
+    0,
+  );
   return c.json({
-    items: res.rows.map((r) => mapDebt(r as Record<string, unknown>)),
+    items,
+    overdue_count: items.length,
+    overdue_total,
   });
 });
 
@@ -211,14 +228,23 @@ debts.get("/metrics", async (c) => {
     `SELECT COALESCE(SUM(amount), 0) AS v FROM debt_payments
      WHERE strftime('%Y-%m', payment_date) = strftime('%Y-%m', 'now', 'localtime')`,
   );
+  const overdue = await db.execute(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(remaining_amount), 0) AS total
+     FROM debts
+     WHERE status = 'pending' AND due_date IS NOT NULL
+       AND date(due_date) < date('now', 'localtime')`,
+  );
   return c.json({
     total_outstanding: Number(outstanding.rows[0]?.v ?? 0),
     paid_this_month: Number(paid.rows[0]?.v ?? 0),
+    overdue_count: Number(overdue.rows[0]?.n ?? 0),
+    overdue_total: Number(overdue.rows[0]?.total ?? 0),
   });
 });
 
 debts.get("/by-sale/:saleId", async (c) => {
-  const saleId = Number(c.req.param("saleId"));
+  const saleId = asId(c.req.param("saleId"));
+  if (saleId == null) return c.json({ error: "Invalid sale id" }, 400);
   const db = turso(c.env);
   const res = await db.execute({
     sql: `${debtSelect} WHERE d.sale_id = ? ORDER BY d.created_at DESC LIMIT 1`,
@@ -229,7 +255,8 @@ debts.get("/by-sale/:saleId", async (c) => {
 });
 
 debts.get("/by-transaction/:txnId", async (c) => {
-  const txnId = Number(c.req.param("txnId"));
+  const txnId = asId(c.req.param("txnId"));
+  if (txnId == null) return c.json({ error: "Invalid transaction id" }, 400);
   const db = turso(c.env);
   const res = await db.execute({
     sql: `${debtSelect} WHERE d.service_transaction_id = ? ORDER BY d.created_at DESC LIMIT 1`,

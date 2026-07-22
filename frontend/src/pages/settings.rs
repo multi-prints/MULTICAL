@@ -24,7 +24,7 @@ pub fn SettingsPage(
     let (active_tab, set_active_tab) = signal(SettingsTab::Account);
     let (msg, set_msg) = signal(None::<(bool, String)>);
     let (users, set_users) = signal(Vec::<User>::new());
-    let (app_version, set_app_version) = signal("1.1.17".to_string());
+    let (app_version, set_app_version) = signal("1.1.18".to_string());
     let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
     let (update_status, set_update_status) = signal(None::<String>);
     let (checking_update, set_checking_update) = signal(false);
