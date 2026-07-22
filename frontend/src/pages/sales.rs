@@ -1,6 +1,7 @@
 use super::stock_page::{get_hex as stock_color_hex, reflective_swatch_style};
-use crate::api::{self, NewDebt, NewSale, Product, Sale, SalesPageQuery, StockItem};
+use crate::api::{self, NewDebt, NewSale, Product, Sale, SalesPageQuery, StockItem, UserInfo};
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
+use gloo_storage::Storage;
 use leptos::prelude::*;
 use log::error;
 
@@ -16,6 +17,14 @@ use receipt_comp::{open_multi_sale_receipt, open_sale_receipt, ReceiptModal};
 #[path = "../components/loading.rs"]
 mod loading_comp;
 use loading_comp::PageLoading;
+
+fn current_staff_username() -> Option<String> {
+    gloo_storage::LocalStorage::get::<String>("currentUser")
+        .ok()
+        .and_then(|raw: String| serde_json::from_str::<UserInfo>(&raw).ok())
+        .map(|u| u.username)
+        .filter(|u: &String| !u.trim().is_empty())
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum SaleTab {
@@ -592,6 +601,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     is_debt: 0,
                     product_quantity: None,
                     stock_metres_used: Some(metres),
+                    created_by: current_staff_username(),
                 })
                 .await
                 {
@@ -665,6 +675,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     is_debt: 0,
                     product_quantity: Some(pqty),
                     stock_metres_used: None,
+                    created_by: current_staff_username(),
                 })
                 .await
                 {
@@ -714,6 +725,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                     is_debt: 0,
                     product_quantity: None,
                     stock_metres_used: None,
+                    created_by: current_staff_username(),
                 })
                 .await
                 {
@@ -1022,6 +1034,13 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                             <th>"Amount"</th>
                             <th>"Payment"</th>
                             <th>"Customer"</th>
+                            {move || {
+                                if show_revenue_stats {
+                                    view! { <th>"Staff"</th> }.into_any()
+                                } else {
+                                    ().into_any()
+                                }
+                            }}
                             <th>"Actions"</th>
                         </tr>
                     </thead>
@@ -1029,9 +1048,10 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         {move || {
                             let items = paginated();
                             if items.is_empty() {
+                                let cols = if show_revenue_stats { "9" } else { "8" };
                                 return view! {
                                     <tr>
-                                        <td colspan="8" class="dash-table-empty">"No sales recorded."</td>
+                                        <td colspan=cols class="dash-table-empty">"No sales recorded."</td>
                                     </tr>
                                 }.into_any();
                             }
@@ -1042,6 +1062,11 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                 let qty_display = sale.quantity.clone().unwrap_or_else(|| "—".into());
                                 let pm_display = sale.payment_method.clone();
                                 let cust_display = sale.customer_name.clone();
+                                let staff_display = sale
+                                    .created_by
+                                    .clone()
+                                    .filter(|s| !s.trim().is_empty())
+                                    .unwrap_or_else(|| "—".into());
                                 let product_match = if sale.r#type == "product" {
                                     sale.product_id.and_then(|pid| products.get().into_iter().find(|p| p.id == pid))
                                 } else {
@@ -1124,6 +1149,11 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                             }}
                                         </td>
                                         <td class="dash-td-muted">{cust_display}</td>
+                                        {if show_revenue_stats {
+                                            view! { <td class="dash-td-muted">{staff_display}</td> }.into_any()
+                                        } else {
+                                            ().into_any()
+                                        }}
                                         <td>
                                             <div class="prod-actions">
                                                 <button

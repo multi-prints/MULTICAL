@@ -24,7 +24,7 @@ pub fn SettingsPage(
     let (active_tab, set_active_tab) = signal(SettingsTab::Account);
     let (msg, set_msg) = signal(None::<(bool, String)>);
     let (users, set_users) = signal(Vec::<User>::new());
-    let (app_version, set_app_version) = signal("1.1.18".to_string());
+    let (app_version, set_app_version) = signal("1.1.19".to_string());
     let (platform, set_platform) = signal("Tauri (Desktop)".to_string());
     let (update_status, set_update_status) = signal(None::<String>);
     let (checking_update, set_checking_update) = signal(false);
@@ -57,6 +57,11 @@ pub fn SettingsPage(
     let (show_new_upass, set_show_new_upass) = signal(false);
     let (new_role, set_new_role) = signal("employee".to_string());
 
+    // Business statement PDF (admin)
+    let (stmt_source, set_stmt_source) = signal("both".to_string());
+    let (stmt_months, set_stmt_months) = signal(3u32);
+    let (generating_stmt, set_generating_stmt) = signal(false);
+
     let cur_user = move || user.get().map(|u| u.username).unwrap_or_default();
     let is_admin = move || {
         user.get()
@@ -67,6 +72,23 @@ pub fn SettingsPage(
         vec![
             DropdownItem::new("employee", "Employee"),
             DropdownItem::new("admin", "Admin"),
+        ]
+    });
+    let stmt_source_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("both", "Sales and printing"),
+            DropdownItem::new("sales", "Sales only"),
+            DropdownItem::new("printing", "Printing only"),
+        ]
+    });
+    let stmt_months_items = Signal::derive(move || {
+        vec![
+            DropdownItem::new("1", "1 month"),
+            DropdownItem::new("2", "2 months"),
+            DropdownItem::new("3", "3 months"),
+            DropdownItem::new("4", "4 months"),
+            DropdownItem::new("5", "5 months"),
+            DropdownItem::new("6", "6 months"),
         ]
     });
 
@@ -131,6 +153,46 @@ pub fn SettingsPage(
                 Err(e) => set_msg.set(Some((false, e))),
             }
             set_exporting.set(false);
+        });
+    };
+
+    let do_generate_statement = move |_| {
+        if generating_stmt.get() {
+            return;
+        }
+        if !is_admin() {
+            set_msg.set(Some((
+                false,
+                "Only admin staff can generate business statements".into(),
+            )));
+            return;
+        }
+        let source = stmt_source.get();
+        let months = stmt_months.get();
+        let requested_by = cur_user();
+        set_generating_stmt.set(true);
+        set_msg.set(None);
+        leptos::task::spawn_local(async move {
+            match api::generate_business_statement_pdf(&source, months, Some(requested_by.as_str()))
+                .await
+            {
+                Ok(r) if r.success => {
+                    set_msg.set(Some((
+                        true,
+                        r.message
+                            .unwrap_or_else(|| "Business statement PDF saved successfully".into()),
+                    )));
+                }
+                Ok(r) => {
+                    if let Some(m) = r.message {
+                        if !m.to_lowercase().contains("cancel") {
+                            set_msg.set(Some((false, m)));
+                        }
+                    }
+                }
+                Err(e) => set_msg.set(Some((false, e))),
+            }
+            set_generating_stmt.set(false);
         });
     };
 
@@ -645,6 +707,52 @@ pub fn SettingsPage(
             {move || if active_tab.get() == SettingsTab::Backup && is_admin() {
                 view! {
                     <div class="settings-stack">
+                        <div class="dash-card settings-card">
+                            <h3 class="settings-card-title">"Business revenue statement"</h3>
+                            <p class="prod-sub settings-card-desc">
+                                "Generate a PDF revenue statement for bank loans or business proof. Choose sales, printing, or both, and how many months back from today."
+                            </p>
+                            <div class="settings-form statement-form">
+                                <div class="settings-field">
+                                    <label class="settings-label">"Data to include"</label>
+                                    <CustomDropdown
+                                        items=stmt_source_items
+                                        placeholder="Sales and printing".to_string()
+                                        on_select=Callback::new(move |v: String| set_stmt_source.set(v))
+                                    />
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-label">"Period (from today backward)"</label>
+                                    <CustomDropdown
+                                        items=stmt_months_items
+                                        placeholder="3 months".to_string()
+                                        on_select=Callback::new(move |v: String| {
+                                            if let Ok(n) = v.parse::<u32>() {
+                                                set_stmt_months.set(n.clamp(1, 6));
+                                            }
+                                        })
+                                    />
+                                </div>
+                                <div class="settings-actions">
+                                    <button
+                                        type="button"
+                                        class="dash-btn-primary"
+                                        prop:disabled=move || generating_stmt.get()
+                                        on:click=do_generate_statement
+                                    >
+                                        {move || if generating_stmt.get() {
+                                            "Generating PDF..."
+                                        } else {
+                                            "Generate PDF statement"
+                                        }}
+                                    </button>
+                                </div>
+                                <p class="prod-sub statement-hint">
+                                    "Includes cash collected, gross billed, monthly breakdown, payment methods, and period receivables — not full transaction dumps."
+                                </p>
+                            </div>
+                        </div>
+
                         <div class="dash-card settings-card">
                             <h3 class="settings-card-title">"Database backup"</h3>
                             <p class="prod-sub settings-card-desc">"Export or import your business data as a JSON backup file. User accounts are not included."</p>

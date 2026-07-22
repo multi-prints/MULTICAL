@@ -74,3 +74,24 @@ export function asInt(v: unknown, fallback = 0): number {
   }
   return fallback;
 }
+
+let createdByColumnsReady = false;
+
+/**
+ * Ensure sales / service_transactions have created_by (staff username).
+ * Safe to call repeatedly — duplicate-column errors are ignored.
+ */
+export async function ensureCreatedByColumns(db: Client): Promise<void> {
+  if (createdByColumnsReady) return;
+  for (const sql of [
+    "ALTER TABLE sales ADD COLUMN created_by TEXT",
+    "ALTER TABLE service_transactions ADD COLUMN created_by TEXT",
+  ]) {
+    try {
+      await db.execute(sql);
+    } catch {
+      // column already exists
+    }
+  }
+  createdByColumnsReady = true;
+}

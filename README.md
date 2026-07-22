@@ -34,6 +34,7 @@ The application is designed for small to medium printing shops that need a fast 
 - Convert unpaid transactions into debts
 - Track partial payments, outstanding balances, and due dates
 - Show overdue debt notifications for admins
+- **Business revenue PDF statements** (admin only): select sales, printing, or both, pick 1–6 months back from today, and export a bank-ready revenue summary (cash collected, gross billed, monthly breakdown, payment methods, period receivables)
 
 ### Security and Access Control
 - Offline-first local storage using SQLite

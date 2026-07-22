@@ -1,5 +1,11 @@
 import { Hono } from "hono";
-import { asId, asInt, newDistributedId, turso } from "../db";
+import {
+  asId,
+  asInt,
+  ensureCreatedByColumns,
+  newDistributedId,
+  turso,
+} from "../db";
 import type { Env } from "../env";
 import { repairSettledSourceDebtFlags } from "./debts";
 
@@ -25,11 +31,16 @@ function mapJob(row: Record<string, unknown>) {
     is_debt: isDebt,
     amount_paid: amountPaid,
     amount,
+    created_by:
+      row.created_by != null && String(row.created_by).trim()
+        ? String(row.created_by)
+        : null,
   };
 }
 
 printing.get("/jobs", async (c) => {
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
   await repairSettledSourceDebtFlags(db);
   const page = Math.max(1, Number(c.req.query("page") ?? 1));
   const perPage = Math.min(100, Math.max(1, Number(c.req.query("per_page") ?? 50)));
@@ -43,9 +54,10 @@ printing.get("/jobs", async (c) => {
       LOWER(COALESCE(st.service_name, '')) LIKE ?
       OR LOWER(COALESCE(st.customer_name, '')) LIKE ?
       OR LOWER(COALESCE(st.material_type, '')) LIKE ?
+      OR LOWER(COALESCE(st.created_by, '')) LIKE ?
     )`;
     const q = `%${search.toLowerCase()}%`;
-    args.push(q, q, q);
+    args.push(q, q, q, q);
   }
 
   const count = await db.execute({
@@ -111,6 +123,7 @@ printing.post("/jobs", async (c) => {
     material_size?: string | null;
     material_type?: string | null;
     is_debt?: number;
+    created_by?: string | null;
   }>();
 
   if (!body.service_name?.trim()) {
@@ -124,6 +137,7 @@ printing.post("/jobs", async (c) => {
   }
 
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
   const mid = body.printing_material_id ?? null;
 
   if (mid) {
@@ -152,12 +166,16 @@ printing.post("/jobs", async (c) => {
   }
 
   const id = newDistributedId();
+  const createdBy =
+    typeof body.created_by === "string" && body.created_by.trim()
+      ? body.created_by.trim()
+      : null;
   await db.execute({
     sql: `INSERT INTO service_transactions
             (id, service_id, service_name, quantity, price, amount, payment_method,
              customer_name, notes, stock_id, stock_metres_used, material_size,
-             material_type, printing_material_id, is_debt)
-          VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+             material_type, printing_material_id, is_debt, created_by)
+          VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
       body.service_name.trim(),
@@ -172,6 +190,7 @@ printing.post("/jobs", async (c) => {
       body.material_type ?? null,
       mid,
       body.is_debt ?? 0,
+      createdBy,
     ],
   });
 

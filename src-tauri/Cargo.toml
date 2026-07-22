@@ -1,6 +1,6 @@
 [package]
 name = "multiprints"
-version = "1.1.18"
+version = "1.1.19"
 description = "MULTIPRINTS - Offline Desktop Inventory and Sales Management Application"
 authors = ["Godwin Mayodi <codegoddy@gmail.com>"]
 edition = "2021"
@@ -28,6 +28,7 @@ rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 dotenvy = "0.15"
+printpdf = "0.7"
 
 [features]
 default = ["custom-protocol"]

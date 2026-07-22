@@ -900,6 +900,7 @@ impl Database {
                 payment_method TEXT NOT NULL DEFAULT 'cash',
                 customer_name TEXT DEFAULT 'Walk-in',
                 is_debt INTEGER DEFAULT 0,
+                created_by TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
                 FOREIGN KEY (stock_id) REFERENCES stock(id) ON DELETE SET NULL
@@ -959,6 +960,7 @@ impl Database {
                 material_type TEXT,
                 printing_material_id INTEGER,
                 is_debt INTEGER DEFAULT 0,
+                created_by TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE SET NULL,
                 FOREIGN KEY (stock_id) REFERENCES stock(id) ON DELETE SET NULL
@@ -1082,6 +1084,16 @@ impl Database {
                 "sales",
                 "is_debt",
                 "ALTER TABLE sales ADD COLUMN is_debt INTEGER DEFAULT 0",
+            ),
+            (
+                "sales",
+                "created_by",
+                "ALTER TABLE sales ADD COLUMN created_by TEXT",
+            ),
+            (
+                "service_transactions",
+                "created_by",
+                "ALTER TABLE service_transactions ADD COLUMN created_by TEXT",
             ),
         ];
 
@@ -2076,7 +2088,7 @@ impl Database {
     pub fn get_all_sales(&self) -> Result<Vec<Sale>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
                 END AS amount_paid
@@ -2099,7 +2111,8 @@ impl Database {
                     customer_name: row.get(10)?,
                     is_debt: row.get(11)?,
                     timestamp: row.get(12)?,
-                    amount_paid: row.get(13)?,
+                    created_by: row.get(13)?,
+                    amount_paid: row.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2111,7 +2124,7 @@ impl Database {
     pub fn get_today_sales(&self) -> Result<Vec<Sale>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+            .prepare("SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
                 END AS amount_paid
@@ -2134,7 +2147,8 @@ impl Database {
                     customer_name: row.get(10)?,
                     is_debt: row.get(11)?,
                     timestamp: row.get(12)?,
-                    amount_paid: row.get(13)?,
+                    created_by: row.get(13)?,
+                    amount_paid: row.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2183,8 +2197,8 @@ impl Database {
 
             let id = new_distributed_id();
             conn.execute(
-                "INSERT INTO sales (id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![id, sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp],
+                "INSERT INTO sales (id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![id, sale.r#type, sale.product_id, sale.stock_id, sale.product_name, sale.product_type, sale.sticker_type, sale.quantity, sale.amount, sale.payment_method, sale.customer_name, sale.is_debt, timestamp, sale.created_by],
             ).map_err(|e| e.to_string())?;
 
             Ok(id)
@@ -2216,6 +2230,7 @@ impl Database {
             customer_name: sale.customer_name,
             is_debt: sale.is_debt,
             timestamp: Some(timestamp),
+            created_by: sale.created_by,
             amount_paid: if sale.is_debt == 0 { sale.amount } else { 0.0 },
         })
     }
@@ -2257,7 +2272,8 @@ impl Database {
                 LOWER(payment_method) LIKE ?1 OR
                 LOWER(COALESCE(quantity, '')) LIKE ?1 OR
                 LOWER(type) LIKE ?1 OR
-                LOWER(COALESCE(timestamp, '')) LIKE ?1
+                LOWER(COALESCE(timestamp, '')) LIKE ?1 OR
+                LOWER(COALESCE(created_by, '')) LIKE ?1
             )"
             .to_string()
         };
@@ -2282,7 +2298,7 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let sql = format!(
-            "SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp,
+            "SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type, quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.sale_id = sales.id LIMIT 1), 0)
                 END AS amount_paid
@@ -2314,7 +2330,8 @@ impl Database {
                         customer_name: row.get(10)?,
                         is_debt: row.get(11)?,
                         timestamp: row.get(12)?,
-                        amount_paid: row.get(13)?,
+                        created_by: row.get(13)?,
+                        amount_paid: row.get(14)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -2339,7 +2356,8 @@ impl Database {
                         customer_name: row.get(10)?,
                         is_debt: row.get(11)?,
                         timestamp: row.get(12)?,
-                        amount_paid: row.get(13)?,
+                        created_by: row.get(13)?,
+                        amount_paid: row.get(14)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -3854,7 +3872,7 @@ impl Database {
     pub fn get_all_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
                 END AS amount_paid
@@ -3880,7 +3898,8 @@ impl Database {
                     printing_material_id: row.get(13)?,
                     is_debt: row.get(14)?,
                     timestamp: row.get(15)?,
-                    amount_paid: row.get(16)?,
+                    created_by: row.get(16)?,
+                    amount_paid: row.get(17)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3892,7 +3911,7 @@ impl Database {
     pub fn get_today_service_transactions(&self) -> Result<Vec<ServiceTransaction>, String> {
         let conn = self.synced_conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+            .prepare("SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
                 END AS amount_paid
@@ -3918,7 +3937,8 @@ impl Database {
                     printing_material_id: row.get(13)?,
                     is_debt: row.get(14)?,
                     timestamp: row.get(15)?,
-                    amount_paid: row.get(16)?,
+                    created_by: row.get(16)?,
+                    amount_paid: row.get(17)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -3976,8 +3996,8 @@ impl Database {
 
             let id = new_distributed_id();
             conn.execute(
-                "INSERT INTO service_transactions (id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-                params![id, tx.service_id, tx.service_name, tx.quantity, tx.price.unwrap_or(0.0), amount, tx.payment_method, tx.customer_name, tx.notes, tx.stock_id, tx.stock_metres_used, tx.material_size, tx.material_type, tx.printing_material_id, tx.is_debt, timestamp],
+                "INSERT INTO service_transactions (id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                params![id, tx.service_id, tx.service_name, tx.quantity, tx.price.unwrap_or(0.0), amount, tx.payment_method, tx.customer_name, tx.notes, tx.stock_id, tx.stock_metres_used, tx.material_size, tx.material_type, tx.printing_material_id, tx.is_debt, timestamp, tx.created_by],
             ).map_err(|e| e.to_string())?;
 
             Ok(id)
@@ -4012,6 +4032,7 @@ impl Database {
             printing_material_id: tx.printing_material_id,
             is_debt: tx.is_debt,
             timestamp: Some(timestamp),
+            created_by: tx.created_by,
             amount_paid: if tx.is_debt == 0 { amount } else { 0.0 },
         })
     }
@@ -4067,7 +4088,8 @@ impl Database {
                     LOWER(payment_method) LIKE ?1 OR
                     LOWER(COALESCE(material_type, '')) LIKE ?1 OR
                     LOWER(COALESCE(material_size, '')) LIKE ?1 OR
-                    LOWER(COALESCE(timestamp, '')) LIKE ?1
+                    LOWER(COALESCE(timestamp, '')) LIKE ?1 OR
+                    LOWER(COALESCE(created_by, '')) LIKE ?1
                 )",
                 base_filter
             )
@@ -4103,7 +4125,7 @@ impl Database {
         .map_err(|e| e.to_string())?;
 
         let sql = format!(
-            "SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp,
+            "SELECT id, service_id, service_name, quantity, price, amount, payment_method, customer_name, notes, stock_id, stock_metres_used, material_size, material_type, printing_material_id, is_debt, timestamp, created_by,
                 CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount
                      ELSE COALESCE((SELECT d.paid_amount FROM debts d WHERE d.service_transaction_id = service_transactions.id LIMIT 1), 0)
                 END AS amount_paid
@@ -4138,7 +4160,8 @@ impl Database {
                         printing_material_id: row.get(13)?,
                         is_debt: row.get(14)?,
                         timestamp: row.get(15)?,
-                        amount_paid: row.get(16)?,
+                        created_by: row.get(16)?,
+                        amount_paid: row.get(17)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -4166,7 +4189,8 @@ impl Database {
                         printing_material_id: row.get(13)?,
                         is_debt: row.get(14)?,
                         timestamp: row.get(15)?,
-                        amount_paid: row.get(16)?,
+                        created_by: row.get(16)?,
+                        amount_paid: row.get(17)?,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -5449,5 +5473,392 @@ impl Database {
 
         println!("Migration completed!");
         self.finish_write(())
+    }
+
+    // ==================== Business statement (admin PDF) ====================
+
+    /// Aggregate sales / printing figures for the last `months` months (1–6),
+    /// counted backward from today. Used for bank-ready revenue statements.
+    pub fn get_business_statement(
+        &self,
+        source: &str,
+        months: u32,
+        requested_by: Option<String>,
+    ) -> Result<BusinessStatement, String> {
+        let source = source.trim().to_lowercase();
+        if !matches!(source.as_str(), "sales" | "printing" | "both") {
+            return Err("source must be 'sales', 'printing', or 'both'".into());
+        }
+        if !(1..=6).contains(&months) {
+            return Err("months must be between 1 and 6".into());
+        }
+
+        let include_sales = source == "sales" || source == "both";
+        let include_printing = source == "printing" || source == "both";
+
+        let conn = self.synced_conn()?;
+
+        let period_end: String = conn
+            .query_row("SELECT DATE('now', 'localtime')", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let period_start: String = conn
+            .query_row(
+                "SELECT DATE('now', 'localtime', ?1)",
+                params![format!("-{} months", months)],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // Date filter: from period_start inclusive through period_end inclusive.
+        // SQLite DATE() comparison works on ISO timestamps.
+
+        let sales_section = if include_sales {
+            let (transaction_count, gross_billed, cash_collected, debt_transactions, debt_billed): (
+                i64,
+                f64,
+                f64,
+                i64,
+                f64,
+            ) = conn
+                .query_row(
+                    "SELECT
+                        COUNT(*),
+                        COALESCE(SUM(amount), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) > 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) > 0 THEN amount ELSE 0 END), 0)
+                     FROM sales
+                     WHERE DATE(timestamp) >= DATE(?1)
+                       AND DATE(timestamp) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .map_err(|e| e.to_string())?;
+
+            // Debt repayments linked to sales in the period (cash collected on credit sales).
+            let debt_payments_cash: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(dp.amount), 0)
+                     FROM debt_payments dp
+                     INNER JOIN debts d ON d.id = dp.debt_id
+                     WHERE d.sale_id IS NOT NULL
+                       AND DATE(dp.payment_date) >= DATE(?1)
+                       AND DATE(dp.payment_date) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0.0);
+
+            let product_sales_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sales
+                     WHERE type = 'product'
+                       AND DATE(timestamp) >= DATE(?1)
+                       AND DATE(timestamp) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            let stock_sales_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sales
+                     WHERE type = 'stock'
+                       AND DATE(timestamp) >= DATE(?1)
+                       AND DATE(timestamp) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            let payment_methods = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT LOWER(COALESCE(payment_method, 'cash')),
+                                COUNT(*),
+                                COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END), 0)
+                         FROM sales
+                         WHERE DATE(timestamp) >= DATE(?1)
+                           AND DATE(timestamp) <= DATE(?2)
+                           AND COALESCE(is_debt, 0) = 0
+                         GROUP BY LOWER(COALESCE(payment_method, 'cash'))
+                         ORDER BY 3 DESC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![&period_start, &period_end], |r| {
+                        Ok(StatementPaymentBreakdown {
+                            method: r.get(0)?,
+                            count: r.get(1)?,
+                            amount: r.get(2)?,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+
+            Some(StatementSalesSection {
+                transaction_count,
+                gross_billed,
+                cash_collected: cash_collected + debt_payments_cash,
+                debt_transactions,
+                debt_billed,
+                product_sales_count,
+                stock_sales_count,
+                payment_methods,
+            })
+        } else {
+            None
+        };
+
+        let printing_section = if include_printing {
+            let (job_count, gross_billed, cash_collected, debt_jobs, debt_billed, material_metres): (
+                i64,
+                f64,
+                f64,
+                i64,
+                f64,
+                f64,
+            ) = conn
+                .query_row(
+                    "SELECT
+                        COUNT(*),
+                        COALESCE(SUM(amount), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) > 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) > 0 THEN amount ELSE 0 END), 0),
+                        COALESCE(SUM(COALESCE(stock_metres_used, 0)), 0)
+                     FROM service_transactions
+                     WHERE DATE(timestamp) >= DATE(?1)
+                       AND DATE(timestamp) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+
+            let debt_payments_cash: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(dp.amount), 0)
+                     FROM debt_payments dp
+                     INNER JOIN debts d ON d.id = dp.debt_id
+                     WHERE d.service_transaction_id IS NOT NULL
+                       AND DATE(dp.payment_date) >= DATE(?1)
+                       AND DATE(dp.payment_date) <= DATE(?2)",
+                    params![&period_start, &period_end],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0.0);
+
+            let payment_methods = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT LOWER(COALESCE(payment_method, 'cash')),
+                                COUNT(*),
+                                COALESCE(SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END), 0)
+                         FROM service_transactions
+                         WHERE DATE(timestamp) >= DATE(?1)
+                           AND DATE(timestamp) <= DATE(?2)
+                           AND COALESCE(is_debt, 0) = 0
+                         GROUP BY LOWER(COALESCE(payment_method, 'cash'))
+                         ORDER BY 3 DESC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![&period_start, &period_end], |r| {
+                        Ok(StatementPaymentBreakdown {
+                            method: r.get(0)?,
+                            count: r.get(1)?,
+                            amount: r.get(2)?,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+
+            Some(StatementPrintingSection {
+                job_count,
+                gross_billed,
+                cash_collected: cash_collected + debt_payments_cash,
+                debt_jobs,
+                debt_billed,
+                material_metres_used: material_metres,
+                payment_methods,
+            })
+        } else {
+            None
+        };
+
+        // Outstanding receivables for debts created in period, filtered by source.
+        let period_outstanding_receivables: f64 = {
+            let mut conditions = vec![
+                "status = 'pending'".to_string(),
+                "DATE(created_at) >= DATE(?1)".to_string(),
+                "DATE(created_at) <= DATE(?2)".to_string(),
+            ];
+            if include_sales && !include_printing {
+                conditions.push("sale_id IS NOT NULL".into());
+            } else if include_printing && !include_sales {
+                conditions.push("service_transaction_id IS NOT NULL".into());
+            }
+            // both: all pending debts in period
+            let sql = format!(
+                "SELECT COALESCE(SUM(remaining_amount), 0) FROM debts WHERE {}",
+                conditions.join(" AND ")
+            );
+            conn.query_row(&sql, params![&period_start, &period_end], |r| r.get(0))
+                .unwrap_or(0.0)
+        };
+
+        // Monthly breakdown: every calendar month that overlaps the period window.
+        let monthly = {
+            let sales_rev_sql = if include_sales {
+                "COALESCE((
+                    SELECT SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END)
+                    FROM sales s
+                    WHERE strftime('%Y-%m', s.timestamp) = m.ym
+                      AND DATE(s.timestamp) >= DATE(?1)
+                      AND DATE(s.timestamp) <= DATE(?2)
+                ), 0)"
+            } else {
+                "0"
+            };
+            let sales_cnt_sql = if include_sales {
+                "COALESCE((
+                    SELECT COUNT(*) FROM sales s
+                    WHERE strftime('%Y-%m', s.timestamp) = m.ym
+                      AND DATE(s.timestamp) >= DATE(?1)
+                      AND DATE(s.timestamp) <= DATE(?2)
+                ), 0)"
+            } else {
+                "0"
+            };
+            let print_rev_sql = if include_printing {
+                "COALESCE((
+                    SELECT SUM(CASE WHEN COALESCE(is_debt, 0) = 0 THEN amount ELSE 0 END)
+                    FROM service_transactions st
+                    WHERE strftime('%Y-%m', st.timestamp) = m.ym
+                      AND DATE(st.timestamp) >= DATE(?1)
+                      AND DATE(st.timestamp) <= DATE(?2)
+                ), 0)"
+            } else {
+                "0"
+            };
+            let print_cnt_sql = if include_printing {
+                "COALESCE((
+                    SELECT COUNT(*) FROM service_transactions st
+                    WHERE strftime('%Y-%m', st.timestamp) = m.ym
+                      AND DATE(st.timestamp) >= DATE(?1)
+                      AND DATE(st.timestamp) <= DATE(?2)
+                ), 0)"
+            } else {
+                "0"
+            };
+
+            // Walk forward from period_start's month through period_end's month (≤7 rows).
+            let sql = format!(
+                "WITH RECURSIVE months(idx, month_start) AS (
+                    SELECT 0, DATE(?1, 'start of month')
+                    UNION ALL
+                    SELECT idx + 1, DATE(month_start, '+1 month')
+                    FROM months
+                    WHERE DATE(month_start, '+1 month') <= DATE(?2, 'start of month')
+                      AND idx < 12
+                ), m AS (
+                    SELECT strftime('%Y-%m', month_start) AS ym, month_start, idx FROM months
+                )
+                SELECT m.ym,
+                       CASE strftime('%m', m.month_start)
+                           WHEN '01' THEN 'Jan' WHEN '02' THEN 'Feb' WHEN '03' THEN 'Mar'
+                           WHEN '04' THEN 'Apr' WHEN '05' THEN 'May' WHEN '06' THEN 'Jun'
+                           WHEN '07' THEN 'Jul' WHEN '08' THEN 'Aug' WHEN '09' THEN 'Sep'
+                           WHEN '10' THEN 'Oct' WHEN '11' THEN 'Nov' WHEN '12' THEN 'Dec'
+                       END || ' ' || strftime('%Y', m.month_start) AS label,
+                       {sales_rev_sql} AS sales_revenue,
+                       {sales_cnt_sql} AS sales_count,
+                       {print_rev_sql} AS printing_revenue,
+                       {print_cnt_sql} AS printing_count
+                FROM m
+                ORDER BY m.idx ASC"
+            );
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![&period_start, &period_end], |r| {
+                    let sales_revenue: f64 = r.get(2)?;
+                    let sales_count: i64 = r.get(3)?;
+                    let printing_revenue: f64 = r.get(4)?;
+                    let printing_count: i64 = r.get(5)?;
+                    Ok(StatementMonthRow {
+                        year_month: r.get(0)?,
+                        label: r.get(1)?,
+                        sales_revenue,
+                        sales_count,
+                        printing_revenue,
+                        printing_count,
+                        total_revenue: sales_revenue + printing_revenue,
+                        total_count: sales_count + printing_count,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+
+        let total_gross_billed = sales_section
+            .as_ref()
+            .map(|s| s.gross_billed)
+            .unwrap_or(0.0)
+            + printing_section
+                .as_ref()
+                .map(|p| p.gross_billed)
+                .unwrap_or(0.0);
+        let total_cash_collected = sales_section
+            .as_ref()
+            .map(|s| s.cash_collected)
+            .unwrap_or(0.0)
+            + printing_section
+                .as_ref()
+                .map(|p| p.cash_collected)
+                .unwrap_or(0.0);
+        let total_transactions = sales_section
+            .as_ref()
+            .map(|s| s.transaction_count)
+            .unwrap_or(0)
+            + printing_section.as_ref().map(|p| p.job_count).unwrap_or(0);
+
+        let average_monthly_cash = if months > 0 {
+            total_cash_collected / f64::from(months)
+        } else {
+            0.0
+        };
+
+        Ok(BusinessStatement {
+            source,
+            months,
+            period_start,
+            period_end,
+            generated_at: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            requested_by,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            total_gross_billed,
+            total_cash_collected,
+            total_transactions,
+            average_monthly_cash,
+            period_outstanding_receivables,
+            sales: sales_section,
+            printing: printing_section,
+            monthly,
+        })
     }
 }

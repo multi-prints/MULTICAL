@@ -6,6 +6,7 @@ mod auth;
 mod commands;
 mod db;
 mod models;
+mod statement_pdf;
 
 use auth::AuthManager;
 use db::Database;
@@ -157,6 +158,9 @@ pub fn run() {
             // Dashboard commands
             commands::dashboard::get_dashboard_summary,
             commands::dashboard::get_dashboard_chart,
+            // Business statements (admin PDF)
+            commands::statements::get_business_statement,
+            commands::statements::generate_business_statement_pdf,
             // Product commands
             commands::products::get_all_products,
             commands::products::get_products_page,

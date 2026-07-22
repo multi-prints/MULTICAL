@@ -3261,6 +3261,20 @@ html.is-maximized .sidebar {
   color: var(--color-text-muted);
 }
 
+.statement-form {
+  max-width: 420px;
+}
+
+.statement-form .settings-actions {
+  margin-top: 4px;
+}
+
+.statement-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-form {
   display: flex;
   flex-direction: column;

@@ -2024,6 +2024,7 @@ fn SalesPage() -> impl IntoView {
                 is_debt: 0,
                 product_quantity: None,
                 stock_metres_used: None,
+                created_by: None,
             })
             .await;
             set_amount.set(0.0);
@@ -2094,6 +2095,7 @@ fn PrintingPage() -> impl IntoView {
                 material_type: None,
                 printing_material_id: None,
                 is_debt: 0,
+                created_by: None,
             })
             .await;
             set_amount.set(0.0);

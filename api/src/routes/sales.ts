@@ -1,5 +1,11 @@
 import { Hono } from "hono";
-import { asId, asInt, newDistributedId, turso } from "../db";
+import {
+  asId,
+  asInt,
+  ensureCreatedByColumns,
+  newDistributedId,
+  turso,
+} from "../db";
 import type { Env } from "../env";
 import { repairSettledSourceDebtFlags } from "./debts";
 
@@ -25,11 +31,16 @@ function mapSale(row: Record<string, unknown>) {
     is_debt: isDebt,
     amount_paid: amountPaid,
     amount,
+    created_by:
+      row.created_by != null && String(row.created_by).trim()
+        ? String(row.created_by)
+        : null,
   };
 }
 
 sales.get("/", async (c) => {
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
   await repairSettledSourceDebtFlags(db);
   const page = Math.max(1, Number(c.req.query("page") ?? 1));
   const perPage = Math.min(100, Math.max(1, Number(c.req.query("per_page") ?? 50)));
@@ -43,9 +54,10 @@ sales.get("/", async (c) => {
       LOWER(COALESCE(s.product_name, '')) LIKE ?
       OR LOWER(COALESCE(s.customer_name, '')) LIKE ?
       OR LOWER(COALESCE(s.type, '')) LIKE ?
+      OR LOWER(COALESCE(s.created_by, '')) LIKE ?
     )`;
     const q = `%${search.toLowerCase()}%`;
-    args.push(q, q, q);
+    args.push(q, q, q, q);
   }
 
   const count = await db.execute({
@@ -100,6 +112,7 @@ sales.post("/", async (c) => {
     customer_name?: string;
     is_debt?: number;
     stock_metres_used?: number;
+    created_by?: string | null;
   }>();
 
   if (!body.type || body.amount == null) {
@@ -107,6 +120,7 @@ sales.post("/", async (c) => {
   }
 
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
   const id = newDistributedId();
   const qty = String(body.quantity ?? "1");
   const metres = Number(body.stock_metres_used ?? 0);
@@ -132,11 +146,16 @@ sales.post("/", async (c) => {
     });
   }
 
+  const createdBy =
+    typeof body.created_by === "string" && body.created_by.trim()
+      ? body.created_by.trim()
+      : null;
+
   await db.execute({
     sql: `INSERT INTO sales
             (id, type, product_id, stock_id, product_name, product_type, sticker_type,
-             quantity, amount, payment_method, customer_name, is_debt)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             quantity, amount, payment_method, customer_name, is_debt, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       id,
       body.type,
@@ -150,6 +169,7 @@ sales.post("/", async (c) => {
       body.payment_method ?? "cash",
       body.customer_name ?? "Walk-in",
       body.is_debt ?? 0,
+      createdBy,
     ],
   });
 

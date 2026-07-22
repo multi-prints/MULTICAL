@@ -1,7 +1,9 @@
 use crate::api::{
     self, NewDebt, NewServiceTransaction, PrintingMaterial, PrintingPageQuery, ServiceTransaction,
+    UserInfo,
 };
 use crate::auto_refresh::{use_auto_refresh, LIVE_REFRESH_MS};
+use gloo_storage::Storage;
 use leptos::prelude::*;
 
 #[path = "../components/dropdown.rs"]
@@ -16,6 +18,14 @@ use calendar_comp::MiniCalendar;
 #[path = "../components/receipt.rs"]
 mod receipt_comp;
 use receipt_comp::{open_multi_printing_receipt, open_printing_receipt, ReceiptModal};
+
+fn current_staff_username() -> Option<String> {
+    gloo_storage::LocalStorage::get::<String>("currentUser")
+        .ok()
+        .and_then(|raw: String| serde_json::from_str::<UserInfo>(&raw).ok())
+        .map(|u| u.username)
+        .filter(|u: &String| !u.trim().is_empty())
+}
 
 fn format_printing_timestamp(ts: &Option<String>) -> String {
     ts.as_ref()
@@ -290,6 +300,7 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                     material_type: m.as_ref().map(|m| m.name.clone()),
                     printing_material_id: mid,
                     is_debt: 0,
+                    created_by: current_staff_username(),
                 })
                 .await
                 .is_ok();
@@ -556,6 +567,13 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                             <th>"Amount"</th>
                             <th>"Payment"</th>
                             <th>"Customer"</th>
+                            {move || {
+                                if show_revenue_stats {
+                                    view! { <th>"Staff"</th> }.into_any()
+                                } else {
+                                    ().into_any()
+                                }
+                            }}
                             <th>"Actions"</th>
                         </tr>
                     </thead>
@@ -563,9 +581,10 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                         {move || {
                             let items = paginated();
                             if items.is_empty() {
+                                let cols = if show_revenue_stats { "9" } else { "8" };
                                 return view! {
                                     <tr>
-                                        <td colspan="9" class="dash-table-empty">"No printing jobs recorded."</td>
+                                        <td colspan=cols class="dash-table-empty">"No printing jobs recorded."</td>
                                     </tr>
                                 }.into_any();
                             }
@@ -589,6 +608,11 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                                 let name = t.service_name.clone();
                                 let pm_label = t.payment_method.clone();
                                 let cust = t.customer_name.clone();
+                                let staff = t
+                                    .created_by
+                                    .clone()
+                                    .filter(|s| !s.trim().is_empty())
+                                    .unwrap_or_else(|| "—".into());
                                 let txn_clone = t.clone();
                                 let txn_for_receipt = t.clone();
                                 let amount = t.amount;
@@ -642,6 +666,11 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                                             }}
                                         </td>
                                         <td class="dash-td-muted">{cust}</td>
+                                        {if show_revenue_stats {
+                                            view! { <td class="dash-td-muted">{staff}</td> }.into_any()
+                                        } else {
+                                            ().into_any()
+                                        }}
                                         <td>
                                             <div class="prod-actions">
                                                 <button

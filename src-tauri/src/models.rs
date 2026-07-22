@@ -228,6 +228,9 @@ pub struct Sale {
     pub customer_name: String,
     pub is_debt: i64,
     pub timestamp: Option<String>,
+    /// Logged-in username who recorded the sale (employee / admin).
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +255,9 @@ pub struct NewSale {
     pub product_quantity: Option<i64>,
     #[serde(default)]
     pub stock_metres_used: Option<f64>,
+    /// Username of the logged-in staff who recorded this sale.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -459,6 +465,9 @@ pub struct ServiceTransaction {
     pub printing_material_id: Option<i64>,
     pub is_debt: i64,
     pub timestamp: Option<String>,
+    /// Logged-in username who recorded the printing job.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -485,6 +494,9 @@ pub struct NewServiceTransaction {
     pub printing_material_id: Option<i64>,
     #[serde(default)]
     pub is_debt: i64,
+    /// Username of the logged-in staff who recorded this job.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 fn default_quantity() -> f64 {
@@ -741,4 +753,86 @@ pub struct DatabaseBackup {
     pub debts: Vec<serde_json::Value>,
     #[serde(default)]
     pub debt_payments: Vec<serde_json::Value>,
+}
+
+// ==================== Business statement (admin PDF) ====================
+
+/// What to include in a business revenue statement PDF.
+/// Values: `"sales"` | `"printing"` | `"both"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusinessStatementRequest {
+    /// `"sales"` | `"printing"` | `"both"`
+    pub source: String,
+    /// Months counted backward from today: 1–6.
+    pub months: u32,
+    /// Admin username requesting the statement (shown on the PDF).
+    #[serde(default)]
+    pub requested_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementPaymentBreakdown {
+    pub method: String,
+    pub amount: f64,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementMonthRow {
+    /// e.g. "2026-07"
+    pub year_month: String,
+    /// e.g. "Jul 2026"
+    pub label: String,
+    pub sales_revenue: f64,
+    pub sales_count: i64,
+    pub printing_revenue: f64,
+    pub printing_count: i64,
+    pub total_revenue: f64,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementSalesSection {
+    pub transaction_count: i64,
+    pub gross_billed: f64,
+    pub cash_collected: f64,
+    pub debt_transactions: i64,
+    pub debt_billed: f64,
+    pub product_sales_count: i64,
+    pub stock_sales_count: i64,
+    pub payment_methods: Vec<StatementPaymentBreakdown>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementPrintingSection {
+    pub job_count: i64,
+    pub gross_billed: f64,
+    pub cash_collected: f64,
+    pub debt_jobs: i64,
+    pub debt_billed: f64,
+    pub material_metres_used: f64,
+    pub payment_methods: Vec<StatementPaymentBreakdown>,
+}
+
+/// Aggregated figures for a bank-ready business revenue statement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusinessStatement {
+    pub source: String,
+    pub months: u32,
+    pub period_start: String,
+    pub period_end: String,
+    pub generated_at: String,
+    pub requested_by: Option<String>,
+    pub app_version: String,
+    /// Gross billed across selected sources (incl. credit/debt sales).
+    pub total_gross_billed: f64,
+    /// Cash recognized: non-debt amounts + debt repayments in period for selected sources.
+    pub total_cash_collected: f64,
+    pub total_transactions: i64,
+    pub average_monthly_cash: f64,
+    /// Outstanding remaining on debts created in this period (selected sources).
+    pub period_outstanding_receivables: f64,
+    pub sales: Option<StatementSalesSection>,
+    pub printing: Option<StatementPrintingSection>,
+    pub monthly: Vec<StatementMonthRow>,
 }

@@ -270,6 +270,9 @@ pub struct Sale {
     pub customer_name: String,
     pub is_debt: i64,
     pub timestamp: Option<String>,
+    /// Staff username who recorded the sale.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +314,9 @@ pub struct NewSale {
     pub product_quantity: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stock_metres_used: Option<f64>,
+    /// Logged-in staff username who recorded the sale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 fn default_payment() -> String {
@@ -462,6 +468,9 @@ pub struct ServiceTransaction {
     pub printing_material_id: Option<i64>,
     pub is_debt: i64,
     pub timestamp: Option<String>,
+    /// Staff username who recorded the job.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +515,9 @@ pub struct NewServiceTransaction {
     pub printing_material_id: Option<i64>,
     #[serde(default)]
     pub is_debt: i64,
+    /// Logged-in staff username who recorded the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 fn default_f64_one() -> f64 {
@@ -645,6 +657,16 @@ pub struct DashboardSummary {
     pub recent_transactions: Vec<DashboardRecentTransaction>,
     pub activity_items: Vec<DashboardActivityItem>,
     pub top_products: Vec<DashboardTopProduct>,
+}
+
+// ==================== Business statement (admin PDF) ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusinessStatementRequest {
+    pub source: String,
+    pub months: u32,
+    #[serde(default)]
+    pub requested_by: Option<String>,
 }
 
 // ==================== API Functions ====================
@@ -858,6 +880,7 @@ pub async fn add_sale(sale: &NewSale) -> Result<Sale, String> {
                 "customer_name": sale.customer_name,
                 "is_debt": sale.is_debt,
                 "stock_metres_used": sale.stock_metres_used,
+                "created_by": sale.created_by,
             });
             remote::post_json::<_, Sale>("/v1/sales", &body).await
         },
@@ -1218,6 +1241,7 @@ pub async fn add_service_transaction(
                 "material_size": transaction.material_size,
                 "material_type": transaction.material_type,
                 "is_debt": transaction.is_debt,
+                "created_by": transaction.created_by,
             });
             remote::post_json::<_, ServiceTransaction>("/v1/printing/jobs", &body).await
         },
@@ -1366,6 +1390,25 @@ pub async fn delete_user(username: String) -> Result<SuccessResponse, String> {
 api_fn!(clear_all_data, "clear_all_data", SuccessResponse);
 api_fn!(export_database, "export_database", SuccessResponse);
 api_fn!(import_database, "import_database", SuccessResponse);
+
+/// Generate and save a bank-ready PDF business statement (admin only, desktop save dialog).
+pub async fn generate_business_statement_pdf(
+    source: &str,
+    months: u32,
+    requested_by: Option<&str>,
+) -> Result<SuccessResponse, String> {
+    tauri_invoke_inner(
+        "generate_business_statement_pdf",
+        &serde_json::json!({
+            "request": {
+                "source": source,
+                "months": months,
+                "requested_by": requested_by,
+            }
+        }),
+    )
+    .await
+}
 api_fn!(get_app_version, "get_app_version", String);
 api_fn!(get_platform, "get_platform", String);
 api_fn!(check_for_update, "check_for_update", UpdateResult);
