@@ -2677,14 +2677,84 @@ impl Database {
             ).map_err(|e| e.to_string())?;
         }
 
-        let source_kind = if debt.sale_id.is_some() {
+        // Convert-to-debt: mark source row in the same write so the UI does not
+        // need a second update_sale / update_service_transaction round-trip.
+        if let Some(sid) = debt.sale_id {
+            conn.execute("UPDATE sales SET is_debt = 1 WHERE id = ?1", params![sid])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(tid) = debt.service_transaction_id {
+            conn.execute(
+                "UPDATE service_transactions SET is_debt = 1 WHERE id = ?1",
+                params![tid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        // Prefer joined source metadata for previews (same shape as list queries).
+        let mut source_label = debt.description.clone().filter(|s| !s.trim().is_empty());
+        let mut source_kind = if debt.sale_id.is_some() {
             Some("sale".into())
         } else if debt.service_transaction_id.is_some() {
             Some("printing".into())
         } else {
             Some("manual".into())
         };
-        let source_label = debt.description.clone().filter(|s| !s.trim().is_empty());
+        let mut source_sale_type = None::<String>;
+        let mut source_product_type = None::<String>;
+        let mut source_color = None::<String>;
+        let mut source_sticker_type = None::<String>;
+
+        if let Some(sid) = debt.sale_id {
+            if let Ok((stype, pname, ptype, sticker, pcolor, skcolor, sksticker)) = conn.query_row(
+                "SELECT s.type, s.product_name, s.product_type, s.sticker_type,
+                            p.color, sk.color, sk.sticker_type
+                     FROM sales s
+                     LEFT JOIN products p ON p.id = s.product_id
+                     LEFT JOIN stock sk ON sk.id = s.stock_id
+                     WHERE s.id = ?1",
+                params![sid],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            ) {
+                source_sale_type = stype.clone();
+                source_product_type = ptype;
+                source_sticker_type = sticker.or(sksticker);
+                source_color = pcolor.or(skcolor);
+                if source_label.is_none() {
+                    source_label =
+                        pname
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| match stype.as_deref() {
+                                Some("stock") => Some("Sticker sale".into()),
+                                Some("product") => Some("Product sale".into()),
+                                Some("service") => Some("Service sale".into()),
+                                _ => Some("Sale".into()),
+                            });
+                }
+                source_kind = Some("sale".into());
+            }
+        } else if let Some(tid) = debt.service_transaction_id {
+            if let Ok(sname) = conn.query_row(
+                "SELECT service_name FROM service_transactions WHERE id = ?1",
+                params![tid],
+                |row| row.get::<_, Option<String>>(0),
+            ) {
+                if source_label.is_none() {
+                    source_label = sname.filter(|s| !s.trim().is_empty());
+                }
+                source_kind = Some("printing".into());
+            }
+        }
 
         self.finish_write(Debt {
             id,
@@ -2708,10 +2778,10 @@ impl Database {
             source_label,
             source_kind,
             source_detail: None,
-            source_sale_type: None,
-            source_product_type: None,
-            source_color: None,
-            source_sticker_type: None,
+            source_sale_type,
+            source_product_type,
+            source_color,
+            source_sticker_type,
         })
     }
 

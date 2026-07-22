@@ -123,67 +123,154 @@ dashboard.get("/summary", async (c) => {
   });
 });
 
+/**
+ * Chart buckets aligned with the desktop Tauri queries:
+ * - week: last 7 calendar days, labels Mon/Tue/…
+ * - month: last 4 weeks, labels "22–28 Jun"
+ * - year: last 12 months, labels Jan/Feb/…
+ * Always returns a full series (zeros included) so the UI is not sparse.
+ */
 dashboard.get("/chart", async (c) => {
   const period = c.req.query("period") ?? "week";
   const db = turso(c.env);
 
-  // Simple last-7-days revenue by day (week default); month uses day-of-month
-  const days = period === "year" ? 12 : period === "month" ? 30 : 7;
-
   if (period === "year") {
     const res = await db.execute(`
-      SELECT strftime('%Y-%m', ts) AS label, SUM(amount) AS amount, COUNT(*) AS sales_count
-      FROM (
-        SELECT timestamp AS ts, amount FROM sales WHERE COALESCE(is_debt,0)=0
+      WITH RECURSIVE months(idx, month_start) AS (
+        SELECT 0, DATE('now', 'localtime', 'start of month')
         UNION ALL
-        SELECT timestamp AS ts, amount FROM service_transactions WHERE COALESCE(is_debt,0)=0
+        SELECT idx + 1, DATE(month_start, '-1 month')
+        FROM months
+        WHERE idx < 11
+      ), revenues AS (
+        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
+        UNION ALL
+        SELECT strftime('%Y-%m', timestamp) AS ym, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+        UNION ALL
+        SELECT strftime('%Y-%m', payment_date) AS ym, amount FROM debt_payments
+      ), tx_counts AS (
+        SELECT strftime('%Y-%m', timestamp) AS ym FROM sales
+        UNION ALL
+        SELECT strftime('%Y-%m', timestamp) AS ym FROM service_transactions
       )
-      WHERE ts IS NOT NULL AND date(ts) >= date('now', 'localtime', '-365 days')
-      GROUP BY strftime('%Y-%m', ts)
-      ORDER BY label ASC
+      SELECT CASE strftime('%m', month_start)
+               WHEN '01' THEN 'Jan' WHEN '02' THEN 'Feb' WHEN '03' THEN 'Mar'
+               WHEN '04' THEN 'Apr' WHEN '05' THEN 'May' WHEN '06' THEN 'Jun'
+               WHEN '07' THEN 'Jul' WHEN '08' THEN 'Aug' WHEN '09' THEN 'Sep'
+               WHEN '10' THEN 'Oct' WHEN '11' THEN 'Nov' WHEN '12' THEN 'Dec'
+             END AS label,
+             COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.ym = strftime('%Y-%m', m.month_start)), 0) AS amount,
+             COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.ym = strftime('%Y-%m', m.month_start)), 0) AS sales_count,
+             COALESCE((
+               SELECT SUM(remaining_amount) FROM debts d
+               WHERE d.status = 'pending'
+                 AND strftime('%Y-%m', d.created_at) = strftime('%Y-%m', m.month_start)
+             ), 0) AS debt_amount,
+             idx
+      FROM months m
+      ORDER BY idx DESC
     `);
-    const debtRes = await db.execute(`
-      SELECT strftime('%Y-%m', created_at) AS label,
-             COALESCE(SUM(remaining_amount), 0) AS debt_amount
-      FROM debts
-      WHERE status = 'pending' AND created_at IS NOT NULL
-        AND date(created_at) >= date('now', 'localtime', '-365 days')
-      GROUP BY strftime('%Y-%m', created_at)
-    `);
-    const debtMap = new Map(
-      debtRes.rows.map((r) => [String(r.label), Number(r.debt_amount ?? 0)]),
-    );
     return c.json(
       res.rows.map((r) => ({
         label: String(r.label ?? ""),
         amount: Number(r.amount ?? 0),
         sales_count: Number(r.sales_count ?? 0),
-        debt_amount: debtMap.get(String(r.label)) ?? 0,
+        debt_amount: Number(r.debt_amount ?? 0),
       })),
     );
   }
 
-  const res = await db.execute({
-    sql: `
-      SELECT date(ts) AS label, SUM(amount) AS amount, COUNT(*) AS sales_count
-      FROM (
-        SELECT timestamp AS ts, amount FROM sales WHERE COALESCE(is_debt,0)=0
+  if (period === "month") {
+    const res = await db.execute(`
+      WITH RECURSIVE weeks(idx, start_date, end_date) AS (
+        SELECT 0, DATE('now', 'localtime', '-6 days'), DATE('now', 'localtime')
         UNION ALL
-        SELECT timestamp AS ts, amount FROM service_transactions WHERE COALESCE(is_debt,0)=0
+        SELECT idx + 1,
+               DATE(start_date, '-7 days'),
+               DATE(end_date, '-7 days')
+        FROM weeks
+        WHERE idx < 3
+      ), revenues AS (
+        SELECT DATE(timestamp) AS tx_date, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
+        UNION ALL
+        SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+        UNION ALL
+        SELECT DATE(payment_date) AS tx_date, amount FROM debt_payments
+      ), tx_counts AS (
+        SELECT DATE(timestamp) AS tx_date FROM sales
+        UNION ALL
+        SELECT DATE(timestamp) AS tx_date FROM service_transactions
       )
-      WHERE ts IS NOT NULL AND date(ts) >= date('now', 'localtime', ?)
-      GROUP BY date(ts)
-      ORDER BY label ASC
-    `,
-    args: [`-${days} days`],
-  });
+      SELECT strftime('%d', start_date) || '–' || strftime('%d', end_date) || ' ' ||
+             CASE strftime('%m', end_date)
+               WHEN '01' THEN 'Jan' WHEN '02' THEN 'Feb' WHEN '03' THEN 'Mar'
+               WHEN '04' THEN 'Apr' WHEN '05' THEN 'May' WHEN '06' THEN 'Jun'
+               WHEN '07' THEN 'Jul' WHEN '08' THEN 'Aug' WHEN '09' THEN 'Sep'
+               WHEN '10' THEN 'Oct' WHEN '11' THEN 'Nov' WHEN '12' THEN 'Dec'
+             END AS label,
+             COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date BETWEEN w.start_date AND w.end_date), 0) AS amount,
+             COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.tx_date BETWEEN w.start_date AND w.end_date), 0) AS sales_count,
+             COALESCE((
+               SELECT SUM(remaining_amount) FROM debts d
+               WHERE d.status = 'pending'
+                 AND DATE(d.created_at) BETWEEN w.start_date AND w.end_date
+             ), 0) AS debt_amount,
+             idx
+      FROM weeks w
+      ORDER BY idx DESC
+    `);
+    return c.json(
+      res.rows.map((r) => ({
+        label: String(r.label ?? ""),
+        amount: Number(r.amount ?? 0),
+        sales_count: Number(r.sales_count ?? 0),
+        debt_amount: Number(r.debt_amount ?? 0),
+      })),
+    );
+  }
+
+  // week (default): last 7 days — full series with weekday labels
+  const res = await db.execute(`
+    WITH RECURSIVE days(idx, day_date) AS (
+      SELECT 0, DATE('now', 'localtime')
+      UNION ALL
+      SELECT idx + 1, DATE(day_date, '-1 day')
+      FROM days
+      WHERE idx < 6
+    ), revenues AS (
+      SELECT DATE(timestamp) AS tx_date, amount FROM sales WHERE COALESCE(is_debt, 0) = 0
+      UNION ALL
+      SELECT DATE(timestamp) AS tx_date, amount FROM service_transactions WHERE COALESCE(is_debt, 0) = 0
+      UNION ALL
+      SELECT DATE(payment_date) AS tx_date, amount FROM debt_payments
+    ), tx_counts AS (
+      SELECT DATE(timestamp) AS tx_date FROM sales
+      UNION ALL
+      SELECT DATE(timestamp) AS tx_date FROM service_transactions
+    )
+    SELECT CASE strftime('%w', day_date)
+             WHEN '0' THEN 'Sun' WHEN '1' THEN 'Mon' WHEN '2' THEN 'Tue'
+             WHEN '3' THEN 'Wed' WHEN '4' THEN 'Thu' WHEN '5' THEN 'Fri'
+             WHEN '6' THEN 'Sat'
+           END AS label,
+           COALESCE((SELECT SUM(amount) FROM revenues r WHERE r.tx_date = d.day_date), 0) AS amount,
+           COALESCE((SELECT COUNT(*) FROM tx_counts t WHERE t.tx_date = d.day_date), 0) AS sales_count,
+           COALESCE((
+             SELECT SUM(remaining_amount) FROM debts dbt
+             WHERE dbt.status = 'pending'
+               AND DATE(dbt.created_at) = d.day_date
+           ), 0) AS debt_amount,
+           idx
+    FROM days d
+    ORDER BY idx DESC
+  `);
 
   return c.json(
     res.rows.map((r) => ({
       label: String(r.label ?? ""),
       amount: Number(r.amount ?? 0),
       sales_count: Number(r.sales_count ?? 0),
-      debt_amount: 0,
+      debt_amount: Number(r.debt_amount ?? 0),
     })),
   );
 });

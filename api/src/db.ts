@@ -47,3 +47,30 @@ export function stockNaturalKey(
     stickerType.trim().toLowerCase(),
   ].join("|");
 }
+
+/**
+ * Parse entity ids from JSON (string or number). Desktop sends i64 as strings.
+ */
+export function asId(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "bigint") {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v.trim());
+    if (Number.isFinite(n)) return Math.trunc(n);
+  }
+  return null;
+}
+
+export function asInt(v: unknown, fallback = 0): number {
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v.trim());
+    if (Number.isFinite(n)) return Math.trunc(n);
+  }
+  return fallback;
+}

@@ -1653,9 +1653,19 @@ fn urlencoding_lite(s: &str) -> String {
 }
 
 pub async fn update_sale(id: i64, updates: &serde_json::Value) -> Result<SuccessResponse, String> {
+    // When remote is on, never fall back to local Tauri for this path — local
+    // update_sale after convert was freezing Windows while the write had already
+    // succeeded on Turso.
+    if remote::is_enabled() {
+        let r = remote::patch_json::<_, SuccessResponse>(&format!("/v1/sales/{id}"), updates).await;
+        if r.is_ok() {
+            touch_live_data();
+        }
+        return r;
+    }
     tauri_invoke_inner(
         "update_sale",
-        &serde_json::json!({ "id": id, "updates": updates }),
+        &serde_json::json!({ "id": id.to_string(), "updates": updates }),
     )
     .await
 }
@@ -1803,9 +1813,19 @@ pub async fn update_service_transaction(
     id: i64,
     updates: &serde_json::Value,
 ) -> Result<SuccessResponse, String> {
+    // Same as update_sale: remote-only when Worker is enabled (no local hang).
+    if remote::is_enabled() {
+        let r =
+            remote::patch_json::<_, SuccessResponse>(&format!("/v1/printing/jobs/{id}"), updates)
+                .await;
+        if r.is_ok() {
+            touch_live_data();
+        }
+        return r;
+    }
     tauri_invoke_inner(
         "update_service_transaction",
-        &serde_json::json!({ "id": id, "updates": updates }),
+        &serde_json::json!({ "id": id.to_string(), "updates": updates }),
     )
     .await
 }

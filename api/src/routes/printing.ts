@@ -1,10 +1,31 @@
 import { Hono } from "hono";
-import { newDistributedId, turso } from "../db";
+import { asId, asInt, newDistributedId, turso } from "../db";
 import type { Env } from "../env";
 
 type AppEnv = { Bindings: Env };
 
 export const printing = new Hono<AppEnv>();
+
+function mapJob(row: Record<string, unknown>) {
+  const isDebt = asInt(row.is_debt, 0);
+  const amount = Number(row.amount ?? 0);
+  const amountPaid =
+    row.amount_paid != null
+      ? Number(row.amount_paid)
+      : isDebt === 0
+        ? amount
+        : Number(row.debt_paid ?? 0);
+  return {
+    ...row,
+    id: row.id != null ? String(row.id) : row.id,
+    service_id: row.service_id != null ? String(row.service_id) : row.service_id,
+    printing_material_id:
+      row.printing_material_id != null ? String(row.printing_material_id) : null,
+    is_debt: isDebt,
+    amount_paid: amountPaid,
+    amount,
+  };
+}
 
 printing.get("/jobs", async (c) => {
   const db = turso(c.env);
@@ -17,42 +38,54 @@ printing.get("/jobs", async (c) => {
   const args: (string | number)[] = [];
   if (search) {
     where = `WHERE (
-      LOWER(COALESCE(service_name, '')) LIKE ?
-      OR LOWER(COALESCE(customer_name, '')) LIKE ?
-      OR LOWER(COALESCE(material_type, '')) LIKE ?
+      LOWER(COALESCE(st.service_name, '')) LIKE ?
+      OR LOWER(COALESCE(st.customer_name, '')) LIKE ?
+      OR LOWER(COALESCE(st.material_type, '')) LIKE ?
     )`;
     const q = `%${search.toLowerCase()}%`;
     args.push(q, q, q);
   }
 
   const count = await db.execute({
-    sql: `SELECT COUNT(*) AS n FROM service_transactions ${where}`,
+    sql: `SELECT COUNT(*) AS n FROM service_transactions st ${where}`,
     args,
   });
   const total = Number(count.rows[0]?.n ?? 0);
 
   const res = await db.execute({
-    sql: `SELECT * FROM service_transactions ${where}
-          ORDER BY timestamp DESC
+    sql: `SELECT st.*,
+            CASE WHEN COALESCE(st.is_debt, 0) = 0 THEN st.amount
+                 ELSE COALESCE((
+                   SELECT d.paid_amount FROM debts d
+                   WHERE d.service_transaction_id = st.id LIMIT 1
+                 ), 0)
+            END AS amount_paid,
+            COALESCE((
+              SELECT d.paid_amount FROM debts d
+              WHERE d.service_transaction_id = st.id LIMIT 1
+            ), 0) AS debt_paid
+          FROM service_transactions st
+          ${where}
+          ORDER BY st.timestamp DESC
           LIMIT ? OFFSET ?`,
     args: [...args, perPage, offset],
   });
-
   const today = await db.execute(`
     SELECT
-      COALESCE(SUM(amount), 0) AS today_earnings,
+      COALESCE(SUM(CASE WHEN COALESCE(is_debt,0)=0 THEN amount ELSE 0 END), 0) AS today_earnings,
       COUNT(*) AS total_jobs_count,
       COALESCE(SUM(stock_metres_used), 0) AS material_used
     FROM service_transactions
     WHERE date(timestamp) = date('now', 'localtime')
   `);
   const rev = await db.execute(
-    `SELECT COALESCE(SUM(amount), 0) AS total_revenue FROM service_transactions`,
+    `SELECT COALESCE(SUM(CASE WHEN COALESCE(is_debt,0)=0 THEN amount ELSE 0 END), 0) AS total_revenue
+     FROM service_transactions`,
   );
   const t = today.rows[0] ?? {};
 
   return c.json({
-    items: res.rows,
+    items: res.rows.map((r) => mapJob(r as Record<string, unknown>)),
     total_count: total,
     page,
     per_page: perPage,
@@ -62,7 +95,6 @@ printing.get("/jobs", async (c) => {
     total_revenue: Number(rev.rows[0]?.total_revenue ?? 0),
   });
 });
-
 printing.post("/jobs", async (c) => {
   const body = await c.req.json<{
     service_name: string;
@@ -148,8 +180,42 @@ printing.post("/jobs", async (c) => {
   return c.json(row.rows[0], 201);
 });
 
+printing.patch("/jobs/:id", async (c) => {
+  const id = asId(c.req.param("id"));
+  if (id == null) return c.json({ error: "Invalid id" }, 400);
+  const body = await c.req.json<Record<string, unknown>>();
+  const db = turso(c.env);
+
+  const fields: string[] = [];
+  const args: (string | number | null)[] = [];
+  if (body.is_debt !== undefined) {
+    fields.push("is_debt = ?");
+    args.push(asInt(body.is_debt, 0));
+  }
+  if (body.payment_method !== undefined) {
+    fields.push("payment_method = ?");
+    args.push(body.payment_method == null ? null : String(body.payment_method));
+  }
+  if (body.customer_name !== undefined) {
+    fields.push("customer_name = ?");
+    args.push(body.customer_name == null ? null : String(body.customer_name));
+  }
+  if (body.amount !== undefined) {
+    fields.push("amount = ?");
+    args.push(Number(body.amount));
+  }
+  if (!fields.length) return c.json({ error: "No fields" }, 400);
+  args.push(id);
+  await db.execute({
+    sql: `UPDATE service_transactions SET ${fields.join(", ")} WHERE id = ?`,
+    args,
+  });
+  return c.json({ success: true });
+});
+
 printing.delete("/jobs/:id", async (c) => {
-  const id = Number(c.req.param("id"));
+  const id = asId(c.req.param("id"));
+  if (id == null) return c.json({ error: "Invalid id" }, 400);
   const db = turso(c.env);
   await db.execute({
     sql: "DELETE FROM service_transactions WHERE id = ?",

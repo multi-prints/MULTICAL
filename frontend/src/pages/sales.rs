@@ -837,7 +837,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         let qty = s.quantity.as_deref().unwrap_or("-");
                         format!("Sale · {} × {}", name, qty)
                     };
-                    let ok = api::add_debt(&NewDebt {
+                    // Debt create + server is_debt mark (Worker) or local is_debt mark.
+                    let result = api::add_debt(&NewDebt {
                         customer_name: name,
                         phone: Some(phone).filter(|p| !p.is_empty()),
                         amount: s.amount,
@@ -848,14 +849,29 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         sale_id: Some(s_id),
                         service_transaction_id: None,
                     })
-                    .await
-                    .is_ok();
-                    if ok {
-                        let _ = api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
-                        set_show_convert.set(None);
-                    }
+                    .await;
+
                     set_convert_submitting.set(false);
-                    l();
+
+                    match result {
+                        Ok(_) => {
+                            set_show_convert.set(None);
+                            // Instant Debt tag in the table (don't wait on reload/network).
+                            set_sales.update(|list| {
+                                if let Some(row) = list.iter_mut().find(|x| x.id == s_id) {
+                                    row.is_debt = 1;
+                                    row.amount_paid = paid;
+                                }
+                            });
+                            // Ensure is_debt persists (Worker PATCH or local Tauri).
+                            let _ =
+                                api::update_sale(s_id, &serde_json::json!({"is_debt": 1})).await;
+                            l();
+                        }
+                        Err(e) => {
+                            error!("convert sale to debt failed: {e}");
+                        }
+                    }
                 });
             }
         }

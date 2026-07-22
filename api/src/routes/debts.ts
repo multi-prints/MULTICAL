@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { newDistributedId, turso } from "../db";
+import { asId, newDistributedId, turso } from "../db";
 import type { Env } from "../env";
 
 type AppEnv = { Bindings: Env };
@@ -26,9 +26,88 @@ function mapDebt(row: Record<string, unknown>) {
   };
 }
 
-const debtSelect = `SELECT *,
-  (SELECT MAX(payment_date) FROM debt_payments dp WHERE dp.debt_id = debts.id) AS last_payment_at
- FROM debts`;
+/**
+ * Full debt row + sale/product/stock/print joins so the UI can show the same
+ * previews as the desktop Tauri list (color swatches, product type, etc.).
+ */
+const debtSelect = `
+SELECT
+  d.id, d.customer_name, d.phone, d.amount, d.paid_amount, d.remaining_amount,
+  d.due_date, d.description, d.status, d.sale_id, d.service_transaction_id,
+  d.paid_at, d.created_at,
+  (SELECT MAX(payment_date) FROM debt_payments dp WHERE dp.debt_id = d.id) AS last_payment_at,
+  CASE
+    WHEN d.sale_id IS NOT NULL THEN COALESCE(
+      NULLIF(TRIM(d.description), ''),
+      NULLIF(TRIM(s.product_name), ''),
+      CASE
+        WHEN s.type = 'stock' THEN TRIM(
+          COALESCE(sk.color, '') || ' ' ||
+          CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective'
+            THEN 'Reflective' ELSE 'Colored' END || ' Sticker'
+        )
+        WHEN s.type = 'service' THEN 'Service sale'
+        WHEN s.type = 'product' THEN 'Product sale'
+        ELSE 'Sale'
+      END
+    )
+    WHEN d.service_transaction_id IS NOT NULL THEN COALESCE(
+      NULLIF(TRIM(st.service_name), ''),
+      NULLIF(TRIM(d.description), ''),
+      'Printing job'
+    )
+    ELSE COALESCE(NULLIF(TRIM(d.description), ''), 'Manual debt')
+  END AS source_label,
+  CASE
+    WHEN d.sale_id IS NOT NULL THEN 'sale'
+    WHEN d.service_transaction_id IS NOT NULL THEN 'printing'
+    ELSE 'manual'
+  END AS source_kind,
+  CASE
+    WHEN d.sale_id IS NOT NULL AND s.type = 'product' THEN TRIM(
+      CASE s.product_type
+        WHEN 'life_saver' THEN 'Lifesaver'
+        WHEN 'chevron' THEN 'Chevron'
+        WHEN 'stripes' THEN 'Stripes'
+        ELSE COALESCE(s.product_type, 'Product')
+      END ||
+      CASE WHEN COALESCE(p.color, '') != '' THEN ' · ' || CASE p.color
+        WHEN 'white_red' THEN 'White / Red'
+        WHEN 'yellow_red' THEN 'Yellow / Red'
+        WHEN 'white' THEN 'White'
+        WHEN 'yellow' THEN 'Yellow'
+        ELSE p.color
+      END ELSE '' END ||
+      CASE WHEN COALESCE(s.quantity, '') != '' THEN ' · qty ' || s.quantity ELSE '' END
+    )
+    WHEN d.sale_id IS NOT NULL AND s.type = 'stock' THEN TRIM(
+      CASE WHEN COALESCE(s.sticker_type, sk.sticker_type, '') = 'reflective'
+        THEN 'Reflective' ELSE 'Colored' END ||
+      CASE WHEN COALESCE(sk.color, '') != '' THEN ' · ' || sk.color ELSE '' END ||
+      CASE WHEN COALESCE(sk.size, s.quantity, '') != ''
+        THEN ' · ' || COALESCE(sk.size, s.quantity) ELSE '' END
+    )
+    WHEN d.sale_id IS NOT NULL THEN TRIM(COALESCE(s.quantity, ''))
+    WHEN d.service_transaction_id IS NOT NULL THEN TRIM(
+      CASE WHEN st.stock_metres_used > 0
+        THEN printf('%.1fm printed', st.stock_metres_used) ELSE '' END ||
+      CASE WHEN st.material_type IS NOT NULL AND TRIM(st.material_type) != ''
+        THEN ' · ' || st.material_type ELSE '' END ||
+      CASE WHEN st.material_size IS NOT NULL AND TRIM(st.material_size) != ''
+        THEN ' · ' || st.material_size || 'm wide' ELSE '' END
+    )
+    ELSE NULL
+  END AS source_detail,
+  s.type AS source_sale_type,
+  s.product_type AS source_product_type,
+  COALESCE(p.color, sk.color) AS source_color,
+  COALESCE(s.sticker_type, sk.sticker_type) AS source_sticker_type
+FROM debts d
+LEFT JOIN sales s ON s.id = d.sale_id
+LEFT JOIN products p ON p.id = s.product_id
+LEFT JOIN stock sk ON sk.id = s.stock_id
+LEFT JOIN service_transactions st ON st.id = d.service_transaction_id
+`;
 
 debts.get("/", async (c) => {
   const db = turso(c.env);
@@ -40,28 +119,28 @@ debts.get("/", async (c) => {
 
   const order =
     sortBy === "oldest"
-      ? "created_at ASC"
+      ? "d.created_at ASC"
       : sortBy === "amount_desc"
-        ? "remaining_amount DESC, created_at DESC"
+        ? "d.remaining_amount DESC, d.created_at DESC"
         : sortBy === "amount_asc"
-          ? "remaining_amount ASC, created_at DESC"
-          : "created_at DESC";
+          ? "d.remaining_amount ASC, d.created_at DESC"
+          : "d.created_at DESC";
 
   let where = "";
   const args: (string | number)[] = [];
   if (search) {
     where = `WHERE (
-      LOWER(customer_name) LIKE ? OR
-      LOWER(COALESCE(phone,'')) LIKE ? OR
-      LOWER(COALESCE(description,'')) LIKE ? OR
-      LOWER(status) LIKE ?
+      LOWER(d.customer_name) LIKE ? OR
+      LOWER(COALESCE(d.phone,'')) LIKE ? OR
+      LOWER(COALESCE(d.description,'')) LIKE ? OR
+      LOWER(d.status) LIKE ?
     )`;
     const q = `%${search}%`;
     args.push(q, q, q, q);
   }
 
   const count = await db.execute({
-    sql: `SELECT COUNT(*) AS n FROM debts ${where}`,
+    sql: `SELECT COUNT(*) AS n FROM debts d ${where}`,
     args,
   });
   const total = Number(count.rows[0]?.n ?? 0);
@@ -85,7 +164,7 @@ debts.get("/", async (c) => {
   const m = metrics.rows[0] ?? {};
 
   const all = await db.execute(
-    `${debtSelect} ORDER BY created_at DESC LIMIT 500`,
+    `${debtSelect} ORDER BY d.created_at DESC LIMIT 500`,
   );
 
   return c.json({
@@ -103,7 +182,7 @@ debts.get("/", async (c) => {
 debts.get("/pending", async (c) => {
   const db = turso(c.env);
   const res = await db.execute(
-    `${debtSelect} WHERE status = 'pending' ORDER BY created_at DESC`,
+    `${debtSelect} WHERE d.status = 'pending' ORDER BY d.created_at DESC`,
   );
   return c.json({
     items: res.rows.map((r) => mapDebt(r as Record<string, unknown>)),
@@ -114,9 +193,9 @@ debts.get("/overdue", async (c) => {
   const db = turso(c.env);
   const res = await db.execute(
     `${debtSelect}
-     WHERE status = 'pending' AND due_date IS NOT NULL
-       AND date(due_date) < date('now', 'localtime')
-     ORDER BY due_date ASC`,
+     WHERE d.status = 'pending' AND d.due_date IS NOT NULL
+       AND date(d.due_date) < date('now', 'localtime')
+     ORDER BY d.due_date ASC`,
   );
   return c.json({
     items: res.rows.map((r) => mapDebt(r as Record<string, unknown>)),
@@ -142,7 +221,7 @@ debts.get("/by-sale/:saleId", async (c) => {
   const saleId = Number(c.req.param("saleId"));
   const db = turso(c.env);
   const res = await db.execute({
-    sql: `${debtSelect} WHERE sale_id = ? ORDER BY created_at DESC LIMIT 1`,
+    sql: `${debtSelect} WHERE d.sale_id = ? ORDER BY d.created_at DESC LIMIT 1`,
     args: [saleId],
   });
   if (!res.rows.length) return c.json(null);
@@ -153,7 +232,7 @@ debts.get("/by-transaction/:txnId", async (c) => {
   const txnId = Number(c.req.param("txnId"));
   const db = turso(c.env);
   const res = await db.execute({
-    sql: `${debtSelect} WHERE service_transaction_id = ? ORDER BY created_at DESC LIMIT 1`,
+    sql: `${debtSelect} WHERE d.service_transaction_id = ? ORDER BY d.created_at DESC LIMIT 1`,
     args: [txnId],
   });
   if (!res.rows.length) return c.json(null);
@@ -169,8 +248,8 @@ debts.post("/", async (c) => {
     remaining_amount?: number | null;
     due_date?: string | null;
     description?: string | null;
-    sale_id?: number | null;
-    service_transaction_id?: number | null;
+    sale_id?: number | string | null;
+    service_transaction_id?: number | string | null;
   }>();
 
   if (!body.customer_name?.trim() || body.amount == null) {
@@ -185,6 +264,8 @@ debts.post("/", async (c) => {
   const now = new Date().toISOString();
   const paidAt = status === "paid" ? now : null;
   const id = newDistributedId();
+  const saleId = asId(body.sale_id);
+  const txnId = asId(body.service_transaction_id);
   const db = turso(c.env);
 
   await db.execute({
@@ -202,8 +283,8 @@ debts.post("/", async (c) => {
       body.due_date ?? null,
       body.description ?? null,
       status,
-      body.sale_id ?? null,
-      body.service_transaction_id ?? null,
+      saleId,
+      txnId,
       paidAt,
       now,
     ],
@@ -217,8 +298,31 @@ debts.post("/", async (c) => {
     });
   }
 
+  // Mark linked sale / printing job as debt in the same request so the client
+  // shows the Debt tag without a second local Tauri update (Windows hang).
+  if (saleId != null) {
+    const upd = await db.execute({
+      sql: `UPDATE sales SET is_debt = 1 WHERE id = ?`,
+      args: [saleId],
+    });
+    if ((upd.rowsAffected ?? 0) === 0) {
+      console.warn(`debts.post: no sale row for is_debt mark id=${saleId}`);
+    }
+  }
+  if (txnId != null) {
+    const upd = await db.execute({
+      sql: `UPDATE service_transactions SET is_debt = 1 WHERE id = ?`,
+      args: [txnId],
+    });
+    if ((upd.rowsAffected ?? 0) === 0) {
+      console.warn(
+        `debts.post: no service_transaction row for is_debt mark id=${txnId}`,
+      );
+    }
+  }
+
   const row = await db.execute({
-    sql: `${debtSelect} WHERE id = ?`,
+    sql: `${debtSelect} WHERE d.id = ?`,
     args: [id],
   });
   return c.json(mapDebt(row.rows[0] as Record<string, unknown>), 201);

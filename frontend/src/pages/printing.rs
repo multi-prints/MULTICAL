@@ -335,7 +335,9 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                             format!("Printing · {} · {:.1}m · {}", t.service_name, metres, mat)
                         }
                     };
-                    let ok = api::add_debt(&NewDebt {
+                    // Worker marks the job is_debt=1 in the same POST — skip local
+                    // update_service_transaction (Windows hang after success).
+                    let result = api::add_debt(&NewDebt {
                         customer_name: name,
                         phone: Some(phone).filter(|p| !p.is_empty()),
                         amount: t.amount,
@@ -346,18 +348,31 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                         sale_id: None,
                         service_transaction_id: Some(t_id),
                     })
-                    .await
-                    .is_ok();
-                    if ok {
-                        let _ = api::update_service_transaction(
-                            t_id,
-                            &serde_json::json!({"is_debt": 1}),
-                        )
-                        .await;
-                        set_show_convert.set(None);
-                    }
+                    .await;
+
                     set_convert_submitting.set(false);
-                    l();
+
+                    match result {
+                        Ok(_) => {
+                            set_show_convert.set(None);
+                            // Instant Debt tag on the jobs table.
+                            set_jobs.update(|list| {
+                                if let Some(row) = list.iter_mut().find(|x| x.id == t_id) {
+                                    row.is_debt = 1;
+                                    row.amount_paid = paid;
+                                }
+                            });
+                            let _ = api::update_service_transaction(
+                                t_id,
+                                &serde_json::json!({"is_debt": 1}),
+                            )
+                            .await;
+                            l();
+                        }
+                        Err(e) => {
+                            log::error!("convert printing job to debt failed: {e}");
+                        }
+                    }
                 });
             }
         }

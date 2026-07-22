@@ -1172,21 +1172,54 @@ fn LoginPage(
     }
 }
 
+/// Compact x-axis labels for the revenue bars.
+///
+/// Local Tauri already returns short tokens (`Mon`, `Jan`, `22–28 Jun`).
+/// The Cloudflare chart API may return ISO dates (`2026-07-21`, `2026-07`);
+/// never slice those with `take(3)` — that produced the broken `"202"` labels.
 fn short_chart_label(raw: &str, period: &str) -> String {
     let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+
+    // YYYY-MM-DD → weekday / day+month depending on period
+    if s.len() >= 10 && s.as_bytes().get(4) == Some(&b'-') && s.as_bytes().get(7) == Some(&b'-') {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
+            return match period {
+                "week" => d.format("%a").to_string(),     // Mon
+                "year" => d.format("%b").to_string(),     // Jul
+                "month" => d.format("%d %b").to_string(), // 21 Jul
+                _ => d.format("%d %b").to_string(),
+            };
+        }
+    }
+
+    // YYYY-MM → month abbrev
+    if s.len() >= 7 && s.as_bytes().get(4) == Some(&b'-') {
+        let ym = &s[..7];
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&format!("{ym}-01"), "%Y-%m-%d") {
+            return d.format("%b").to_string();
+        }
+    }
+
     match period {
-        "week" => s.chars().take(3).collect(),
-        "year" => s.chars().take(3).collect(),
+        // Already "Mon" / "Jan" from local backend
+        "week" | "year" if s.chars().all(|c| c.is_ascii_alphabetic()) && s.len() <= 9 => {
+            s.chars().take(3).collect()
+        }
         "month" => {
             // Backend: "22–28 Jun" or "22-28 Jun" → keep month token + last day
             if let Some(month) = s.split_whitespace().last() {
-                if let Some(range) = s.split_whitespace().next() {
-                    let end = range
-                        .split(['–', '-', '—'])
-                        .next_back()
-                        .unwrap_or(range)
-                        .trim();
-                    return format!("{} {}", month, end);
+                if month.chars().all(|c| c.is_ascii_alphabetic()) {
+                    if let Some(range) = s.split_whitespace().next() {
+                        let end = range
+                            .split(['–', '-', '—'])
+                            .next_back()
+                            .unwrap_or(range)
+                            .trim();
+                        return format!("{month} {end}");
+                    }
                 }
             }
             s.to_string()
