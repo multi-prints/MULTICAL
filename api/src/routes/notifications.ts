@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { turso } from "../db";
 import type { Env } from "../env";
-import { debtSelect, mapDebt } from "./debts";
+import {
+  debtSelect,
+  mapDebt,
+  repairSettledSourceDebtFlags,
+} from "./debts";
 
 type AppEnv = { Bindings: Env };
 
@@ -15,6 +19,8 @@ export const notifications = new Hono<AppEnv>();
 
 notifications.get("/", async (c) => {
   const db = turso(c.env);
+  // Self-heal badges for debts paid before Worker synced is_debt=2.
+  await repairSettledSourceDebtFlags(db);
   const res = await db.execute(
     `${debtSelect}
      WHERE d.status = 'pending' AND d.due_date IS NOT NULL

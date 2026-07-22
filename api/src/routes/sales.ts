@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { asId, asInt, newDistributedId, turso } from "../db";
 import type { Env } from "../env";
+import { repairSettledSourceDebtFlags } from "./debts";
 
 type AppEnv = { Bindings: Env };
 
@@ -29,6 +30,7 @@ function mapSale(row: Record<string, unknown>) {
 
 sales.get("/", async (c) => {
   const db = turso(c.env);
+  await repairSettledSourceDebtFlags(db);
   const page = Math.max(1, Number(c.req.query("page") ?? 1));
   const perPage = Math.min(100, Math.max(1, Number(c.req.query("per_page") ?? 50)));
   const offset = (page - 1) * perPage;

@@ -2677,16 +2677,19 @@ impl Database {
             ).map_err(|e| e.to_string())?;
         }
 
-        // Convert-to-debt: mark source row in the same write so the UI does not
-        // need a second update_sale / update_service_transaction round-trip.
+        // Convert-to-debt: mark source in the same write (1 open, 2 already settled).
+        let source_flag: i64 = if remaining_amount <= 0.0 { 2 } else { 1 };
         if let Some(sid) = debt.sale_id {
-            conn.execute("UPDATE sales SET is_debt = 1 WHERE id = ?1", params![sid])
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE sales SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, sid],
+            )
+            .map_err(|e| e.to_string())?;
         }
         if let Some(tid) = debt.service_transaction_id {
             conn.execute(
-                "UPDATE service_transactions SET is_debt = 1 WHERE id = ?1",
-                params![tid],
+                "UPDATE service_transactions SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, tid],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -3598,6 +3601,30 @@ impl Database {
             params![new_paid_amount, new_remaining, new_status, paid_at_value, payment.debt_id],
         ).map_err(|e| e.to_string())?;
 
+        // When fully settled (or reopened via logic below), keep sale/print badge in sync.
+        let (sale_id, transaction_id): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT sale_id, service_transaction_id FROM debts WHERE id = ?1",
+                params![payment.debt_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let source_flag: i64 = if new_remaining <= 0.0 { 2 } else { 1 };
+        if let Some(sid) = sale_id {
+            conn.execute(
+                "UPDATE sales SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, sid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(tid) = transaction_id {
+            conn.execute(
+                "UPDATE service_transactions SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, tid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
         self.finish_write(DebtPayment {
             id,
             debt_id: payment.debt_id,
@@ -3619,16 +3646,16 @@ impl Database {
             )
             .map_err(|e| e.to_string())?;
 
-        let debt: (f64, f64) = conn
+        let debt: (f64, f64, Option<i64>, Option<i64>) = conn
             .query_row(
-                "SELECT paid_amount, amount FROM debts WHERE id = ?1",
+                "SELECT paid_amount, amount, sale_id, service_transaction_id FROM debts WHERE id = ?1",
                 params![payment.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|e| e.to_string())?;
 
         let new_paid_amount = (debt.0 - payment.1).max(0.0);
-        let new_remaining = debt.1 - new_paid_amount;
+        let new_remaining = (debt.1 - new_paid_amount).max(0.0);
         let new_status = if new_remaining > 0.0 {
             "pending"
         } else {
@@ -3636,13 +3663,30 @@ impl Database {
         };
 
         conn.execute(
-            "UPDATE debts SET paid_amount = ?1, remaining_amount = ?2, status = ?3 WHERE id = ?4",
+            "UPDATE debts SET paid_amount = ?1, remaining_amount = ?2, status = ?3,
+               paid_at = CASE WHEN ?3 = 'paid' THEN paid_at ELSE NULL END WHERE id = ?4",
             params![new_paid_amount, new_remaining, new_status, payment.0],
         )
         .map_err(|e| e.to_string())?;
 
         conn.execute("DELETE FROM debt_payments WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
+
+        let source_flag: i64 = if new_remaining <= 0.0 { 2 } else { 1 };
+        if let Some(sid) = debt.2 {
+            conn.execute(
+                "UPDATE sales SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, sid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(tid) = debt.3 {
+            conn.execute(
+                "UPDATE service_transactions SET is_debt = ?1 WHERE id = ?2",
+                params![source_flag, tid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
 
         self.finish_write(())
     }

@@ -1,10 +1,68 @@
 import { Hono } from "hono";
+import type { Client } from "@libsql/client/web";
 import { asId, newDistributedId, turso } from "../db";
 import type { Env } from "../env";
 
 type AppEnv = { Bindings: Env };
 
 export const debts = new Hono<AppEnv>();
+
+/**
+ * Keep sale / printing job badge in sync with debt status:
+ * - open debt → is_debt = 1 ("Debt")
+ * - fully settled → is_debt = 2 ("Debt paid")
+ * Matches local Tauri mark_debt_paid behavior.
+ */
+async function syncLinkedSourceDebtFlag(
+  db: Client,
+  saleId: number | null | undefined,
+  txnId: number | null | undefined,
+  settled: boolean,
+): Promise<void> {
+  const flag = settled ? 2 : 1;
+  if (saleId != null) {
+    const upd = await db.execute({
+      sql: `UPDATE sales SET is_debt = ? WHERE id = ?`,
+      args: [flag, saleId],
+    });
+    if ((upd.rowsAffected ?? 0) === 0) {
+      console.warn(
+        `syncLinkedSourceDebtFlag: no sale id=${saleId} for is_debt=${flag}`,
+      );
+    }
+  }
+  if (txnId != null) {
+    const upd = await db.execute({
+      sql: `UPDATE service_transactions SET is_debt = ? WHERE id = ?`,
+      args: [flag, txnId],
+    });
+    if ((upd.rowsAffected ?? 0) === 0) {
+      console.warn(
+        `syncLinkedSourceDebtFlag: no service_transaction id=${txnId} for is_debt=${flag}`,
+      );
+    }
+  }
+}
+
+/** Heal rows left at is_debt=1 after a debt was fully paid (pre-fix data). */
+export async function repairSettledSourceDebtFlags(db: Client): Promise<void> {
+  await db.execute(`
+    UPDATE sales SET is_debt = 2
+    WHERE COALESCE(is_debt, 0) = 1
+      AND id IN (
+        SELECT sale_id FROM debts
+        WHERE status = 'paid' AND sale_id IS NOT NULL
+      )
+  `);
+  await db.execute(`
+    UPDATE service_transactions SET is_debt = 2
+    WHERE COALESCE(is_debt, 0) = 1
+      AND id IN (
+        SELECT service_transaction_id FROM debts
+        WHERE status = 'paid' AND service_transaction_id IS NOT NULL
+      )
+  `);
+}
 
 /** Normalize debt rows for desktop (string ids, numbers) — same as sales/printing. */
 export function mapDebt(row: Record<string, unknown>) {
@@ -325,28 +383,8 @@ debts.post("/", async (c) => {
     });
   }
 
-  // Mark linked sale / printing job as debt in the same request so the client
-  // shows the Debt tag without a second local Tauri update (Windows hang).
-  if (saleId != null) {
-    const upd = await db.execute({
-      sql: `UPDATE sales SET is_debt = 1 WHERE id = ?`,
-      args: [saleId],
-    });
-    if ((upd.rowsAffected ?? 0) === 0) {
-      console.warn(`debts.post: no sale row for is_debt mark id=${saleId}`);
-    }
-  }
-  if (txnId != null) {
-    const upd = await db.execute({
-      sql: `UPDATE service_transactions SET is_debt = 1 WHERE id = ?`,
-      args: [txnId],
-    });
-    if ((upd.rowsAffected ?? 0) === 0) {
-      console.warn(
-        `debts.post: no service_transaction row for is_debt mark id=${txnId}`,
-      );
-    }
-  }
+  // Mark linked sale / printing job in the same request (1 open debt, 2 settled).
+  await syncLinkedSourceDebtFlag(db, saleId, txnId, status === "paid");
 
   const row = await db.execute({
     sql: `${debtSelect} WHERE d.id = ?`,
@@ -356,15 +394,19 @@ debts.post("/", async (c) => {
 });
 
 debts.post("/:id/mark-paid", async (c) => {
-  const id = Number(c.req.param("id"));
+  const id = asId(c.req.param("id"));
+  if (id == null) return c.json({ error: "Invalid id" }, 400);
   const db = turso(c.env);
   const cur = await db.execute({
-    sql: "SELECT amount, remaining_amount FROM debts WHERE id = ?",
+    sql: `SELECT amount, remaining_amount, sale_id, service_transaction_id
+          FROM debts WHERE id = ?`,
     args: [id],
   });
   if (!cur.rows.length) return c.json({ error: "Not found" }, 404);
   const amount = Number(cur.rows[0].amount ?? 0);
   const rem = Number(cur.rows[0].remaining_amount ?? 0);
+  const saleId = asId(cur.rows[0].sale_id);
+  const txnId = asId(cur.rows[0].service_transaction_id);
   const now = new Date().toISOString();
   if (rem > 0) {
     await db.execute({
@@ -378,11 +420,14 @@ debts.post("/:id/mark-paid", async (c) => {
           WHERE id = ?`,
     args: [amount, now, id],
   });
+  // Printing / sales list: open "Debt" → "Debt paid"
+  await syncLinkedSourceDebtFlag(db, saleId, txnId, true);
   return c.json({ success: true });
 });
 
 debts.post("/:id/payments", async (c) => {
-  const id = Number(c.req.param("id"));
+  const id = asId(c.req.param("id"));
+  if (id == null) return c.json({ error: "Invalid id" }, 400);
   const body = await c.req.json<{
     amount: number;
     payment_method?: string;
@@ -393,7 +438,8 @@ debts.post("/:id/payments", async (c) => {
 
   const db = turso(c.env);
   const cur = await db.execute({
-    sql: "SELECT amount, paid_amount FROM debts WHERE id = ?",
+    sql: `SELECT amount, paid_amount, sale_id, service_transaction_id
+          FROM debts WHERE id = ?`,
     args: [id],
   });
   if (!cur.rows.length) return c.json({ error: "Not found" }, 404);
@@ -402,6 +448,8 @@ debts.post("/:id/payments", async (c) => {
   const amount = Number(cur.rows[0].amount ?? 0);
   const remaining = Math.max(0, amount - paid);
   const status = remaining <= 0 ? "paid" : "pending";
+  const saleId = asId(cur.rows[0].sale_id);
+  const txnId = asId(cur.rows[0].service_transaction_id);
   const now = new Date().toISOString();
   const paymentId = newDistributedId();
 
@@ -423,6 +471,9 @@ debts.post("/:id/payments", async (c) => {
           WHERE id = ?`,
     args: [paid, remaining, status, status, now, id],
   });
+
+  // Partial pay keeps open debt (1); final payment settles source (2).
+  await syncLinkedSourceDebtFlag(db, saleId, txnId, status === "paid");
 
   const row = await db.execute({
     sql: "SELECT * FROM debt_payments WHERE id = ?",
@@ -475,7 +526,8 @@ debts.patch("/:id", async (c) => {
 });
 
 debts.delete("/:id", async (c) => {
-  const id = Number(c.req.param("id"));
+  const id = asId(c.req.param("id"));
+  if (id == null) return c.json({ error: "Invalid id" }, 400);
   const db = turso(c.env);
   await db.execute({
     sql: "DELETE FROM debt_payments WHERE debt_id = ?",
@@ -486,11 +538,47 @@ debts.delete("/:id", async (c) => {
 });
 
 debts.delete("/payments/:paymentId", async (c) => {
-  const paymentId = Number(c.req.param("paymentId"));
+  const paymentId = asId(c.req.param("paymentId"));
+  if (paymentId == null) return c.json({ error: "Invalid id" }, 400);
   const db = turso(c.env);
+
+  const payRow = await db.execute({
+    sql: "SELECT debt_id, amount FROM debt_payments WHERE id = ?",
+    args: [paymentId],
+  });
+  if (!payRow.rows.length) return c.json({ error: "Not found" }, 404);
+  const debtId = asId(payRow.rows[0].debt_id);
+  const payAmount = Number(payRow.rows[0].amount ?? 0);
+  if (debtId == null) return c.json({ error: "Invalid debt" }, 400);
+
+  const debtRow = await db.execute({
+    sql: `SELECT amount, paid_amount, sale_id, service_transaction_id
+          FROM debts WHERE id = ?`,
+    args: [debtId],
+  });
+  if (!debtRow.rows.length) return c.json({ error: "Debt not found" }, 404);
+
+  const amount = Number(debtRow.rows[0].amount ?? 0);
+  const newPaid = Math.max(
+    0,
+    Number(debtRow.rows[0].paid_amount ?? 0) - payAmount,
+  );
+  const remaining = Math.max(0, amount - newPaid);
+  const status = remaining <= 0 ? "paid" : "pending";
+  const saleId = asId(debtRow.rows[0].sale_id);
+  const txnId = asId(debtRow.rows[0].service_transaction_id);
+
   await db.execute({
     sql: "DELETE FROM debt_payments WHERE id = ?",
     args: [paymentId],
   });
+  await db.execute({
+    sql: `UPDATE debts SET paid_amount = ?, remaining_amount = ?, status = ?,
+            paid_at = CASE WHEN ? = 'paid' THEN paid_at ELSE NULL END
+          WHERE id = ?`,
+    args: [newPaid, remaining, status, status, debtId],
+  });
+  await syncLinkedSourceDebtFlag(db, saleId, txnId, status === "paid");
+
   return c.json({ success: true });
 });
