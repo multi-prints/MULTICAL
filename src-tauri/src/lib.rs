@@ -14,7 +14,7 @@ use models::{DatabaseBackup, LocalStorageData, SuccessResponse};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use tauri::{Manager, State};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 /// Best-effort crash/startup log for Windows release builds (no console window).
@@ -256,9 +256,16 @@ fn get_platform() -> String {
 
 // ==================== Data Management Commands ====================
 
+/// Async: wiping tables is heavy enough to stall the UI if run as a sync command.
 #[tauri::command]
-fn clear_all_data(db: State<'_, Database>) -> Result<SuccessResponse, String> {
-    db.clear_all_data()?;
+async fn clear_all_data(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app.state::<Database>();
+        db.clear_all_data()
+    })
+    .await
+    .map_err(|e| format!("Clear-data task failed: {e}"))??;
+
     Ok(SuccessResponse {
         success: true,
         error: None,
@@ -266,16 +273,15 @@ fn clear_all_data(db: State<'_, Database>) -> Result<SuccessResponse, String> {
     })
 }
 
+/// Async: sync + `blocking_save_file` runs on the UI thread and freezes the window.
 #[tauri::command]
-fn export_database(
-    app: tauri::AppHandle,
-    db: State<'_, Database>,
-) -> Result<SuccessResponse, String> {
+async fn export_database(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
     let default_name = format!(
         "multiprints-backup-{}.json",
         chrono::Local::now().format("%Y-%m-%d")
     );
 
+    // Dialog first (blocking is OK off the UI thread in async commands).
     let Some(file_path) = app
         .dialog()
         .file()
@@ -302,8 +308,15 @@ fn export_database(
         path
     };
 
-    let backup = db.export_database_backup()?;
-    let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    let app_for_db = app.clone();
+    let json = tauri::async_runtime::spawn_blocking(move || {
+        let db = app_for_db.state::<Database>();
+        let backup = db.export_database_backup()?;
+        serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Export task failed: {e}"))??;
+
     std::fs::write(&path, json).map_err(|e| format!("Failed to write backup: {e}"))?;
 
     Ok(SuccessResponse {
@@ -313,11 +326,9 @@ fn export_database(
     })
 }
 
+/// Async: sync + `blocking_pick_file` freezes the UI the same way as export.
 #[tauri::command]
-fn import_database(
-    app: tauri::AppHandle,
-    db: State<'_, Database>,
-) -> Result<SuccessResponse, String> {
+async fn import_database(app: tauri::AppHandle) -> Result<SuccessResponse, String> {
     let Some(file_path) = app
         .dialog()
         .file()
@@ -340,7 +351,13 @@ fn import_database(
     let backup: DatabaseBackup = serde_json::from_str(&raw)
         .map_err(|e| format!("Invalid backup file (expected MULTIPRINTS JSON): {e}"))?;
 
-    db.import_database_backup(backup)?;
+    let app_for_db = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app_for_db.state::<Database>();
+        db.import_database_backup(backup)
+    })
+    .await
+    .map_err(|e| format!("Import task failed: {e}"))??;
 
     Ok(SuccessResponse {
         success: true,
@@ -349,12 +366,19 @@ fn import_database(
     })
 }
 
+/// Async: one-shot bulk import from legacy browser storage can be large.
 #[tauri::command]
-fn migrate_from_localstorage(
-    db: State<'_, Database>,
+async fn migrate_from_localstorage(
+    app: tauri::AppHandle,
     data: LocalStorageData,
 ) -> Result<SuccessResponse, String> {
-    db.migrate_from_localstorage(data)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = app.state::<Database>();
+        db.migrate_from_localstorage(data)
+    })
+    .await
+    .map_err(|e| format!("Migration task failed: {e}"))??;
+
     Ok(SuccessResponse {
         success: true,
         error: None,

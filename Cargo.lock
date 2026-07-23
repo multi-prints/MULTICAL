@@ -2979,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "multiprints"
-version = "1.1.19"
+version = "1.1.21"
 dependencies = [
  "chrono",
  "dotenvy",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "multiprints-frontend"
-version = "1.1.19"
+version = "1.1.21"
 dependencies = [
  "chrono",
  "console_error_panic_hook",

@@ -121,9 +121,100 @@ fn infer_debt_payment_method(
     "cash".to_string()
 }
 
+/// True when a SQLite/libsql error indicates a corrupt on-disk database.
+fn sqlite_error_is_corrupt(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("malformed")
+        || m.contains("database disk image")
+        || m.contains("file is not a database")
+        || m.contains("database corruption")
+        || m.contains("disk i/o error")
+}
+
+/// True when libsql reports a replica frame/generation conflict with Turso.
+fn sqlite_error_is_sync_conflict(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("conflict") && (m.contains("server") || m.contains("sent=") || m.contains("sync"))
+}
+
+/// Quick integrity probe before libsql opens the replica. Does not modify the file.
+fn local_replica_looks_corrupt(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    match Connection::open(path) {
+        Ok(conn) => match conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)) {
+            Ok(s) if s.eq_ignore_ascii_case("ok") => None,
+            Ok(s) => Some(format!("integrity_check={s}")),
+            Err(e) => {
+                let msg = e.to_string();
+                if sqlite_error_is_corrupt(&msg) {
+                    Some(msg)
+                } else {
+                    // Non-corrupt open/query issues (locks, etc.) — leave file alone.
+                    None
+                }
+            }
+        },
+        Err(e) => {
+            let msg = e.to_string();
+            if sqlite_error_is_corrupt(&msg) {
+                Some(msg)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Move multiprints-sync.db* aside so the next open can rebuild a clean Turso replica.
+fn quarantine_sync_replica(data_dir: &Path, reason: &str) {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let backup_dir = data_dir.join(format!("corrupt-backup-{stamp}"));
+    if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+        eprintln!(
+            "Could not create replica quarantine dir {}: {e}",
+            backup_dir.display()
+        );
+        // Fall through and still try to delete the live files below.
+    } else {
+        eprintln!(
+            "Quarantining Turso replica into {} ({reason})",
+            backup_dir.display()
+        );
+    }
+
+    for name in [
+        SYNC_DB_FILE,
+        &format!("{SYNC_DB_FILE}-wal"),
+        &format!("{SYNC_DB_FILE}-shm"),
+        &format!("{SYNC_DB_FILE}-info"),
+    ] {
+        let src = data_dir.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dest = backup_dir.join(name);
+        if std::fs::rename(&src, &dest).is_err() {
+            // Cross-device rename can fail; copy+remove, then force-remove live path.
+            let _ = std::fs::copy(&src, &dest);
+            if let Err(e) = std::fs::remove_file(&src) {
+                eprintln!(
+                    "Could not remove corrupt replica piece {}: {e}",
+                    src.display()
+                );
+            }
+        }
+    }
+}
+
 impl Database {
     /// Open (or create) the database at the given path
     pub fn new(db_path: PathBuf) -> Result<Self, String> {
+        Self::new_inner(db_path, false)
+    }
+
+    fn new_inner(db_path: PathBuf, after_quarantine: bool) -> Result<Self, String> {
         let data_dir = db_path
             .parent()
             .ok_or_else(|| "Invalid database path".to_string())?;
@@ -144,6 +235,16 @@ impl Database {
         // file locks, corrupt replicas, or TLS/runtime issues). Fall back carefully
         // so we do not abandon an existing replica that still has business data.
         let sync_path = data_dir.join(SYNC_DB_FILE);
+
+        // Heal a previously corrupted local replica before libsql touches it.
+        // Turso remains source of truth; quarantined files stay under app data.
+        if turso_config.is_some() && !after_quarantine {
+            if let Some(reason) = local_replica_looks_corrupt(&sync_path) {
+                eprintln!("Local Turso replica is corrupt ({reason}) — rebuilding from cloud");
+                quarantine_sync_replica(data_dir, &reason);
+            }
+        }
+
         let mut active_db_path = if turso_config.is_some() {
             sync_path.clone()
         } else {
@@ -152,69 +253,131 @@ impl Database {
 
         // Build the embedded replica connection, but do NOT block startup on a full
         // network sync here. try_initial_sync / spawn_background_sync handle that.
+        // One automatic rebuild is allowed if the first open/sync hits corruption or a
+        // frame conflict (stale multiprints-sync.db-info after a partial wipe).
         let mut sync_db = None;
         let mut turso_active = false;
         let mut turso_engine_error = None;
         if let Some(config) = turso_config.clone() {
-            let path_for_build = active_db_path.clone();
-            // libsql is happier with a stable path string on Windows.
-            let path_str = path_for_build.to_string_lossy().replace('\\', "/");
-            match tauri::async_runtime::block_on(async move {
-                Builder::new_synced_database(
-                    path_str.as_str(),
-                    config.database_url,
-                    config.auth_token,
-                )
-                .read_your_writes(true)
-                .remote_writes(false)
-                .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
-                .build()
-                .await
-                .map_err(|e| e.to_string())
-            }) {
-                Ok(db) => {
-                    sync_db = Some(Arc::new(db));
-                    turso_active = true;
-                }
-                Err(e) => {
-                    let msg = format!("Turso replica init failed (source={}): {}", turso_source, e);
-                    eprintln!("{msg}");
-                    turso_engine_error = Some(msg);
-                    // Keep multiprints-sync.db if it already exists (has last-known multi-PC data).
-                    // Only fall all the way back to multiprints.db when there is no replica yet.
-                    if !sync_path.exists() {
-                        active_db_path = db_path.clone();
+            for attempt in 0..2u8 {
+                let path_for_build = active_db_path.clone();
+                // libsql is happier with a stable path string on Windows.
+                let path_str = path_for_build.to_string_lossy().replace('\\', "/");
+                let cfg = config.clone();
+                let build_result = tauri::async_runtime::block_on(async move {
+                    Builder::new_synced_database(
+                        path_str.as_str(),
+                        cfg.database_url,
+                        cfg.auth_token,
+                    )
+                    .read_your_writes(true)
+                    .remote_writes(false)
+                    .sync_interval(Duration::from_secs(SYNC_INTERVAL_SECS))
+                    .build()
+                    .await
+                    .map_err(|e| e.to_string())
+                });
+
+                match build_result {
+                    Ok(db) => {
+                        // Pull remote rows BEFORE opening the rusqlite handle so the first open
+                        // sees Turso data (avoids stale empty snapshot, especially on Windows).
+                        let db = Arc::new(db);
+                        let sync_for_task = db.clone();
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        tauri::async_runtime::spawn(async move {
+                            let r = sync_for_task
+                                .sync()
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| e.to_string());
+                            let _ = tx.send(r);
+                        });
+                        let sync_err = match rx.recv_timeout(Duration::from_secs(30)) {
+                            Ok(Ok(())) => {
+                                println!("Pre-open Turso sync OK ({})", turso_source);
+                                None
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("Pre-open Turso sync failed ({}): {}", turso_source, e);
+                                Some(e)
+                            }
+                            Err(_) => {
+                                eprintln!(
+                                    "Pre-open Turso sync still running after 30s ({}) — continuing open",
+                                    turso_source
+                                );
+                                None
+                            }
+                        };
+
+                        if let Some(ref e) = sync_err {
+                            if attempt == 0
+                                && (sqlite_error_is_sync_conflict(e) || sqlite_error_is_corrupt(e))
+                            {
+                                eprintln!(
+                                    "Pre-open Turso sync needs clean rebuild ({e}) — quarantining replica and retrying once"
+                                );
+                                // Drop engine handle before deleting files.
+                                drop(db);
+                                quarantine_sync_replica(data_dir, e);
+                                continue;
+                            }
+                        }
+
+                        sync_db = Some(db);
+                        turso_active = true;
+                        break;
+                    }
+                    Err(e) => {
+                        let msg =
+                            format!("Turso replica init failed (source={}): {}", turso_source, e);
+                        eprintln!("{msg}");
+                        if attempt == 0
+                            && (sqlite_error_is_corrupt(&e) || sqlite_error_is_sync_conflict(&e))
+                        {
+                            eprintln!(
+                                "Quarantining bad replica after init failure and retrying once"
+                            );
+                            quarantine_sync_replica(data_dir, &e);
+                            continue;
+                        }
+                        turso_engine_error = Some(msg);
+                        // Keep multiprints-sync.db if it already exists (has last-known multi-PC data).
+                        // Only fall all the way back to multiprints.db when there is no replica yet.
+                        if !sync_path.exists() {
+                            active_db_path = db_path.clone();
+                        }
+                        break;
                     }
                 }
             }
         }
 
-        // Pull remote rows BEFORE opening the rusqlite handle so the first open
-        // sees Turso data (avoids stale empty snapshot, especially on Windows).
-        if let Some(ref db) = sync_db {
-            let db = db.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
-            tauri::async_runtime::spawn(async move {
-                let r = db.sync().await.map(|_| ()).map_err(|e| e.to_string());
-                let _ = tx.send(r);
-            });
-            match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(Ok(())) => println!("Pre-open Turso sync OK ({})", turso_source),
-                Ok(Err(e)) => eprintln!("Pre-open Turso sync failed ({}): {}", turso_source, e),
-                Err(_) => eprintln!(
-                    "Pre-open Turso sync still running after 30s ({}) — continuing open",
-                    turso_source
-                ),
+        let conn = match Connection::open(&active_db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = e.to_string();
+                // Last-resort heal: if rusqlite still sees corruption on the Turso path,
+                // quarantine and fully re-open so libsql rebuilds the replica.
+                if !after_quarantine
+                    && turso_config.is_some()
+                    && active_db_path == sync_path
+                    && sqlite_error_is_corrupt(&msg)
+                {
+                    eprintln!(
+                        "rusqlite open hit corrupt replica ({msg}) — quarantining and recreating"
+                    );
+                    quarantine_sync_replica(data_dir, &msg);
+                    return Self::new_inner(db_path, true);
+                }
+                return Err(format!(
+                    "Failed to open database at {}: {}",
+                    active_db_path.display(),
+                    e
+                ));
             }
-        }
-
-        let conn = Connection::open(&active_db_path).map_err(|e| {
-            format!(
-                "Failed to open database at {}: {}",
-                active_db_path.display(),
-                e
-            )
-        })?;
+        };
         // PRAGMAs are best-effort — WAL can fail on some Windows/network volumes.
         if let Err(e) = conn.execute_batch(
             "
@@ -229,6 +392,32 @@ impl Database {
             eprintln!("Database PRAGMA setup warning: {}", e);
             // Ensure foreign keys still on even if WAL failed.
             let _ = conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+        }
+
+        // Soft integrity check after open — if the handle is already bad, recover once.
+        if turso_config.is_some() && active_db_path == sync_path && !after_quarantine {
+            let integrity: Result<String, _> =
+                conn.query_row("PRAGMA integrity_check", [], |r| r.get(0));
+            let bad = match integrity {
+                Ok(s) if s.eq_ignore_ascii_case("ok") => None,
+                Ok(s) => Some(s),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if sqlite_error_is_corrupt(&msg) {
+                        Some(msg)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(reason) = bad {
+                eprintln!(
+                    "Opened replica failed integrity ({reason}) — quarantining and reopening once"
+                );
+                drop(conn);
+                quarantine_sync_replica(data_dir, &reason);
+                return Self::new_inner(db_path, true);
+            }
         }
 
         let db = Database {
