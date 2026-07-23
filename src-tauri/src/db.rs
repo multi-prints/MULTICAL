@@ -137,35 +137,10 @@ fn sqlite_error_is_sync_conflict(msg: &str) -> bool {
     m.contains("conflict") && (m.contains("server") || m.contains("sent=") || m.contains("sync"))
 }
 
-/// Quick integrity probe before libsql opens the replica. Does not modify the file.
-fn local_replica_looks_corrupt(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
-    }
-    match Connection::open(path) {
-        Ok(conn) => match conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)) {
-            Ok(s) if s.eq_ignore_ascii_case("ok") => None,
-            Ok(s) => Some(format!("integrity_check={s}")),
-            Err(e) => {
-                let msg = e.to_string();
-                if sqlite_error_is_corrupt(&msg) {
-                    Some(msg)
-                } else {
-                    // Non-corrupt open/query issues (locks, etc.) — leave file alone.
-                    None
-                }
-            }
-        },
-        Err(e) => {
-            let msg = e.to_string();
-            if sqlite_error_is_corrupt(&msg) {
-                Some(msg)
-            } else {
-                None
-            }
-        }
-    }
-}
+// NOTE: Do NOT open the replica with rusqlite before libsql initializes.
+// libsql calls `sqlite3_config(SQLITE_CONFIG_SERIALIZED)` once on first use; if
+// rusqlite already opened SQLite, that assert panics and the app never shows a window
+// ("won't open after update"). Integrity healing runs *after* libsql setup instead.
 
 /// Move multiprints-sync.db* aside so the next open can rebuild a clean Turso replica.
 fn quarantine_sync_replica(data_dir: &Path, reason: &str) {
@@ -235,15 +210,6 @@ impl Database {
         // file locks, corrupt replicas, or TLS/runtime issues). Fall back carefully
         // so we do not abandon an existing replica that still has business data.
         let sync_path = data_dir.join(SYNC_DB_FILE);
-
-        // Heal a previously corrupted local replica before libsql touches it.
-        // Turso remains source of truth; quarantined files stay under app data.
-        if turso_config.is_some() && !after_quarantine {
-            if let Some(reason) = local_replica_looks_corrupt(&sync_path) {
-                eprintln!("Local Turso replica is corrupt ({reason}) — rebuilding from cloud");
-                quarantine_sync_replica(data_dir, &reason);
-            }
-        }
 
         let mut active_db_path = if turso_config.is_some() {
             sync_path.clone()
