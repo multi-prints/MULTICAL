@@ -95,3 +95,59 @@ export async function ensureCreatedByColumns(db: Client): Promise<void> {
   }
   createdByColumnsReady = true;
 }
+
+let deletedRecordsTableReady = false;
+
+/** Audit table for sales/printing deleted by staff (employees may delete their own). */
+export async function ensureDeletedRecordsTable(db: Client): Promise<void> {
+  if (deletedRecordsTableReady) return;
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS deleted_records (
+      id INTEGER PRIMARY KEY,
+      source_kind TEXT NOT NULL,
+      original_id INTEGER NOT NULL,
+      summary TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      customer_name TEXT,
+      created_by TEXT,
+      deleted_by TEXT NOT NULL,
+      deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      original_timestamp TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  try {
+    await db.execute(
+      "CREATE INDEX IF NOT EXISTS idx_deleted_records_deleted_at ON deleted_records(deleted_at DESC)",
+    );
+  } catch {
+    /* ignore */
+  }
+  deletedRecordsTableReady = true;
+}
+
+export function parseActor(c: {
+  req: { query: (k: string) => string | undefined };
+}): { username: string; role: string } {
+  const username = (c.req.query("deleted_by") ?? c.req.query("username") ?? "")
+    .trim();
+  const role = (c.req.query("role") ?? "employee").trim().toLowerCase() || "employee";
+  return { username, role };
+}
+
+export function assertCanDelete(
+  actor: { username: string; role: string },
+  createdBy: string | null | undefined,
+  kindLabel: string,
+): string | null {
+  if (!actor.username) return "deleted_by username is required";
+  if (actor.role === "admin") return null;
+  const owner = (createdBy ?? "").trim();
+  if (!owner) {
+    return `This ${kindLabel} has no staff owner on file. Only an admin can delete it.`;
+  }
+  if (owner.toLowerCase() !== actor.username.toLowerCase()) {
+    return `You can only delete ${kindLabel}s you recorded. Ask an admin for help.`;
+  }
+  return null;
+}

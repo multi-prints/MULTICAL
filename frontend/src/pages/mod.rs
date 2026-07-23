@@ -5,4 +5,5 @@ pub mod stock;
 pub mod sales;
 pub mod printing;
 pub mod debts;
+pub mod deleted;
 pub mod settings;

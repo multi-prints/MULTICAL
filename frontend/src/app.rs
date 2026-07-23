@@ -24,6 +24,9 @@ use printing_page::PrintingPage as PrintingPageView;
 #[path = "pages/debts.rs"]
 mod debts_page;
 use debts_page::DebtsPage as DebtsPageView;
+#[path = "pages/deleted.rs"]
+mod deleted_page;
+use deleted_page::DeletedRecordsPage as DeletedRecordsPageView;
 #[path = "pages/settings.rs"]
 mod settings_page;
 use settings_page::SettingsPage as SettingsPageView;
@@ -39,6 +42,7 @@ enum Page {
     Sales,
     Printing,
     Debts,
+    Deleted,
     Settings,
 }
 
@@ -251,6 +255,13 @@ pub fn App() -> impl IntoView {
                                             Page::Sales => view! { <SalesPageView show_revenue_stats=role == "admin" /> }.into_any(),
                                             Page::Printing => view! { <PrintingPageView show_revenue_stats=role == "admin" /> }.into_any(),
                                             Page::Debts => view! { <DebtsPageView /> }.into_any(),
+                                            Page::Deleted => {
+                                                if role == "admin" {
+                                                    view! { <DeletedRecordsPageView /> }.into_any()
+                                                } else {
+                                                    view! { <SalesPageView show_revenue_stats=false /> }.into_any()
+                                                }
+                                            },
                                             Page::Settings => view! { <SettingsPageView user=user set_user=set_user /> }.into_any(),
                                         }}
                                     </main>
@@ -996,6 +1007,17 @@ fn Sidebar(
                     {nav_item(Page::Sales, "Sales", "M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z")}
                     {nav_item(Page::Printing, "Printing", "M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z")}
                     {nav_item(Page::Debts, "Debts", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z")}
+                    {if is_admin {
+                        view! {
+                            {nav_item(
+                                Page::Deleted,
+                                "Deleted",
+                                "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
+                            )}
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
                 </div>
 
                 <div class="sidebar-section">

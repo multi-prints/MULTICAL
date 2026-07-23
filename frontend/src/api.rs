@@ -895,12 +895,63 @@ pub async fn add_sale(sale: &NewSale) -> Result<Sale, String> {
 
 api_fn!(get_today_total_sales, "get_today_total_sales", f64);
 
-pub async fn delete_sale(id: i64) -> Result<SuccessResponse, String> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteActor {
+    pub username: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecord {
+    #[serde(with = "lossless_i64")]
+    pub id: i64,
+    pub source_kind: String,
+    #[serde(with = "lossless_i64")]
+    pub original_id: i64,
+    pub summary: String,
+    pub amount: f64,
+    pub customer_name: Option<String>,
+    pub created_by: Option<String>,
+    pub deleted_by: String,
+    pub deleted_at: Option<String>,
+    pub original_timestamp: Option<String>,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecordsQuery {
+    pub source_kind: Option<String>,
+    pub search: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecordsPageData {
+    pub items: Vec<DeletedRecord>,
+    pub total_count: i64,
+}
+
+pub async fn delete_sale(id: i64, actor: &DeleteActor) -> Result<SuccessResponse, String> {
     let r = remote::prefer_remote_then_local(
         "delete_sale",
-        async { remote::delete_json::<SuccessResponse>(&format!("/v1/sales/{id}")).await },
         async {
-            tauri_invoke_inner("delete_sale", &serde_json::json!({ "id": id.to_string() })).await
+            let q = format!(
+                "/v1/sales/{id}?deleted_by={}&role={}",
+                urlencoding_lite(&actor.username),
+                urlencoding_lite(&actor.role)
+            );
+            remote::delete_json::<SuccessResponse>(&q).await
+        },
+        async {
+            tauri_invoke_inner(
+                "delete_sale",
+                &serde_json::json!({
+                    "id": id.to_string(),
+                    "actor": actor,
+                }),
+            )
+            .await
         },
     )
     .await;
@@ -908,6 +959,40 @@ pub async fn delete_sale(id: i64) -> Result<SuccessResponse, String> {
         touch_live_data();
     }
     r
+}
+
+pub async fn get_deleted_records(
+    query: &DeletedRecordsQuery,
+) -> Result<DeletedRecordsPageData, String> {
+    remote::prefer_remote_then_local(
+        "get_deleted_records",
+        async {
+            let mut path = format!(
+                "/v1/deleted?page={}&per_page={}",
+                query.page.unwrap_or(1),
+                query.per_page.unwrap_or(50)
+            );
+            if let Some(ref k) = query.source_kind {
+                if !k.is_empty() {
+                    path.push_str(&format!("&source_kind={}", urlencoding_lite(k)));
+                }
+            }
+            if let Some(ref s) = query.search {
+                if !s.is_empty() {
+                    path.push_str(&format!("&search={}", urlencoding_lite(s)));
+                }
+            }
+            remote::get_json(&path).await
+        },
+        async {
+            tauri_invoke_inner(
+                "get_deleted_records",
+                &serde_json::json!({ "query": query }),
+            )
+            .await
+        },
+    )
+    .await
 }
 #[derive(Debug, Clone, Deserialize)]
 struct ItemsDebt {
@@ -1269,14 +1354,27 @@ api_fn!(
     "get_total_service_earnings",
     f64
 );
-pub async fn delete_service_transaction(id: i64) -> Result<SuccessResponse, String> {
+pub async fn delete_service_transaction(
+    id: i64,
+    actor: &DeleteActor,
+) -> Result<SuccessResponse, String> {
     let r = remote::prefer_remote_then_local(
         "delete_service_transaction",
-        async { remote::delete_json::<SuccessResponse>(&format!("/v1/printing/jobs/{id}")).await },
+        async {
+            let q = format!(
+                "/v1/printing/jobs/{id}?deleted_by={}&role={}",
+                urlencoding_lite(&actor.username),
+                urlencoding_lite(&actor.role)
+            );
+            remote::delete_json::<SuccessResponse>(&q).await
+        },
         async {
             tauri_invoke_inner(
                 "delete_service_transaction",
-                &serde_json::json!({ "id": id.to_string() }),
+                &serde_json::json!({
+                    "id": id.to_string(),
+                    "actor": actor,
+                }),
             )
             .await
         },

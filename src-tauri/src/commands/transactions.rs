@@ -63,13 +63,22 @@ pub fn update_service_transaction(
 pub fn delete_service_transaction(
     db: State<'_, Database>,
     id: IdArg,
+    actor: DeleteActor,
 ) -> Result<SuccessResponse, String> {
     let id = id.0;
 
-    db.delete_service_transaction(id)?;
+    db.delete_service_transaction(id, &actor)?;
     Ok(SuccessResponse {
         success: true,
         error: None,
-        message: None,
+        message: Some("Printing job deleted and archived for audit".into()),
     })
+}
+
+#[tauri::command]
+pub fn get_deleted_records(
+    db: State<'_, Database>,
+    query: DeletedRecordsQuery,
+) -> Result<DeletedRecordsPageData, String> {
+    db.get_deleted_records(query)
 }

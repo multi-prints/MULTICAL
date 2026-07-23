@@ -39,6 +39,8 @@ The application is designed for small to medium printing shops that need a fast 
 ### Security and Access Control
 - Offline-first local storage using SQLite
 - Role-based access for admin and employee users
+- Employees may delete **their own** sales and printing jobs (mistakes happen); every delete is archived
+- Admins can review all deleted sales/printing under **Deleted** (who recorded it, who deleted it, when)
 - Typed Rust commands between the frontend and Tauri backend
 
 ## Technology Stack

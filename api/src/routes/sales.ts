@@ -2,8 +2,11 @@ import { Hono } from "hono";
 import {
   asId,
   asInt,
+  assertCanDelete,
   ensureCreatedByColumns,
+  ensureDeletedRecordsTable,
   newDistributedId,
+  parseActor,
   turso,
 } from "../db";
 import type { Env } from "../env";
@@ -216,7 +219,115 @@ sales.patch("/:id", async (c) => {
 sales.delete("/:id", async (c) => {
   const id = asId(c.req.param("id"));
   if (id == null) return c.json({ error: "Invalid id" }, 400);
+  const actor = parseActor(c);
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
+  await ensureDeletedRecordsTable(db);
+
+  const existing = await db.execute({
+    sql: `SELECT id, type, product_id, stock_id, product_name, product_type, sticker_type,
+                 quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by
+          FROM sales WHERE id = ?`,
+    args: [id],
+  });
+  const row = existing.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return c.json({ error: "Sale not found" }, 404);
+
+  const createdBy =
+    row.created_by != null && String(row.created_by).trim()
+      ? String(row.created_by)
+      : null;
+  const denied = assertCanDelete(actor, createdBy, "sale");
+  if (denied) return c.json({ error: denied }, 403);
+
+  const summary =
+    String(row.product_name ?? "").trim() ||
+    String(row.product_type ?? "").trim() ||
+    `${String(row.type ?? "sale")} sale`;
+  const amount = Number(row.amount ?? 0);
+  const customer =
+    row.customer_name != null ? String(row.customer_name) : null;
+  const timestamp =
+    row.timestamp != null ? String(row.timestamp) : null;
+  const archiveId = newDistributedId();
+  const deletedAt = new Date().toISOString();
+  const payload = JSON.stringify({
+    id: String(id),
+    type: row.type ?? null,
+    product_id: row.product_id != null ? String(row.product_id) : null,
+    stock_id: row.stock_id != null ? String(row.stock_id) : null,
+    product_name: row.product_name ?? null,
+    product_type: row.product_type ?? null,
+    sticker_type: row.sticker_type ?? null,
+    quantity: row.quantity ?? null,
+    amount,
+    payment_method: row.payment_method ?? null,
+    customer_name: customer,
+    is_debt: row.is_debt ?? 0,
+    timestamp,
+    created_by: createdBy,
+  });
+
+  await db.execute({
+    sql: `INSERT INTO deleted_records
+            (id, source_kind, original_id, summary, amount, customer_name,
+             created_by, deleted_by, deleted_at, original_timestamp, payload)
+          VALUES (?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      archiveId,
+      id,
+      summary,
+      amount,
+      customer,
+      createdBy,
+      actor.username,
+      deletedAt,
+      timestamp,
+      payload,
+    ] as (string | number | null)[],
+  });
+
+  // Restore product stock
+  const productId = asId(row.product_id);
+  if (productId != null) {
+    const qty = Math.trunc(Number(String(row.quantity ?? "").trim()) || 0);
+    if (qty > 0) {
+      await db.execute({
+        sql: `UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        args: [qty, productId],
+      });
+    }
+  }
+  // Restore sticker metres
+  const stockId = asId(row.stock_id);
+  if (stockId != null) {
+    const metres = Number(String(row.quantity ?? "").trim()) || 0;
+    if (metres > 0) {
+      await db.execute({
+        sql: `UPDATE stock SET metres_used = MAX(0, metres_used - ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        args: [metres, stockId],
+      });
+    }
+  }
+
+  // Remove linked debts + payments
+  const debts = await db.execute({
+    sql: "SELECT id FROM debts WHERE sale_id = ?",
+    args: [id],
+  });
+  for (const d of debts.rows) {
+    const debtId = asId(d.id);
+    if (debtId == null) continue;
+    await db.execute({
+      sql: "DELETE FROM debt_payments WHERE debt_id = ?",
+      args: [debtId],
+    });
+    await db.execute({ sql: "DELETE FROM debts WHERE id = ?", args: [debtId] });
+  }
+
   await db.execute({ sql: "DELETE FROM sales WHERE id = ?", args: [id] });
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    message: "Sale deleted and archived for audit",
+  });
 });

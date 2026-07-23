@@ -20,11 +20,33 @@ mod receipt_comp;
 use receipt_comp::{open_multi_printing_receipt, open_printing_receipt, ReceiptModal};
 
 fn current_staff_username() -> Option<String> {
+    current_user_info().map(|u| u.username)
+}
+
+fn current_user_info() -> Option<UserInfo> {
     gloo_storage::LocalStorage::get::<String>("currentUser")
         .ok()
         .and_then(|raw: String| serde_json::from_str::<UserInfo>(&raw).ok())
-        .map(|u| u.username)
-        .filter(|u: &String| !u.trim().is_empty())
+}
+
+fn current_delete_actor() -> Option<api::DeleteActor> {
+    current_user_info().map(|u| api::DeleteActor {
+        username: u.username,
+        role: u.role,
+    })
+}
+
+fn can_delete_job(job: &ServiceTransaction) -> bool {
+    let Some(u) = current_user_info() else {
+        return false;
+    };
+    if u.role.eq_ignore_ascii_case("admin") {
+        return true;
+    }
+    job.created_by
+        .as_deref()
+        .map(|c| c.eq_ignore_ascii_case(&u.username))
+        .unwrap_or(false)
 }
 
 fn format_printing_timestamp(ts: &Option<String>) -> String {
@@ -430,15 +452,26 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
         }
     };
 
+    let (delete_error, set_delete_error) = signal(None::<String>);
+
     let delete_job = move |id: i64| {
         let l = reload;
+        let Some(actor) = current_delete_actor() else {
+            set_delete_error.set(Some("Not signed in".into()));
+            return;
+        };
+        set_delete_error.set(None);
         leptos::task::spawn_local(async move {
-            let _ = api::delete_service_transaction(id).await;
-            set_selected_jobs.update(|ids| {
-                ids.retain(|x| *x != id);
-                set_selected.set(ids.len() as u32);
-            });
-            l();
+            match api::delete_service_transaction(id, &actor).await {
+                Ok(_) => {
+                    set_selected_jobs.update(|ids| {
+                        ids.retain(|x| *x != id);
+                        set_selected.set(ids.len() as u32);
+                    });
+                    l();
+                }
+                Err(e) => set_delete_error.set(Some(e)),
+            }
         });
     };
 
@@ -449,6 +482,9 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
             </div>
         }>
         <div id="page-printing" class="dash">
+            {move || delete_error.get().map(|e| view! {
+                <div class="settings-alert is-err" style="margin-bottom:12px">{e}</div>
+            })}
             <div class="dash-table-head">
                 <div>
                     <h2 class="dash-section-title">"Printing jobs"</h2>
@@ -713,17 +749,23 @@ pub fn PrintingPage(show_revenue_stats: bool) -> impl IntoView {
                                                 } else {
                                                     ().into_any()
                                                 }}
-                                                <button
-                                                    type="button"
-                                                    class="prod-btn-icon is-danger"
-                                                    title="Delete"
-                                                    aria-label="Delete job"
-                                                    on:click=move |_| delete_job(id)
-                                                >
-                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                    </svg>
-                                                </button>
+                                                {if can_delete_job(&t) {
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon is-danger"
+                                                            title="Delete"
+                                                            aria-label="Delete job"
+                                                            on:click=move |_| delete_job(id)
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                            </svg>
+                                                        </button>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
                                             </div>
                                         </td>
                                     </tr>

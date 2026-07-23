@@ -19,11 +19,34 @@ mod loading_comp;
 use loading_comp::PageLoading;
 
 fn current_staff_username() -> Option<String> {
+    current_user_info().map(|u| u.username)
+}
+
+fn current_user_info() -> Option<UserInfo> {
     gloo_storage::LocalStorage::get::<String>("currentUser")
         .ok()
         .and_then(|raw: String| serde_json::from_str::<UserInfo>(&raw).ok())
-        .map(|u| u.username)
-        .filter(|u: &String| !u.trim().is_empty())
+}
+
+fn current_delete_actor() -> Option<api::DeleteActor> {
+    current_user_info().map(|u| api::DeleteActor {
+        username: u.username,
+        role: u.role,
+    })
+}
+
+/// Admin can delete any sale; employees only sales they recorded.
+fn can_delete_sale(sale: &Sale) -> bool {
+    let Some(u) = current_user_info() else {
+        return false;
+    };
+    if u.role.eq_ignore_ascii_case("admin") {
+        return true;
+    }
+    sale.created_by
+        .as_deref()
+        .map(|c| c.eq_ignore_ascii_case(&u.username))
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -786,6 +809,8 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
         }
     };
 
+    let (delete_error, set_delete_error) = signal(None::<String>);
+
     let confirm_delete_sale = {
         let l = reload;
         move |_| {
@@ -795,18 +820,26 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
             if deleting_sale.get() {
                 return;
             }
+            let Some(actor) = current_delete_actor() else {
+                set_delete_error.set(Some("Not signed in".into()));
+                return;
+            };
             set_deleting_sale.set(true);
+            set_delete_error.set(None);
             leptos::task::spawn_local(async move {
-                let _ = api::delete_sale(id).await;
-                set_del_id.set(None);
-                set_del_label.set(String::new());
+                match api::delete_sale(id, &actor).await {
+                    Ok(_) => {
+                        set_del_id.set(None);
+                        set_del_label.set(String::new());
+                        set_selected_sales.update(|ids| {
+                            ids.retain(|x| *x != id);
+                            set_selected.set(ids.len() as u32);
+                        });
+                        l();
+                    }
+                    Err(e) => set_delete_error.set(Some(e)),
+                }
                 set_deleting_sale.set(false);
-                // Drop from multi-select if it was checked
-                set_selected_sales.update(|ids| {
-                    ids.retain(|x| *x != id);
-                    set_selected.set(ids.len() as u32);
-                });
-                l();
             });
         }
     };
@@ -1110,6 +1143,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                         format!("{} · {} · KSh {:.0}", name, cust, amount)
                                     }
                                 };
+                                let can_delete = can_delete_sale(&sale);
                                 view! {
                                     <tr class=move || {
                                         let mut cls = if is_sel() { "sales-row is-selected" } else { "sales-row" }.to_string();
@@ -1189,20 +1223,27 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                                 } else {
                                                     ().into_any()
                                                 }}
-                                                <button
-                                                    type="button"
-                                                    class="prod-btn-icon is-danger"
-                                                    title="Delete"
-                                                    aria-label="Delete sale"
-                                                    on:click=move |_| {
-                                                        set_del_label.set(del_label_text.clone());
-                                                        set_del_id.set(Some(id));
-                                                    }
-                                                >
-                                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                    </svg>
-                                                </button>
+                                                {if can_delete {
+                                                    view! {
+                                                        <button
+                                                            type="button"
+                                                            class="prod-btn-icon is-danger"
+                                                            title="Delete"
+                                                            aria-label="Delete sale"
+                                                            on:click=move |_| {
+                                                                set_delete_error.set(None);
+                                                                set_del_label.set(del_label_text.clone());
+                                                                set_del_id.set(Some(id));
+                                                            }
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                            </svg>
+                                                        </button>
+                                                    }.into_any()
+                                                } else {
+                                                    ().into_any()
+                                                }}
                                             </div>
                                         </td>
                                     </tr>
@@ -1497,6 +1538,9 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                         </button>
                     </div>
                     <div class="modal-body">
+                        {move || delete_error.get().map(|e| view! {
+                            <p class="settings-alert is-err" style="margin-top:8px">{e}</p>
+                        })}
                         <p class="modal-msg">
                             "Are you sure you want to delete "
                             <span class="modal-entity">{move || del_label.get()}</span>
@@ -1512,6 +1556,7 @@ pub fn SalesPage(show_revenue_stats: bool) -> impl IntoView {
                                 if !deleting_sale.get() {
                                     set_del_id.set(None);
                                     set_del_label.set(String::new());
+                                    set_delete_error.set(None);
                                 }
                             }
                         >"Cancel"</button>

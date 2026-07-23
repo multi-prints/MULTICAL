@@ -2,8 +2,11 @@ import { Hono } from "hono";
 import {
   asId,
   asInt,
+  assertCanDelete,
   ensureCreatedByColumns,
+  ensureDeletedRecordsTable,
   newDistributedId,
+  parseActor,
   turso,
 } from "../db";
 import type { Env } from "../env";
@@ -237,10 +240,111 @@ printing.patch("/jobs/:id", async (c) => {
 printing.delete("/jobs/:id", async (c) => {
   const id = asId(c.req.param("id"));
   if (id == null) return c.json({ error: "Invalid id" }, 400);
+  const actor = parseActor(c);
   const db = turso(c.env);
+  await ensureCreatedByColumns(db);
+  await ensureDeletedRecordsTable(db);
+
+  const existing = await db.execute({
+    sql: `SELECT id, service_id, service_name, quantity, price, amount, payment_method,
+                 customer_name, notes, stock_id, stock_metres_used, material_size,
+                 material_type, printing_material_id, is_debt, timestamp, created_by
+          FROM service_transactions WHERE id = ?`,
+    args: [id],
+  });
+  const row = existing.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return c.json({ error: "Printing job not found" }, 404);
+
+  const createdBy =
+    row.created_by != null && String(row.created_by).trim()
+      ? String(row.created_by)
+      : null;
+  const denied = assertCanDelete(actor, createdBy, "printing job");
+  if (denied) return c.json({ error: denied }, 403);
+
+  const summary =
+    String(row.service_name ?? "").trim() || "Printing job";
+  const amount = Number(row.amount ?? 0);
+  const customer =
+    row.customer_name != null ? String(row.customer_name) : null;
+  const timestamp =
+    row.timestamp != null ? String(row.timestamp) : null;
+  const metresUsed = Number(row.stock_metres_used ?? 0);
+  const materialId = asId(row.printing_material_id);
+  const archiveId = newDistributedId();
+  const deletedAt = new Date().toISOString();
+  const payload = JSON.stringify({
+    id: String(id),
+    service_id: row.service_id != null ? String(row.service_id) : null,
+    service_name: row.service_name ?? null,
+    quantity: row.quantity ?? null,
+    price: row.price ?? null,
+    amount,
+    payment_method: row.payment_method ?? null,
+    customer_name: customer,
+    notes: row.notes ?? null,
+    stock_id: row.stock_id != null ? String(row.stock_id) : null,
+    stock_metres_used: metresUsed,
+    material_size: row.material_size ?? null,
+    material_type: row.material_type ?? null,
+    printing_material_id:
+      row.printing_material_id != null
+        ? String(row.printing_material_id)
+        : null,
+    is_debt: row.is_debt ?? 0,
+    timestamp,
+    created_by: createdBy,
+  });
+
+  await db.execute({
+    sql: `INSERT INTO deleted_records
+            (id, source_kind, original_id, summary, amount, customer_name,
+             created_by, deleted_by, deleted_at, original_timestamp, payload)
+          VALUES (?, 'printing', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      archiveId,
+      id,
+      summary,
+      amount,
+      customer,
+      createdBy,
+      actor.username,
+      deletedAt,
+      timestamp,
+      payload,
+    ] as (string | number | null)[],
+  });
+
+  if (materialId != null && metresUsed > 0) {
+    await db.execute({
+      sql: `UPDATE printing_materials
+            SET metres_used = MAX(0, metres_used - ?),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?`,
+      args: [metresUsed, materialId],
+    });
+  }
+
+  const debts = await db.execute({
+    sql: "SELECT id FROM debts WHERE service_transaction_id = ?",
+    args: [id],
+  });
+  for (const d of debts.rows) {
+    const debtId = asId(d.id);
+    if (debtId == null) continue;
+    await db.execute({
+      sql: "DELETE FROM debt_payments WHERE debt_id = ?",
+      args: [debtId],
+    });
+    await db.execute({ sql: "DELETE FROM debts WHERE id = ?", args: [debtId] });
+  }
+
   await db.execute({
     sql: "DELETE FROM service_transactions WHERE id = ?",
     args: [id],
   });
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    message: "Printing job deleted and archived for audit",
+  });
 });

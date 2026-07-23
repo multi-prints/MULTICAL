@@ -1017,6 +1017,22 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_service_transactions_stock_id ON service_transactions(stock_id);
 
             CREATE INDEX IF NOT EXISTS idx_printing_materials_created_at ON printing_materials(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS deleted_records (
+                id INTEGER PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                original_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                customer_name TEXT,
+                created_by TEXT,
+                deleted_by TEXT NOT NULL,
+                deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                original_timestamp TEXT,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_deleted_records_deleted_at ON deleted_records(deleted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deleted_records_kind ON deleted_records(source_kind, deleted_at DESC);
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -2450,11 +2466,219 @@ impl Database {
         self.finish_write(())
     }
 
-    pub fn delete_sale(&self, id: i64) -> Result<(), String> {
+    /// Archive a sale into `deleted_records`, restore stock, then hard-delete.
+    /// Employees may only delete rows they recorded (`created_by`); admins may delete any.
+    #[allow(clippy::type_complexity)]
+    pub fn delete_sale(&self, id: i64, actor: &DeleteActor) -> Result<(), String> {
         let conn = self.synced_conn()?;
-        conn.execute("DELETE FROM sales WHERE id = ?1", params![id])
+        let actor_name = actor.username.trim();
+        if actor_name.is_empty() {
+            return Err("Deleted-by username is required".into());
+        }
+        let is_admin = actor.role.eq_ignore_ascii_case("admin");
+
+        conn.execute_batch("BEGIN IMMEDIATE;")
             .map_err(|e| e.to_string())?;
-        self.finish_write(())
+
+        let result = (|| -> Result<(), String> {
+            let row: Option<(
+                String,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                f64,
+                String,
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+            )> = conn
+                .query_row(
+                    "SELECT type, product_id, stock_id, product_name, product_type, sticker_type,
+                            quantity, amount, payment_method, customer_name, is_debt, timestamp, created_by
+                     FROM sales WHERE id = ?1",
+                    params![id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                            r.get(7)?,
+                            r.get(8)?,
+                            r.get(9)?,
+                            r.get(10)?,
+                            r.get(11)?,
+                            r.get(12)?,
+                        ))
+                    },
+                )
+                .ok();
+
+            let Some((
+                r#type,
+                product_id,
+                stock_id,
+                product_name,
+                product_type,
+                sticker_type,
+                quantity,
+                amount,
+                payment_method,
+                customer_name,
+                is_debt,
+                timestamp,
+                created_by,
+            )) = row
+            else {
+                return Err("Sale not found".into());
+            };
+
+            // Permission: employees only their own (must have created_by match).
+            if !is_admin {
+                match created_by
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(owner) if owner.eq_ignore_ascii_case(actor_name) => {}
+                    Some(_) => {
+                        return Err(
+                            "You can only delete sales you recorded. Ask an admin for help.".into(),
+                        );
+                    }
+                    None => {
+                        return Err(
+                            "This sale has no staff owner on file. Only an admin can delete it."
+                                .into(),
+                        );
+                    }
+                }
+            }
+
+            let summary = product_name
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| product_type.clone())
+                .unwrap_or_else(|| format!("{} sale", r#type));
+
+            let payload = serde_json::json!({
+                "id": id.to_string(),
+                "type": r#type,
+                "product_id": product_id.map(|v| v.to_string()),
+                "stock_id": stock_id.map(|v| v.to_string()),
+                "product_name": product_name,
+                "product_type": product_type,
+                "sticker_type": sticker_type,
+                "quantity": quantity,
+                "amount": amount,
+                "payment_method": payment_method,
+                "customer_name": customer_name,
+                "is_debt": is_debt,
+                "timestamp": timestamp,
+                "created_by": created_by,
+            })
+            .to_string();
+
+            let archive_id = new_distributed_id();
+            let deleted_at = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string();
+
+            conn.execute(
+                "INSERT INTO deleted_records
+                    (id, source_kind, original_id, summary, amount, customer_name,
+                     created_by, deleted_by, deleted_at, original_timestamp, payload)
+                 VALUES (?1, 'sale', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    archive_id,
+                    id,
+                    summary,
+                    amount,
+                    customer_name,
+                    created_by,
+                    actor_name,
+                    deleted_at,
+                    timestamp,
+                    payload
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            // Restore product stock when quantity is numeric
+            if let Some(pid) = product_id {
+                let qty_i: i64 = quantity
+                    .as_deref()
+                    .and_then(|q| q.trim().parse::<i64>().ok())
+                    .filter(|q| *q > 0)
+                    .unwrap_or(0);
+                if qty_i > 0 {
+                    conn.execute(
+                        "UPDATE products SET stock = stock + ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                        params![qty_i, pid],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            // Restore sticker metres: quantity may store metres for stock sales
+            if let Some(sid) = stock_id {
+                let metres: f64 = quantity
+                    .as_deref()
+                    .and_then(|q| q.trim().parse::<f64>().ok())
+                    .filter(|m| *m > 0.0)
+                    .unwrap_or(0.0);
+                if metres > 0.0 {
+                    conn.execute(
+                        "UPDATE stock SET metres_used = MAX(0, metres_used - ?1), updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                        params![metres, sid],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            // Linked pending debts: remove so money/inventory stay consistent
+            let debt_ids: Vec<i64> = {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM debts WHERE sale_id = ?1")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![id], |r| r.get(0))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+            for debt_id in debt_ids {
+                conn.execute(
+                    "DELETE FROM debt_payments WHERE debt_id = ?1",
+                    params![debt_id],
+                )
+                .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM debts WHERE id = ?1", params![debt_id])
+                    .map_err(|e| e.to_string())?;
+            }
+
+            conn.execute("DELETE FROM sales WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT;").map_err(|e| e.to_string())?;
+                self.finish_write(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
+        }
     }
 
     // ==================== Debts CRUD ====================
@@ -4328,41 +4552,315 @@ impl Database {
         self.finish_write(())
     }
 
-    pub fn delete_service_transaction(&self, id: i64) -> Result<(), String> {
+    /// Archive a printing job, restore materials, then hard-delete.
+    /// Employees may only delete jobs they recorded; admins may delete any.
+    #[allow(clippy::type_complexity)]
+    pub fn delete_service_transaction(&self, id: i64, actor: &DeleteActor) -> Result<(), String> {
         let conn = self.synced_conn()?;
+        let actor_name = actor.username.trim();
+        if actor_name.is_empty() {
+            return Err("Deleted-by username is required".into());
+        }
+        let is_admin = actor.role.eq_ignore_ascii_case("admin");
 
-        let txn: Option<(Option<i64>, f64)> = conn
-            .query_row(
-                "SELECT printing_material_id, stock_metres_used FROM service_transactions WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| e.to_string())?;
 
-        if let Some((Some(material_id), used_metres)) = txn {
-            let current_metres_used: Option<f64> = conn
+        let result = (|| -> Result<(), String> {
+            let row: Option<(
+                Option<i64>,
+                String,
+                f64,
+                f64,
+                f64,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                f64,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                i64,
+                Option<String>,
+                Option<String>,
+            )> = conn
                 .query_row(
-                    "SELECT metres_used FROM printing_materials WHERE id = ?1",
-                    params![material_id],
-                    |row| row.get(0),
+                    "SELECT service_id, service_name, quantity, price, amount, payment_method,
+                            customer_name, notes, stock_id, stock_metres_used, material_size,
+                            material_type, printing_material_id, is_debt, timestamp, created_by
+                     FROM service_transactions WHERE id = ?1",
+                    params![id],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                            r.get(6)?,
+                            r.get(7)?,
+                            r.get(8)?,
+                            r.get(9)?,
+                            r.get(10)?,
+                            r.get(11)?,
+                            r.get(12)?,
+                            r.get(13)?,
+                            r.get(14)?,
+                            r.get(15)?,
+                        ))
+                    },
                 )
                 .ok();
-            if let Some(current_used) = current_metres_used {
-                let new_used = (current_used - used_metres).max(0.0);
+
+            let Some((
+                service_id,
+                service_name,
+                quantity,
+                price,
+                amount,
+                payment_method,
+                customer_name,
+                notes,
+                stock_id,
+                stock_metres_used,
+                material_size,
+                material_type,
+                printing_material_id,
+                is_debt,
+                timestamp,
+                created_by,
+            )) = row
+            else {
+                return Err("Printing job not found".into());
+            };
+
+            if !is_admin {
+                match created_by
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(owner) if owner.eq_ignore_ascii_case(actor_name) => {}
+                    Some(_) => {
+                        return Err(
+                            "You can only delete printing jobs you recorded. Ask an admin for help."
+                                .into(),
+                        );
+                    }
+                    None => {
+                        return Err(
+                            "This job has no staff owner on file. Only an admin can delete it."
+                                .into(),
+                        );
+                    }
+                }
+            }
+
+            let summary = if service_name.trim().is_empty() {
+                "Printing job".into()
+            } else {
+                service_name.clone()
+            };
+
+            let payload = serde_json::json!({
+                "id": id.to_string(),
+                "service_id": service_id.map(|v| v.to_string()),
+                "service_name": service_name,
+                "quantity": quantity,
+                "price": price,
+                "amount": amount,
+                "payment_method": payment_method,
+                "customer_name": customer_name,
+                "notes": notes,
+                "stock_id": stock_id.map(|v| v.to_string()),
+                "stock_metres_used": stock_metres_used,
+                "material_size": material_size,
+                "material_type": material_type,
+                "printing_material_id": printing_material_id.map(|v| v.to_string()),
+                "is_debt": is_debt,
+                "timestamp": timestamp,
+                "created_by": created_by,
+            })
+            .to_string();
+
+            let archive_id = new_distributed_id();
+            let deleted_at = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string();
+
+            conn.execute(
+                "INSERT INTO deleted_records
+                    (id, source_kind, original_id, summary, amount, customer_name,
+                     created_by, deleted_by, deleted_at, original_timestamp, payload)
+                 VALUES (?1, 'printing', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    archive_id,
+                    id,
+                    summary,
+                    amount,
+                    customer_name,
+                    created_by,
+                    actor_name,
+                    deleted_at,
+                    timestamp,
+                    payload
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            // Restore printing material usage
+            if let Some(material_id) = printing_material_id {
+                if stock_metres_used > 0.0 {
+                    conn.execute(
+                        "UPDATE printing_materials
+                         SET metres_used = MAX(0, metres_used - ?1),
+                             updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?2",
+                        params![stock_metres_used, material_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            let debt_ids: Vec<i64> = {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM debts WHERE service_transaction_id = ?1")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![id], |r| r.get(0))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?
+            };
+            for debt_id in debt_ids {
                 conn.execute(
-                    "UPDATE printing_materials SET metres_used = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
-                    params![new_used, material_id],
+                    "DELETE FROM debt_payments WHERE debt_id = ?1",
+                    params![debt_id],
                 )
                 .map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM debts WHERE id = ?1", params![debt_id])
+                    .map_err(|e| e.to_string())?;
+            }
+
+            conn.execute(
+                "DELETE FROM service_transactions WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT;").map_err(|e| e.to_string())?;
+                self.finish_write(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
+        }
+    }
+
+    /// Admin audit list of archived sales / printing jobs.
+    pub fn get_deleted_records(
+        &self,
+        query: DeletedRecordsQuery,
+    ) -> Result<DeletedRecordsPageData, String> {
+        let conn = self.synced_conn()?;
+        let page = query.page.unwrap_or(1).max(1);
+        let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
+        let offset = (page - 1) * per_page;
+
+        let mut where_parts: Vec<String> = Vec::new();
+        let mut params_owned: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(kind) = query
+            .source_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let k = kind.to_lowercase();
+            if k == "sale" || k == "printing" {
+                where_parts.push("source_kind = ?".into());
+                params_owned.push(Box::new(k));
             }
         }
 
-        conn.execute(
-            "DELETE FROM service_transactions WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
-        self.finish_write(())
+        if let Some(search) = query
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let q = format!("%{}%", search.to_lowercase());
+            where_parts.push(
+                "(LOWER(COALESCE(summary, '')) LIKE ?
+                  OR LOWER(COALESCE(customer_name, '')) LIKE ?
+                  OR LOWER(COALESCE(created_by, '')) LIKE ?
+                  OR LOWER(COALESCE(deleted_by, '')) LIKE ?)"
+                    .into(),
+            );
+            params_owned.push(Box::new(q.clone()));
+            params_owned.push(Box::new(q.clone()));
+            params_owned.push(Box::new(q.clone()));
+            params_owned.push(Box::new(q));
+        }
+
+        let where_sql = if where_parts.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_parts.join(" AND "))
+        };
+
+        let count_sql = format!("SELECT COUNT(*) FROM deleted_records {where_sql}");
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_owned.iter().map(|p| p.as_ref()).collect();
+        let total_count: i64 = conn
+            .query_row(&count_sql, param_refs.as_slice(), |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+
+        let list_sql = format!(
+            "SELECT id, source_kind, original_id, summary, amount, customer_name,
+                    created_by, deleted_by, deleted_at, original_timestamp, payload
+             FROM deleted_records
+             {where_sql}
+             ORDER BY deleted_at DESC
+             LIMIT ? OFFSET ?"
+        );
+        let mut list_params = params_owned;
+        list_params.push(Box::new(per_page as i64));
+        list_params.push(Box::new(offset as i64));
+        let list_refs: Vec<&dyn rusqlite::types::ToSql> =
+            list_params.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&list_sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(list_refs.as_slice(), |r| {
+                Ok(DeletedRecord {
+                    id: r.get(0)?,
+                    source_kind: r.get(1)?,
+                    original_id: r.get(2)?,
+                    summary: r.get(3)?,
+                    amount: r.get(4)?,
+                    customer_name: r.get(5)?,
+                    created_by: r.get(6)?,
+                    deleted_by: r.get(7)?,
+                    deleted_at: r.get(8)?,
+                    original_timestamp: r.get(9)?,
+                    payload: r.get(10)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let items = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(DeletedRecordsPageData { items, total_count })
     }
 
     // ==================== Printing Materials CRUD ====================

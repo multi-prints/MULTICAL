@@ -218,6 +218,7 @@ pub fn run() {
             commands::transactions::get_total_service_earnings,
             commands::transactions::update_service_transaction,
             commands::transactions::delete_service_transaction,
+            commands::transactions::get_deleted_records,
             // Material commands
             commands::materials::get_all_printing_materials,
             commands::materials::get_printing_material,

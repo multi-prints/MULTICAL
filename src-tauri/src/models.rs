@@ -755,6 +755,54 @@ pub struct DatabaseBackup {
     pub debt_payments: Vec<serde_json::Value>,
 }
 
+// ==================== Deleted records audit log ====================
+
+/// Who is performing a delete (used for permission + audit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteActor {
+    pub username: String,
+    /// `"admin"` | `"employee"`
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecord {
+    #[serde(with = "lossless_i64")]
+    pub id: i64,
+    /// `"sale"` | `"printing"`
+    pub source_kind: String,
+    #[serde(with = "lossless_i64")]
+    pub original_id: i64,
+    /// Short human label for lists (product name / job name).
+    pub summary: String,
+    pub amount: f64,
+    pub customer_name: Option<String>,
+    /// Staff who originally recorded the sale/job.
+    pub created_by: Option<String>,
+    /// Staff who deleted it.
+    pub deleted_by: String,
+    pub deleted_at: Option<String>,
+    /// When the original sale/job was recorded.
+    pub original_timestamp: Option<String>,
+    /// Full JSON snapshot of the deleted row.
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecordsQuery {
+    /// Optional filter: `"sale"` | `"printing"` | omit for both.
+    pub source_kind: Option<String>,
+    pub search: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedRecordsPageData {
+    pub items: Vec<DeletedRecord>,
+    pub total_count: i64,
+}
+
 // ==================== Business statement (admin PDF) ====================
 
 /// What to include in a business revenue statement PDF.

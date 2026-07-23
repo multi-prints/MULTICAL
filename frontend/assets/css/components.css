@@ -3275,6 +3275,54 @@ html.is-maximized .sidebar {
   line-height: 1.45;
 }
 
+.deleted-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.deleted-search {
+  flex: 1 1 200px;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.deleted-kind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.deleted-kind.is-sale {
+  background: var(--color-primary-50, rgba(101, 101, 236, 0.12));
+  color: var(--color-primary-dark, #5252d4);
+}
+
+.deleted-kind.is-printing {
+  background: var(--color-success-bg, #ecfdf5);
+  color: var(--color-success, #059669);
+}
+
+.dash-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.dash-pagination-btns {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .settings-form {
   display: flex;
   flex-direction: column;

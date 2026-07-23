@@ -48,12 +48,16 @@ pub fn update_sale(
 }
 
 #[tauri::command]
-pub fn delete_sale(db: State<'_, Database>, id: IdArg) -> Result<SuccessResponse, String> {
+pub fn delete_sale(
+    db: State<'_, Database>,
+    id: IdArg,
+    actor: DeleteActor,
+) -> Result<SuccessResponse, String> {
     let id = id.0;
-    db.delete_sale(id)?;
+    db.delete_sale(id, &actor)?;
     Ok(SuccessResponse {
         success: true,
         error: None,
-        message: None,
+        message: Some("Sale deleted and archived for audit".into()),
     })
 }
